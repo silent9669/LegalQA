@@ -1,0 +1,16 @@
+lexical:
+  type: bm25
+  k1: 1.5
+  b: 0.75
+
+dense:
+  model_name: "BAAI/bge-m3"
+  dimension: 1024
+  batch_size: 32
+  max_length: 512
+
+fusion:
+  method: rrf
+  k: 60
+  top_k_documents: 20
+  top_k_chunks: 50

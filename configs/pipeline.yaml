@@ -1,0 +1,44 @@
+seed: 42
+
+data:
+  train_path: "data/raw/train.json"
+  warmup_path: "data/raw/warmup.json"
+  public_path: "data/raw/public-official.json"
+  contexts_dir: "data/raw/selected-contexts"
+  canonical_qa: "artifacts/data/qa_unique.parquet"
+  known_qa_memory: "artifacts/data/known_qa.json"
+  legal_chunks: "artifacts/chunks/legal_chunks.parquet"
+  retrieval_labels: "artifacts/labels/retrieval_labels.parquet"
+
+chunking:
+  mode: hybrid
+  target_tokens: 600
+  overlap_tokens: 80
+
+retrieval:
+  lexical: bm25
+  dense_model: "BAAI/bge-m3"
+  document_topk: 20
+  chunk_topk_before_rerank: 50
+  fusion: rrf
+  rrf_k: 60
+
+reranking:
+  enabled: true
+  model: "BAAI/bge-reranker-v2-m3"
+  evidence_topk: 8
+
+generation:
+  model: "Qwen/Qwen2.5-1.5B-Instruct"
+  max_new_tokens: 512
+  temperature: 0.0
+  do_sample: false
+  use_provision_memory: true
+
+postprocess:
+  article_stitching: true
+  source_snap: true
+  extractive_candidate: true
+
+selector:
+  type: rules

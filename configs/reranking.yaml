@@ -1,0 +1,6 @@
+cross_encoder:
+  enabled: true
+  model_name: "BAAI/bge-reranker-v2-m3"
+  max_length: 512
+  batch_size: 16
+  evidence_top_k: 8

@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.playwright-mcp/
+
+# OS & Temp
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.output
+
+# Heavy Data & Large Artifacts (> 50MB)
+data/raw/selected-contexts/
+data/raw/selected-contexts.zip
+data/intermediate/
+artifacts/chunks/legal_chunks.parquet
+artifacts/data/known_qa.json
+artifacts/data/qa_unique.parquet
+artifacts/labels/retrieval_labels.parquet
+artifacts/submissions/
