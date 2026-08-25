@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from scripts.run_oof_validation import run_5fold_oof_validation
+from scripts.run_oof_validation import run_5fold_oof_validation, resolve_path
 
 def main():
     parser = argparse.ArgumentParser(
@@ -24,12 +24,12 @@ def main():
     )
     parser.add_argument(
         "--train",
-        default="data/raw/train.json",
+        default="artifacts/raw/train.json",
         help="Path to train.json"
     )
     parser.add_argument(
         "--warmup",
-        default="data/raw/warmup.json",
+        default="artifacts/raw/warmup.json",
         help="Path to warmup.json"
     )
     parser.add_argument(
@@ -39,12 +39,16 @@ def main():
     )
     args = parser.parse_args()
 
+    train_path = resolve_path(args.train, "data/raw/train.json", "train.json")
+    warmup_path = resolve_path(args.warmup, "data/raw/warmup.json", "warmup.json")
+    chunks_path = resolve_path(args.chunks, "legal_chunks.parquet")
+
     sample_limit = args.samples if args.samples > 0 else None
     print(f"Starting CodaBench 5-Fold OOF Validation Benchmark (samples={sample_limit}, splits={args.splits})...")
     scores = run_5fold_oof_validation(
-        train_path=args.train,
-        warmup_path=args.warmup,
-        chunks_parquet_path=args.chunks,
+        train_path=train_path,
+        warmup_path=warmup_path,
+        chunks_parquet_path=chunks_path,
         n_splits=args.splits,
         sample_limit=sample_limit
     )

@@ -15,9 +15,14 @@ def prepare_all_artifacts():
     os.makedirs("artifacts/labels", exist_ok=True)
     os.makedirs("artifacts/submissions", exist_ok=True)
 
-    train_path = resolve_path("data/raw/train.json", "train.json")
-    warmup_path = resolve_path("data/raw/warmup.json", "warmup.json")
-    chunks_jsonl_path = resolve_path("data/intermediate/chunks_output.jsonl", "chunks_output.jsonl")
+    train_path = resolve_path("artifacts/raw/train.json", "data/raw/train.json")
+    train_path = resolve_path(train_path, "train.json")
+
+    warmup_path = resolve_path("artifacts/raw/warmup.json", "data/raw/warmup.json")
+    warmup_path = resolve_path(warmup_path, "warmup.json")
+
+    chunks_jsonl_path = resolve_path("artifacts/chunks/chunks_output.jsonl", "data/intermediate/chunks_output.jsonl")
+    chunks_jsonl_path = resolve_path(chunks_jsonl_path, "chunks_output.jsonl")
 
     print(f"1. Building canonical qa_unique.parquet and known_qa.json from {train_path}, {warmup_path}...")
     df_unique, memory_dict = build_canonical_qa(train_path, warmup_path)

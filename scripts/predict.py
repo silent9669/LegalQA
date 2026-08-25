@@ -15,19 +15,24 @@ from src.retrieval.bm25_retriever import SimpleBM25
 from src.reranking.cross_encoder import SimpleLexicalReranker
 from src.postprocess.article_stitcher import ArticleStitcher
 
-def resolve_path(primary: str, fallback: str) -> str:
-    return primary if os.path.exists(primary) else fallback
+def resolve_path(primary: str, *fallbacks: str) -> str:
+    if os.path.exists(primary):
+        return primary
+    for fb in fallbacks:
+        if os.path.exists(fb):
+            return fb
+    return primary
 
 def run_prediction(
-    input_json_path: str = "data/raw/public-official.json",
+    input_json_path: str = "artifacts/raw/public-official.json",
     output_json_path: str = "artifacts/submissions/submission.json",
-    train_path: str = "data/raw/train.json",
-    warmup_path: str = "data/raw/warmup.json",
+    train_path: str = "artifacts/raw/train.json",
+    warmup_path: str = "artifacts/raw/warmup.json",
     chunks_parquet_path: str = "artifacts/chunks/legal_chunks.parquet"
 ):
-    input_json_path = resolve_path(input_json_path, "public-official.json")
-    train_path = resolve_path(train_path, "train.json")
-    warmup_path = resolve_path(warmup_path, "warmup.json")
+    input_json_path = resolve_path(input_json_path, "data/raw/public-official.json", "public-official.json")
+    train_path = resolve_path(train_path, "data/raw/train.json", "train.json")
+    warmup_path = resolve_path(warmup_path, "data/raw/warmup.json", "warmup.json")
 
     print(f"1. Loading Canonical QA & Building Exact Memory from {train_path}, {warmup_path}...")
     df_unique, memory_dict = build_canonical_qa(train_path, warmup_path)
@@ -81,7 +86,7 @@ def run_prediction(
     submission = {}
     exact_memory_hits = 0
 
-    print(f"3. Generating predictions for {len(input_data)} items...")
+    print(f"3. Generating predictions for {len(input_data)} items from {input_json_path}...")
     for qid, item in tqdm(input_data.items(), total=len(input_data), desc="Predicting"):
         q_text = item.get('question', '')
         if exact_mem.lookup(qid, q_text):
@@ -104,10 +109,10 @@ def run_prediction(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run LegalQA Prediction Pipeline")
-    parser.add_argument("--input", default="data/raw/public-official.json", help="Path to input test queries JSON")
+    parser.add_argument("--input", default="artifacts/raw/public-official.json", help="Path to input test queries JSON")
     parser.add_argument("--output", default="artifacts/submissions/submission.json", help="Path to output submission JSON")
-    parser.add_argument("--train", default="data/raw/train.json", help="Path to train.json")
-    parser.add_argument("--warmup", default="data/raw/warmup.json", help="Path to warmup.json")
+    parser.add_argument("--train", default="artifacts/raw/train.json", help="Path to train.json")
+    parser.add_argument("--warmup", default="artifacts/raw/warmup.json", help="Path to warmup.json")
     parser.add_argument("--chunks", default="artifacts/chunks/legal_chunks.parquet", help="Path to legal_chunks.parquet")
     args = parser.parse_args()
 

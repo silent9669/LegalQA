@@ -15,8 +15,13 @@ from src.reranking.cross_encoder import SimpleLexicalReranker
 from src.postprocess.article_stitcher import ArticleStitcher
 from src.pipeline import LegalQAPipeline
 
-def resolve_path(primary: str, fallback: str) -> str:
-    return primary if os.path.exists(primary) else fallback
+def resolve_path(primary: str, *fallbacks: str) -> str:
+    if os.path.exists(primary):
+        return primary
+    for fb in fallbacks:
+        if os.path.exists(fb):
+            return fb
+    return primary
 
 def kfold_split(n_samples: int, n_splits: int = 5, shuffle: bool = True, seed: int = 42):
     indices = np.arange(n_samples)
@@ -30,14 +35,17 @@ def kfold_split(n_samples: int, n_splits: int = 5, shuffle: bool = True, seed: i
         yield train_idx, val_idx
 
 def run_5fold_oof_validation(
-    train_path: str = "data/raw/train.json",
-    warmup_path: str = "data/raw/warmup.json",
+    train_path: str = "artifacts/raw/train.json",
+    warmup_path: str = "artifacts/raw/warmup.json",
+    chunks_path: str = "artifacts/chunks/chunks_output.jsonl",
     chunks_parquet_path: str = "artifacts/chunks/legal_chunks.parquet",
     n_splits: int = 5,
     sample_limit: int = 250
 ):
-    train_path = resolve_path(train_path, "train.json")
-    warmup_path = resolve_path(warmup_path, "warmup.json")
+    train_path = resolve_path(train_path, "data/raw/train.json", "train.json")
+    warmup_path = resolve_path(warmup_path, "data/raw/warmup.json", "warmup.json")
+    chunks_parquet_path = resolve_path(chunks_parquet_path, "legal_chunks.parquet")
+    chunks_path = resolve_path(chunks_path, "data/intermediate/chunks_output.jsonl", "chunks_output.jsonl")
 
     print("=== Step 1: Loading Datasets & Building Canonical QA ===")
     df_qa, full_mem_dict = build_canonical_qa(train_path, warmup_path)
@@ -74,8 +82,24 @@ def run_5fold_oof_validation(
                 "text": str(row["searchable_text"])
             })
         print(f"Loaded {len(corpus)} legal chunks. Building Inverted Index...")
+    elif os.path.exists(chunks_path):
+        print(f"Reading chunks from {chunks_path}...")
+        with open(chunks_path, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                item = json.loads(line)
+                search_text = f"{item.get('name', '')} {item.get('dieu', '')} {item.get('content', '')}"
+                corpus.append({
+                    "id": str(item.get("chunk_id", i)),
+                    "doc_id": str(item.get("doc_id", "")),
+                    "name": str(item.get("name", "")),
+                    "dieu": str(item.get("dieu", "")),
+                    "khoan": str(item.get("khoan", "")),
+                    "content": str(item.get("content", "")),
+                    "text": search_text
+                })
+        print(f"Loaded {len(corpus)} legal chunks.")
     else:
-        raise FileNotFoundError(f"Missing {chunks_parquet_path}")
+        raise FileNotFoundError(f"Missing {chunks_parquet_path} and {chunks_path}")
 
     retriever = SimpleBM25(corpus)
     retriever.chunk_map = {doc["id"]: doc for doc in corpus}

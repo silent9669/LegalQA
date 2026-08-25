@@ -1,10 +1,10 @@
 seed: 42
 
 data:
-  train_path: "data/raw/train.json"
-  warmup_path: "data/raw/warmup.json"
-  public_path: "data/raw/public-official.json"
-  contexts_dir: "data/raw/selected-contexts"
+  train_path: "artifacts/raw/train.json"
+  warmup_path: "artifacts/raw/warmup.json"
+  public_path: "artifacts/raw/public-official.json"
+  contexts_dir: "artifacts/raw/selected-contexts"
   canonical_qa: "artifacts/data/qa_unique.parquet"
   known_qa_memory: "artifacts/data/known_qa.json"
   legal_chunks: "artifacts/chunks/legal_chunks.parquet"

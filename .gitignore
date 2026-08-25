@@ -39,10 +39,10 @@ ehthumbs.db
 Thumbs.db
 *.output
 
-# Heavy Data & Large Artifacts (> 50MB)
-data/raw/selected-contexts/
-data/raw/selected-contexts.zip
-data/intermediate/
+# Heavy Datasets & Large Artifacts (> 50MB)
+artifacts/raw/selected-contexts/
+artifacts/raw/selected-contexts.zip
+artifacts/chunks/chunks_output.jsonl
 artifacts/chunks/legal_chunks.parquet
 artifacts/data/known_qa.json
 artifacts/data/qa_unique.parquet
