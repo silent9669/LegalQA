@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv
 .venv/
 build/
 develop-eggs/
@@ -48,3 +49,10 @@ artifacts/data/known_qa.json
 artifacts/data/qa_unique.parquet
 artifacts/labels/retrieval_labels.parquet
 artifacts/submissions/
+artifacts/task2/submissions/
+artifacts/task2/checkpoints/
+logs/
+artifacts/archive/**
+!artifacts/archive/
+!artifacts/archive/**/
+!artifacts/archive/**/provenance.json

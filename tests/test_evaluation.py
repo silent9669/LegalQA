@@ -1,34 +1,29 @@
-import pytest
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from pathlib import Path
+import pytest
+import numpy as np
 
-from src.evaluation.codabench_eval import evaluate_predictions
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-def test_codabench_eval_identical_answers():
-    y_true = {"1": "Căn cứ Điều 50 Bộ luật Tố tụng hình sự 2015"}
-    y_pred = {"1": {"answer": "Căn cứ Điều 50 Bộ luật Tố tụng hình sự 2015"}}
-    scores = evaluate_predictions(y_pred, y_true)
-    assert scores["meteor"] >= 0.999
-    assert scores["rouge"] == pytest.approx(1.0, 1e-4)
+# Import the official scoring function
+SCORING_PROGRAM_DIR = Path(__file__).resolve().parents[1] / "Scoring-Program-Task-LegalQA"
+if str(SCORING_PROGRAM_DIR) not in sys.path:
+    sys.path.insert(0, str(SCORING_PROGRAM_DIR))
 
-def test_codabench_eval_whitespace_tokenization():
-    y_true = {"1": "Điều 17, khoản 3"}
-    y_pred = {"1": {"answer": "Điều 17 khoản 3"}}
-    scores = evaluate_predictions(y_pred, y_true)
-    # METEOR splits on whitespace ("17," vs "17" don't match)
-    assert 0.0 < scores["meteor"] < 0.99
-    # ROUGE strips punctuation by default
-    assert scores["rouge"] == pytest.approx(1.0, 1e-4)
+import scoring as official_scoring
+from scripts.run_oof_validation import calculate_official_meteor
 
-def test_codabench_eval_multiple_samples():
-    y_true = {
-        "1": "Nghị định 13/2023/NĐ-CP có hiệu lực từ ngày 01/7/2023",
-        "2": "Bị cáo có quyền đề nghị thay đổi Thẩm phán"
-    }
-    y_pred = {
-        "1": {"answer": "Nghị định 13/2023/NĐ-CP có hiệu lực từ ngày 01/7/2023"},
-        "2": {"answer": "Bị cáo không có quyền đề nghị"}
-    }
-    scores = evaluate_predictions(y_pred, y_true)
-    assert 0.5 <= scores["meteor"] <= 1.0
+def test_eval_qa_exact_match():
+    y_pred = {"1": {"answer": "Căn cứ khoản 3 Điều 17 Nghị định 90/2017/NĐ-CP"}}
+    y_true = {"1": "Căn cứ khoản 3 Điều 17 Nghị định 90/2017/NĐ-CP"}
+    res = official_scoring.eval_qa(y_pred, y_true)
+    assert res["meteor"] >= 0.99
+    assert res["rouge"] >= 0.99
+
+def test_meteor_parity():
+    refs = ["Căn cứ khoản 3 Điều 17 Nghị định 90/2017/NĐ-CP"]
+    preds = ["Căn cứ khoản 3 Điều 17 Nghị định 90/2017/NĐ-CP"]
+    m_score = calculate_official_meteor(refs, preds)
+    official = official_scoring.eval_qa({"1": {"answer": preds[0]}}, {"1": refs[0]})
+    assert pytest.approx(m_score, abs=1e-6) == float(official["meteor"])

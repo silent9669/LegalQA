@@ -1,0 +1,40 @@
+# Task 2 LegalQA Pipeline Configuration
+task:
+  name: "Task 2 - LegalQA"
+  version: "2.0.0"
+  metric: "METEOR"
+  parameter_limit: 4000000000
+
+paths:
+  raw_contexts: "artifacts/raw/selected-contexts"
+  train_json: "artifacts/raw/train.json"
+  warmup_json: "artifacts/raw/warmup.json"
+  public_test_json: "artifacts/raw/public-official.json"
+  data_dir: "artifacts/task2/data"
+  index_dir: "artifacts/task2/indexes"
+  checkpoint_dir: "artifacts/task2/checkpoints"
+  submission_dir: "artifacts/task2/submissions"
+
+models:
+  retriever:
+    name: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    dimension: 768
+    word_segmentation: "pyvi"
+    top_k: 60
+  reranker:
+    name: "BAAI/bge-reranker-v2-m3"
+    top_k: 8
+  generator:
+    name: "Qwen/Qwen2.5-3B-Instruct"
+    max_new_tokens: 512
+    lora_r: 16
+    lora_alpha: 32
+
+retrieval:
+  bm25:
+    k1: 1.5
+    b: 0.75
+    legal_boosting: true
+  rrf:
+    k: 60
+    weights: [0.5, 0.5]

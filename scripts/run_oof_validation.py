@@ -1,168 +1,145 @@
+import argparse
+import hashlib
+import json
 import os
 import sys
-import json
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import nltk
+from nltk.translate.meteor_score import meteor_score
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    from rouge_score import rouge_scorer
+except ImportError:
+    rouge_scorer = None
 
-from src.data.canonical import build_canonical_qa, normalize_vietnamese_text
-from src.evaluation.codabench_eval import evaluate_predictions
-from src.memory.exact_memory import ExactMemory
-from src.retrieval.bm25_retriever import SimpleBM25
-from src.reranking.cross_encoder import SimpleLexicalReranker
-from src.postprocess.article_stitcher import ArticleStitcher
-from src.pipeline import LegalQAPipeline
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.common.bm25 import BM25Retriever
+from src.common.dense_dek21 import DEk21Retriever
+from src.common.rrf import reciprocal_rank_fusion
+from src.common.reranker import BGEReranker
+from src.common.normalize import clean_legal_text, normalize_question
+from src.task2.qa_memory import QAMemory
+from src.task2.article_stitcher import ArticleStitcher
+from src.task2.generator import QwenGenerator
+from src.task2.source_snap import snap_facts_to_evidence, select_best_answer_candidate
+from src.task2.predict import LegalQAPipeline
 
-def resolve_path(primary: str, *fallbacks: str) -> str:
-    if os.path.exists(primary):
-        return primary
-    for fb in fallbacks:
-        if os.path.exists(fb):
-            return fb
-    return primary
+try:
+    nltk.data.find('corpora/wordnet.zip')
+except LookupError:
+    nltk.download('wordnet', quiet=True)
+    nltk.download('omw-1.4', quiet=True)
 
-def kfold_split(n_samples: int, n_splits: int = 5, shuffle: bool = True, seed: int = 42):
-    indices = np.arange(n_samples)
-    if shuffle:
-        rng = np.random.default_rng(seed)
-        rng.shuffle(indices)
-    folds = np.array_split(indices, n_splits)
-    for i in range(n_splits):
-        val_idx = folds[i]
-        train_idx = np.setdiff1d(indices, val_idx)
-        yield train_idx, val_idx
+def calculate_official_meteor(references: list[str], predictions: list[str]) -> float:
+    scores = []
+    for r, p in zip(references, predictions):
+        r_tokens = str(r).split()
+        p_tokens = str(p).split()
+        scores.append(meteor_score([r_tokens], p_tokens))
+    return float(np.mean(scores))
 
-def run_5fold_oof_validation(
-    train_path: str = "artifacts/raw/train.json",
-    warmup_path: str = "artifacts/raw/warmup.json",
-    chunks_path: str = "artifacts/chunks/chunks_output.jsonl",
-    chunks_parquet_path: str = "artifacts/chunks/legal_chunks.parquet",
-    n_splits: int = 5,
-    sample_limit: int = 250
-):
-    train_path = resolve_path(train_path, "data/raw/train.json", "train.json")
-    warmup_path = resolve_path(warmup_path, "data/raw/warmup.json", "warmup.json")
-    chunks_parquet_path = resolve_path(chunks_parquet_path, "legal_chunks.parquet")
-    chunks_path = resolve_path(chunks_path, "data/intermediate/chunks_output.jsonl", "chunks_output.jsonl")
+def calculate_rouge_l(references: list[str], predictions: list[str]) -> float:
+    if rouge_scorer is None:
+        return 0.0
+    scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=False)
+    scores = []
+    for r, p in zip(references, predictions):
+        sc = scorer.score(str(r), str(p))['rougeL'].fmeasure
+        scores.append(sc)
+    return float(np.mean(scores))
 
-    print("=== Step 1: Loading Datasets & Building Canonical QA ===")
-    df_qa, full_mem_dict = build_canonical_qa(train_path, warmup_path)
-    print(f"Total Canonical QA Pairs: {len(df_qa)}")
+def assign_question_blocked_folds(df: pd.DataFrame, n_splits: int = 5, seed: int = 42) -> pd.DataFrame:
+    df = df.copy()
+    def _hash_question(q: str) -> int:
+        norm = normalize_question(q)
+        h = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+        return int(h, 16) % n_splits
 
-    if sample_limit and sample_limit < len(df_qa):
-        print(f"Evaluating representative slice of {sample_limit} QA for rigorous 5-fold OOF benchmark...")
-        df_eval = df_qa.sample(n=sample_limit, random_state=42).reset_index(drop=True)
-    else:
-        df_eval = df_qa.reset_index(drop=True)
+    df["fold_id"] = df["question_raw"].apply(_hash_question)
+    return df
 
-    print("=== Step 2: Loading Legal Chunks & Building Article Stitcher ===")
-    corpus = []
-    if os.path.exists(chunks_parquet_path):
-        print(f"Reading legal chunks from {chunks_parquet_path}...")
-        df_c = pd.read_parquet(chunks_parquet_path)
-        for _, row in df_c.iterrows():
-            corpus.append({
-                "chunk_id": str(row["chunk_id"]),
-                "id": str(row["chunk_id"]),
-                "doc_id": str(row["doc_id"]),
-                "context_id": str(row["context_id"]),
-                "document_number": str(row["document_number"]) if pd.notna(row["document_number"]) else "",
-                "document_title": str(row["document_title"]),
-                "name": str(row["name"]),
-                "article_number": str(row["article_number"]) if pd.notna(row["article_number"]) else "",
-                "article_title": str(row["article_title"]) if pd.notna(row["article_title"]) else "",
-                "dieu": str(row["dieu"]) if pd.notna(row["dieu"]) else "",
-                "khoan": str(row["khoan"]) if pd.notna(row["khoan"]) else "",
-                "clause": str(row["clause"]) if pd.notna(row["clause"]) else "",
-                "part": int(row["part"]) if pd.notna(row["part"]) else 1,
-                "n_parts": int(row["n_parts"]) if pd.notna(row["n_parts"]) else 1,
-                "content": str(row["content"]),
-                "text": str(row["searchable_text"])
+def run_oof_validation(qa_path: str, bm25_dir: str, num_eval_samples: int = 100, n_splits: int = 5):
+    print(f"Loading QA dataset from {qa_path}...")
+    df_qa = pd.read_parquet(qa_path)
+    df_qa = assign_question_blocked_folds(df_qa, n_splits=n_splits)
+
+    print(f"Loading BM25 index from {bm25_dir}...")
+    bm25 = BM25Retriever.load(bm25_dir)
+    dense = DEk21Retriever(model_name="mock")
+    reranker = BGEReranker(model_name="mock")
+    stitcher = ArticleStitcher(bm25.corpus)
+    generator = QwenGenerator(runtime="fallback")
+
+    all_oof_results = []
+    fold_meteors = []
+    fold_rouges = []
+
+    samples_per_fold = max(1, num_eval_samples // n_splits)
+    print(f"Evaluating {samples_per_fold} samples per fold across {n_splits} folds...")
+
+    for fold_id in range(n_splits):
+        val_subset = df_qa[df_qa["fold_id"] == fold_id].head(samples_per_fold)
+        train_subset = df_qa[df_qa["fold_id"] != fold_id]
+
+        # Zero-leakage fold memory: val queries cannot lookup themselves
+        fold_mem = QAMemory.from_records(train_subset.to_dict("records"))
+        pipeline = LegalQAPipeline(fold_mem, bm25, dense, reranker, stitcher, generator)
+
+        fold_preds = []
+        fold_refs = []
+
+        for _, row in tqdm(val_subset.iterrows(), total=len(val_subset), desc=f"Fold {fold_id}"):
+            qid = row["qa_id"]
+            q = row["question_raw"]
+            ref_ans = row["answer_raw"]
+
+            pred = pipeline.predict_single(qid, q)
+            fold_preds.append(pred)
+            fold_refs.append(ref_ans)
+
+            all_oof_results.append({
+                "qa_id": qid,
+                "fold_id": fold_id,
+                "question": q,
+                "reference": ref_ans,
+                "prediction": pred,
+                "meteor": meteor_score([ref_ans.split()], pred.split())
             })
-        print(f"Loaded {len(corpus)} legal chunks. Building Inverted Index...")
-    elif os.path.exists(chunks_path):
-        print(f"Reading chunks from {chunks_path}...")
-        with open(chunks_path, 'r', encoding='utf-8') as f:
-            for i, line in enumerate(f):
-                item = json.loads(line)
-                search_text = f"{item.get('name', '')} {item.get('dieu', '')} {item.get('content', '')}"
-                corpus.append({
-                    "id": str(item.get("chunk_id", i)),
-                    "doc_id": str(item.get("doc_id", "")),
-                    "name": str(item.get("name", "")),
-                    "dieu": str(item.get("dieu", "")),
-                    "khoan": str(item.get("khoan", "")),
-                    "content": str(item.get("content", "")),
-                    "text": search_text
-                })
-        print(f"Loaded {len(corpus)} legal chunks.")
+
+        fold_m = calculate_official_meteor(fold_refs, fold_preds)
+        fold_r = calculate_rouge_l(fold_refs, fold_preds)
+        fold_meteors.append(fold_m)
+        fold_rouges.append(fold_r)
+        print(f"Fold {fold_id} -> METEOR: {fold_m:.4f} | ROUGE-L: {fold_r:.4f}")
+
+    mean_meteor = float(np.mean(fold_meteors))
+    std_meteor = float(np.std(fold_meteors))
+    mean_rouge = float(np.mean(fold_rouges))
+
+    print("\n=======================================================")
+    print(f"5-Fold OOF METEOR:  {mean_meteor:.4f} ± {std_meteor:.4f}")
+    print(f"5-Fold OOF ROUGE-L: {mean_rouge:.4f}")
+    print("=======================================================")
+
+    df_oof = pd.DataFrame(all_oof_results)
+    oof_out = "artifacts/task2/data/oof_predictions.parquet"
+    df_oof.to_parquet(oof_out, index=False)
+    print(f"Saved OOF predictions to {oof_out}")
+
+def main():
+    parser = argparse.ArgumentParser(description="LegalQA Task 2 5-Fold OOF Validation")
+    parser.add_argument("--qa_path", default="artifacts/task2/data/qa_unique.parquet")
+    parser.add_argument("--bm25_dir", default="artifacts/task2/indexes/bm25")
+    parser.add_argument("--samples", type=int, default=100)
+    parser.add_argument("--folds", type=int, default=5)
+    args = parser.parse_args()
+
+    if os.path.exists(args.qa_path) and os.path.exists(args.bm25_dir):
+        run_oof_validation(args.qa_path, args.bm25_dir, num_eval_samples=args.samples, n_splits=args.folds)
     else:
-        raise FileNotFoundError(f"Missing {chunks_parquet_path} and {chunks_path}")
-
-    retriever = SimpleBM25(corpus)
-    retriever.chunk_map = {doc["id"]: doc for doc in corpus}
-    reranker = SimpleLexicalReranker()
-    stitcher = ArticleStitcher(corpus)
-    print("Article Stitcher and Inverted BM25 Index successfully initialized.")
-
-    print(f"\n=== Step 3: Running {n_splits}-Fold OOF Validation ===")
-    oof_predictions = {}
-    oof_ground_truth = {}
-    fold_scores = []
-
-    for fold, (train_idx, val_idx) in enumerate(kfold_split(len(df_eval), n_splits=n_splits, seed=42)):
-        val_df = df_eval.iloc[val_idx]
-        train_df = df_eval.iloc[train_idx]
-
-        # Fold-isolated exact memory (zero data leakage)
-        by_id_fold = {row['id']: row['answer'] for _, row in train_df.iterrows()}
-        by_q_fold = {row['normalized_question']: row['answer'] for _, row in train_df.iterrows()}
-        fold_mem = ExactMemory({"by_id": by_id_fold, "by_question": by_q_fold})
-
-        pipeline = LegalQAPipeline(
-            exact_memory=fold_mem,
-            retriever=retriever,
-            reranker=reranker,
-            article_stitcher=stitcher
-        )
-
-        fold_preds = {}
-        fold_truth = {}
-
-        for _, row in tqdm(val_df.iterrows(), total=len(val_df), desc=f"Fold {fold+1}/{n_splits}"):
-            qid = str(row['id'])
-            q_text = row['question']
-            gold_ans = row['answer']
-
-            pred_ans = pipeline.predict(qid, q_text)
-
-            fold_preds[qid] = {"answer": pred_ans}
-            fold_truth[qid] = gold_ans
-            oof_predictions[qid] = {"answer": pred_ans}
-            oof_ground_truth[qid] = gold_ans
-
-        fold_metric = evaluate_predictions(fold_preds, fold_truth)
-        fold_scores.append(fold_metric)
-        print(f"Fold {fold+1} Scores -> METEOR = {fold_metric['meteor']:.4f}, ROUGE-L = {fold_metric['rouge']:.4f}")
-
-    print("\n=========================================================")
-    print("      FINAL 5-FOLD OUT-OF-FOLD (OOF) BENCHMARK REPORT    ")
-    print("=========================================================")
-    overall_metric = evaluate_predictions(oof_predictions, oof_ground_truth)
-    print(f"★ Overall OOF METEOR : {overall_metric['meteor']:.4f}")
-    print(f"★ Overall OOF ROUGE-L: {overall_metric['rouge']:.4f}")
-
-    mean_meteor = np.mean([s['meteor'] for s in fold_scores])
-    std_meteor = np.std([s['meteor'] for s in fold_scores])
-    mean_rouge = np.mean([s['rouge'] for s in fold_scores])
-    std_rouge = np.std([s['rouge'] for s in fold_scores])
-    print(f"★ 5-Fold Mean METEOR : {mean_meteor:.4f} ± {std_meteor:.4f}")
-    print(f"★ 5-Fold Mean ROUGE-L: {mean_rouge:.4f} ± {std_rouge:.4f}")
-    print("=========================================================\n")
-
-    return overall_metric
+        print(f"Prerequisites missing. Ensure {args.qa_path} and {args.bm25_dir} exist.")
 
 if __name__ == "__main__":
-    run_5fold_oof_validation(sample_limit=100)
+    main()

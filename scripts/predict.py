@@ -1,119 +1,109 @@
-import json
 import argparse
+import json
 import os
 import sys
 import zipfile
-import pandas as pd
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.task2.predict import LegalQAPipeline
 
-from src.pipeline import LegalQAPipeline
-from src.data.canonical import build_canonical_qa
-from src.memory.exact_memory import ExactMemory
-from src.retrieval.bm25_retriever import SimpleBM25
-from src.reranking.cross_encoder import SimpleLexicalReranker
-from src.postprocess.article_stitcher import ArticleStitcher
+def save_submission_artifacts(results: dict, output_json: str, zip_path: str):
+    os.makedirs(os.path.dirname(output_json), exist_ok=True)
+    with open(output_json, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(output_json, arcname="submission.json")
 
-def resolve_path(primary: str, *fallbacks: str) -> str:
-    if os.path.exists(primary):
-        return primary
-    for fb in fallbacks:
-        if os.path.exists(fb):
-            return fb
-    return primary
-
-def run_prediction(
-    input_json_path: str = "artifacts/raw/public-official.json",
-    output_json_path: str = "artifacts/submissions/submission.json",
-    train_path: str = "artifacts/raw/train.json",
-    warmup_path: str = "artifacts/raw/warmup.json",
-    chunks_parquet_path: str = "artifacts/chunks/legal_chunks.parquet"
-):
-    input_json_path = resolve_path(input_json_path, "data/raw/public-official.json", "public-official.json")
-    train_path = resolve_path(train_path, "data/raw/train.json", "train.json")
-    warmup_path = resolve_path(warmup_path, "data/raw/warmup.json", "warmup.json")
-
-    print(f"1. Loading Canonical QA & Building Exact Memory from {train_path}, {warmup_path}...")
-    df_unique, memory_dict = build_canonical_qa(train_path, warmup_path)
-    exact_mem = ExactMemory(memory_dict)
-
-    corpus = []
-    retriever = None
-    reranker = None
-    stitcher = None
-
-    if os.path.exists(chunks_parquet_path):
-        print(f"2. Loading legal chunks from {chunks_parquet_path}...")
-        df_chunks = pd.read_parquet(chunks_parquet_path)
-        for _, row in df_chunks.iterrows():
-            corpus.append({
-                "chunk_id": str(row["chunk_id"]),
-                "id": str(row["chunk_id"]),
-                "doc_id": str(row["doc_id"]),
-                "context_id": str(row["context_id"]),
-                "document_number": str(row["document_number"]) if pd.notna(row["document_number"]) else "",
-                "document_title": str(row["document_title"]),
-                "name": str(row["name"]),
-                "article_number": str(row["article_number"]) if pd.notna(row["article_number"]) else "",
-                "article_title": str(row["article_title"]) if pd.notna(row["article_title"]) else "",
-                "dieu": str(row["dieu"]) if pd.notna(row["dieu"]) else "",
-                "khoan": str(row["khoan"]) if pd.notna(row["khoan"]) else "",
-                "clause": str(row["clause"]) if pd.notna(row["clause"]) else "",
-                "part": int(row["part"]) if pd.notna(row["part"]) else 1,
-                "n_parts": int(row["n_parts"]) if pd.notna(row["n_parts"]) else 1,
-                "content": str(row["content"]),
-                "text": str(row["searchable_text"]),
-                "raw_text": str(row["raw_text"])
-            })
-        print(f"-> Loaded {len(corpus)} chunks. Building Inverted Index & Article Stitcher...")
-        retriever = SimpleBM25(corpus)
-        retriever.chunk_map = {doc["id"]: doc for doc in corpus}
-        reranker = SimpleLexicalReranker()
-        stitcher = ArticleStitcher(corpus)
-        print("-> Components successfully initialized.")
-
-    pipeline = LegalQAPipeline(
-        exact_memory=exact_mem,
-        retriever=retriever,
-        reranker=reranker,
-        article_stitcher=stitcher
-    )
-
-    with open(input_json_path, 'r', encoding='utf-8') as f:
-        input_data = json.load(f)
-
-    submission = {}
-    exact_memory_hits = 0
-
-    print(f"3. Generating predictions for {len(input_data)} items from {input_json_path}...")
-    for qid, item in tqdm(input_data.items(), total=len(input_data), desc="Predicting"):
-        q_text = item.get('question', '')
-        if exact_mem.lookup(qid, q_text):
-            exact_memory_hits += 1
-        ans = pipeline.predict(qid, q_text)
-        submission[str(qid)] = {"answer": ans}
-
-    os.makedirs(os.path.dirname(os.path.abspath(output_json_path)), exist_ok=True)
-    with open(output_json_path, 'w', encoding='utf-8') as f:
-        json.dump(submission, f, ensure_ascii=False, indent=2)
-
-    # Package into submission.json.zip
-    zip_path = output_json_path + ".zip"
-    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
-        zipf.write(output_json_path, arcname=os.path.basename(output_json_path))
-
-    print(f"\n★ Successfully wrote {len(submission)} predictions to {output_json_path}")
-    print(f"★ Created submission zip archive: {zip_path}")
-    print(f"★ Exact QA Memory Hits: {exact_memory_hits}/{len(input_data)} ({exact_memory_hits/max(1, len(input_data))*100:.1f}%)")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run LegalQA Prediction Pipeline")
-    parser.add_argument("--input", default="artifacts/raw/public-official.json", help="Path to input test queries JSON")
-    parser.add_argument("--output", default="artifacts/submissions/submission.json", help="Path to output submission JSON")
-    parser.add_argument("--train", default="artifacts/raw/train.json", help="Path to train.json")
-    parser.add_argument("--warmup", default="artifacts/raw/warmup.json", help="Path to warmup.json")
-    parser.add_argument("--chunks", default="artifacts/chunks/legal_chunks.parquet", help="Path to legal_chunks.parquet")
+def main():
+    parser = argparse.ArgumentParser(description="LegalQA Task 2 Inference Script")
+    parser.add_argument("--input", default="artifacts/raw/public-official.json", help="Input questions JSON path")
+    parser.add_argument("--output", default="artifacts/task2/submissions/submission.json", help="Output submission JSON path")
+    parser.add_argument("--max_tokens", type=int, default=180, help="Max new tokens per generation")
     args = parser.parse_args()
 
-    run_prediction(args.input, args.output, args.train, args.warmup, args.chunks)
+    print(f"Loading questions from {args.input}...")
+    with open(args.input, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    items = []
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, dict):
+                items.append({"id": str(k), "question": v.get("question", "")})
+            else:
+                items.append({"id": str(k), "question": str(v)})
+    elif isinstance(data, list):
+        items = [{"id": str(r.get("id") or r.get("qa_id")), "question": str(r.get("question", ""))} for r in data]
+
+    print(f"Initializing LegalQA pipeline with {len(items)} queries from full index...")
+    pipeline = LegalQAPipeline.load_pipeline(
+        data_dir="artifacts/task2/data",
+        index_dir="artifacts/task2/indexes/bm25"
+    )
+
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    jsonl_path = args.output + "l"
+    zip_path = args.output + ".zip"
+    results = {}
+
+    if os.path.exists(jsonl_path):
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        r = json.loads(line)
+                        if len(r.get("answer", "")) > 30:
+                            results[str(r["id"])] = {"answer": r["answer"]}
+                    except Exception:
+                        pass
+        print(f"Resuming: {len(results)} queries already loaded from {jsonl_path}")
+
+    # Immediately populate all 1,000 queries with grounded answers
+    temp_full_results = {}
+    print("Generating baseline grounded answers for initial submission package...")
+    for item in items:
+        qid = str(item["id"])
+        if qid in results:
+            temp_full_results[qid] = results[qid]
+        else:
+            exact_mem = pipeline.memory.lookup_exact(qid, item["question"])
+            if exact_mem:
+                temp_full_results[qid] = {"answer": exact_mem}
+                results[qid] = {"answer": exact_mem}
+            else:
+                # Fast grounded extractive answer with Strategy F
+                seeds = pipeline.bm25.search(item["question"], top_k=3)
+                stitched = pipeline.stitcher.stitch(seeds)
+                doc_name = seeds[0].get("doc_name", "") if seeds else ""
+                art_num = seeds[0].get("article_number", "") if seeds else ""
+                clause_num = seeds[0].get("clause_number", "") if seeds else ""
+                from src.task2.source_snap import build_citation_header, clean_statutory_text, apply_strategy_f
+                header = build_citation_header(doc_name, art_num, clause_num)
+                raw_chunk = clean_statutory_text(stitched.get("stitched_text", ""))
+                base_ans = f"{header}\n{raw_chunk[:600]}"
+                temp_full_results[qid] = {"answer": apply_strategy_f(base_ans, raw_chunk, max_chars=1500)}
+
+    save_submission_artifacts(temp_full_results, args.output, zip_path)
+    print(f"Saved initial valid submission.json and submission.json.zip with {len(temp_full_results)} entries.")
+
+    with open(jsonl_path, "a", encoding="utf-8") as f_out:
+        for idx, item in enumerate(tqdm(items, desc="Generating Neural Predictions"), start=1):
+            qa_id = str(item["id"])
+            if qa_id in results and len(results[qa_id]["answer"]) > 100:
+                continue
+            q = item["question"]
+            ans = pipeline.predict_single(qa_id, q, max_new_tokens=args.max_tokens)
+            results[qa_id] = {"answer": ans}
+            temp_full_results[qa_id] = {"answer": ans}
+            f_out.write(json.dumps({"id": qa_id, "answer": ans}, ensure_ascii=False) + "\n")
+            f_out.flush()
+
+            if idx % 10 == 0 or idx == len(items):
+                save_submission_artifacts(temp_full_results, args.output, zip_path)
+
+    save_submission_artifacts(results, args.output, zip_path)
+    print(f"Final submission complete: {args.output} and {zip_path} ({os.path.getsize(zip_path) / 1024:.1f} KB)")
+
+if __name__ == "__main__":
+    main()
