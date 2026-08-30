@@ -41,18 +41,17 @@ Thumbs.db
 *.output
 
 # Heavy Datasets & Large Artifacts (> 50MB)
-artifacts/raw/selected-contexts/
-artifacts/raw/selected-contexts.zip
-artifacts/chunks/chunks_output.jsonl
-artifacts/chunks/legal_chunks.parquet
-artifacts/data/known_qa.json
-artifacts/data/qa_unique.parquet
-artifacts/labels/retrieval_labels.parquet
+artifacts/raw/
+artifacts/chunks/
+artifacts/data/
+artifacts/labels/
 artifacts/submissions/
-artifacts/task2/submissions/
-artifacts/task2/checkpoints/
-logs/
+artifacts/task2/
 artifacts/archive/**
 !artifacts/archive/
 !artifacts/archive/**/
 !artifacts/archive/**/provenance.json
+*.parquet
+*.npy
+*.npz
+logs/
