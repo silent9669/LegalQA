@@ -18,7 +18,7 @@ from src.task2.path_resolver import (
 def _populate_legalqa_dataset_root(root: Path, with_data_subfolder: bool = False) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "dataset_manifest.json").write_text(
-        json.dumps({"title": "LegalQA", "runtime_api_version": 9}),
+        json.dumps({"title": "LegalQA", "runtime_api_version": 10}),
         encoding="utf-8",
     )
     if with_data_subfolder:
