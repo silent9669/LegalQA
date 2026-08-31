@@ -15,6 +15,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.common.dense import compute_chunk_ids_hash
+from src.common.hashing import sha256_file
 from src.common.security import assert_no_secrets_in_workspace
 from src.task2.production_config import load_production_selection
 from scripts.audit_parameters import audit_parameter_budget, verify_config_consistency, load_config_file
@@ -28,6 +29,7 @@ def run_preflight_checks(
     expected_gpu_count: int = 2,
     allow_single_gpu: bool = False,
     check_dataset_files: bool = False,
+    check_indexes: bool = False,
     data_dir: str = "artifacts/task2/data",
     bm25_dir: Optional[str] = "artifacts/task2/indexes/bm25",
     dek21_dir: Optional[str] = "artifacts/task2/indexes/dek21",
@@ -37,7 +39,12 @@ def run_preflight_checks(
     verify_dense_hash: bool = False,
     expected_dense_model: str = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
 ) -> Dict[str, Any]:
-    """Perform comprehensive preflight checks and return diagnostic status."""
+    """Perform comprehensive preflight checks and return diagnostic status.
+
+    P0-3: Hard-fails when require_cuda is True and CUDA / Dual-T4 GPUs are absent.
+    P0-4: Hard-fails if BM25 / DEk21 index directories or manifests are missing when check_indexes is True.
+    P0-5: Uses chunked streaming SHA256 for large files.
+    """
     errors: List[str] = []
     warnings: List[str] = []
     details: Dict[str, Any] = {}
@@ -87,7 +94,7 @@ def run_preflight_checks(
         else:
             print(f"Parameter Budget: {audit['total_learned_parameters']:,} / {audit['limit']:,} (Margin: {audit['margin']:,}) - COMPLIANT")
 
-    # 3. Hardware & Dual-T4 GPU Checks (P0-11)
+    # 3. Hardware & Dual-T4 GPU Checks (P0-3)
     try:
         import torch
         cuda_avail = torch.cuda.is_available()
@@ -95,7 +102,7 @@ def run_preflight_checks(
         details["cuda"] = {"available": cuda_avail, "gpu_count": gpu_cnt}
         if require_cuda:
             if not cuda_avail:
-                errors.append("CUDA is required but not available.")
+                errors.append("CUDA is required for Kaggle GPU execution but torch.cuda.is_available() is False.")
             elif gpu_cnt < expected_gpu_count and not allow_single_gpu:
                 errors.append(
                     f"Production preflight requires {expected_gpu_count} CUDA GPUs (Dual-T4), found {gpu_cnt}. "
@@ -108,7 +115,7 @@ def run_preflight_checks(
                 print(f" - GPU {i}: {name} (Compute: {cap[0]}.{cap[1]})")
     except ImportError:
         if require_cuda:
-            errors.append("PyTorch is not installed.")
+            errors.append("CUDA is required for Kaggle GPU execution but PyTorch is not installed or torch.cuda is unavailable.")
 
     # 4. Dataset Files Check
     chunks_path = os.path.join(data_dir, "legal_chunks.parquet")
@@ -142,79 +149,84 @@ def run_preflight_checks(
             except Exception as e:
                 errors.append(f"Failed to read legal_chunks.parquet: {e}")
 
-    # 5. BM25 Index Validation (P0-12)
-    if bm25_dir and os.path.exists(bm25_dir):
-        bm25_manifest_path = os.path.join(bm25_dir, "bm25_manifest.json")
-        if not os.path.exists(bm25_manifest_path):
-            warnings.append(f"BM25 manifest not found at: {bm25_manifest_path}")
+    # 5. BM25 Index Validation (P0-4)
+    if check_indexes and bm25_dir:
+        if not os.path.isdir(bm25_dir):
+            errors.append(f"Missing BM25 index directory at: {bm25_dir}")
         else:
-            try:
-                with open(bm25_manifest_path, "r", encoding="utf-8") as f:
-                    bm25_meta = json.load(f)
-                bm25_corpus_size = bm25_meta.get("corpus_size")
-                if corpus_row_count is not None and bm25_corpus_size is not None and bm25_corpus_size != corpus_row_count:
-                    errors.append(
-                        f"BM25 index corpus size ({bm25_corpus_size}) does not match legal_chunks rows ({corpus_row_count})."
-                    )
-                else:
-                    print(f" - BM25 Index: validated ({bm25_corpus_size or 'ok'} docs)")
-            except Exception as e:
-                errors.append(f"Failed to read BM25 manifest: {e}")
-
-    # 6. DEk21 Dense Index Validation (P0-12, P0-13)
-    if dek21_dir and os.path.exists(dek21_dir):
-        dense_manifest_path = os.path.join(dek21_dir, "dense_manifest.json")
-        if not os.path.exists(dense_manifest_path):
-            dense_manifest_path = os.path.join(dek21_dir, "dek21_manifest.json")
-
-        emb_file = os.path.join(dek21_dir, "embeddings.npy")
-        if not os.path.exists(emb_file):
-            errors.append(f"Dense embeddings file missing: {emb_file}")
-        elif not os.path.exists(dense_manifest_path):
-            errors.append(f"Dense manifest missing: {dense_manifest_path}")
-        else:
-            try:
-                with open(dense_manifest_path, "r", encoding="utf-8") as f:
-                    dense_meta = json.load(f)
-
-                model_id = dense_meta.get("model_id") or dense_meta.get("model_name")
-                dtype = dense_meta.get("dtype")
-                dim = dense_meta.get("dim")
-                manifest_rows = dense_meta.get("corpus_rows")
-                manifest_chunk_hash = dense_meta.get("chunk_ids_sha256")
-
-                if expected_dense_model and model_id != expected_dense_model:
-                    errors.append(f"Dense model mismatch! Expected '{expected_dense_model}', found '{model_id}' in index manifest.")
-                if dtype != "float16":
-                    errors.append(f"Dense dtype must be 'float16', found '{dtype}' in index manifest.")
-                if dim != 768 and "bge-m3" not in str(model_id).lower():
-                    errors.append(f"Dense dimension mismatch! Expected 768, found {dim} in index manifest.")
-                if corpus_row_count is not None and manifest_rows is not None and manifest_rows != corpus_row_count:
-                    errors.append(f"Dense index rows ({manifest_rows}) != legal_chunks rows ({corpus_row_count}).")
-                if corpus_chunk_ids_hash is not None and manifest_chunk_hash and manifest_chunk_hash != corpus_chunk_ids_hash:
-                    errors.append("Dense index chunk_ids_sha256 does not match corpus chunk IDs hash.")
-
-                # Fast check shape without reading whole array into RAM
-                import numpy as np
-                mmap_emb = np.load(emb_file, mmap_mode="r")
-                if str(mmap_emb.dtype) != "float16":
-                    errors.append(f"Dense embeddings.npy file has actual dtype '{mmap_emb.dtype}', expected 'float16'.")
-                if manifest_rows and mmap_emb.shape[0] != manifest_rows:
-                    errors.append(f"Dense embeddings.npy shape {mmap_emb.shape[0]} != manifest rows {manifest_rows}.")
-
-                if verify_dense_hash:
-                    print("Verifying full SHA256 checksum of embeddings.npy (this takes a few seconds)...")
-                    with open(emb_file, "rb") as f:
-                        file_sha = hashlib.sha256(f.read()).hexdigest()
-                    expected_sha = dense_meta.get("embeddings_sha256")
-                    if expected_sha and file_sha != expected_sha:
-                        errors.append(f"Dense embeddings.npy SHA256 mismatch! Expected {expected_sha[:12]}, got {file_sha[:12]}")
+            bm25_manifest_path = os.path.join(bm25_dir, "bm25_manifest.json")
+            if not os.path.exists(bm25_manifest_path):
+                errors.append(f"Missing BM25 manifest at: {bm25_manifest_path}")
+            else:
+                try:
+                    with open(bm25_manifest_path, "r", encoding="utf-8") as f:
+                        bm25_meta = json.load(f)
+                    bm25_corpus_size = bm25_meta.get("corpus_size")
+                    if corpus_row_count is not None and bm25_corpus_size is not None and bm25_corpus_size != corpus_row_count:
+                        errors.append(
+                            f"BM25 index corpus size ({bm25_corpus_size}) does not match legal_chunks rows ({corpus_row_count})."
+                        )
                     else:
-                        print(f" - Dense Embeddings SHA256 verified: {file_sha[:12]}...")
+                        print(f" - BM25 Index: validated ({bm25_corpus_size or 'ok'} docs)")
+                except Exception as e:
+                    errors.append(f"Failed to read BM25 manifest: {e}")
 
-                print(f" - Dense DEk21 Index: verified ({mmap_emb.shape}, dtype={mmap_emb.dtype})")
-            except Exception as e:
-                errors.append(f"Failed to validate Dense DEk21 index: {e}")
+    # 6. DEk21 Dense Index Validation (P0-4, P0-5)
+    if check_indexes and dek21_dir:
+        if not os.path.isdir(dek21_dir):
+            errors.append(f"Missing DEk21 dense directory at: {dek21_dir}")
+        else:
+            dense_manifest_path = os.path.join(dek21_dir, "dense_manifest.json")
+            if not os.path.exists(dense_manifest_path):
+                dense_manifest_path = os.path.join(dek21_dir, "dek21_manifest.json")
+
+            emb_file = os.path.join(dek21_dir, "embeddings.npy")
+            if not os.path.exists(emb_file):
+                errors.append(f"Dense embeddings file missing: {emb_file}")
+            elif not os.path.exists(dense_manifest_path):
+                errors.append(f"Dense manifest missing: {dense_manifest_path}")
+            else:
+                try:
+                    with open(dense_manifest_path, "r", encoding="utf-8") as f:
+                        dense_meta = json.load(f)
+
+                    model_id = dense_meta.get("model_id") or dense_meta.get("model_name")
+                    dtype = dense_meta.get("dtype")
+                    dim = dense_meta.get("dim")
+                    manifest_rows = dense_meta.get("corpus_rows")
+                    manifest_chunk_hash = dense_meta.get("chunk_ids_sha256")
+
+                    if expected_dense_model and model_id != expected_dense_model:
+                        errors.append(f"Dense model mismatch! Expected '{expected_dense_model}', found '{model_id}' in index manifest.")
+                    if dtype != "float16":
+                        errors.append(f"Dense dtype must be 'float16', found '{dtype}' in index manifest.")
+                    if dim != 768 and "bge-m3" not in str(model_id).lower():
+                        errors.append(f"Dense dimension mismatch! Expected 768, found {dim} in index manifest.")
+                    if corpus_row_count is not None and manifest_rows is not None and manifest_rows != corpus_row_count:
+                        errors.append(f"Dense index rows ({manifest_rows}) != legal_chunks rows ({corpus_row_count}).")
+                    if corpus_chunk_ids_hash is not None and manifest_chunk_hash and manifest_chunk_hash != corpus_chunk_ids_hash:
+                        errors.append("Dense index chunk_ids_sha256 does not match corpus chunk IDs hash.")
+
+                    # Fast check shape without reading whole array into RAM
+                    import numpy as np
+                    mmap_emb = np.load(emb_file, mmap_mode="r")
+                    if str(mmap_emb.dtype) != "float16":
+                        errors.append(f"Dense embeddings.npy file has actual dtype '{mmap_emb.dtype}', expected 'float16'.")
+                    if manifest_rows and mmap_emb.shape[0] != manifest_rows:
+                        errors.append(f"Dense embeddings.npy shape {mmap_emb.shape[0]} != manifest rows {manifest_rows}.")
+
+                    if verify_dense_hash:
+                        print("Verifying full streaming SHA256 checksum of embeddings.npy...")
+                        file_sha = sha256_file(emb_file)
+                        expected_sha = dense_meta.get("embeddings_sha256")
+                        if expected_sha and file_sha != expected_sha:
+                            errors.append(f"Dense embeddings.npy SHA256 mismatch! Expected {expected_sha[:12]}, got {file_sha[:12]}")
+                        else:
+                            print(f" - Dense Embeddings SHA256 verified: {file_sha[:12]}...")
+
+                    print(f" - Dense DEk21 Index: verified ({mmap_emb.shape}, dtype={mmap_emb.dtype})")
+                except Exception as e:
+                    errors.append(f"Failed to validate Dense DEk21 index: {e}")
 
     # 7. Public Test Set Schema Check
     if public_path and os.path.exists(public_path):
@@ -258,6 +270,7 @@ def main():
     parser.add_argument("--expected_gpus", type=int, default=2)
     parser.add_argument("--allow_single_gpu", action="store_true")
     parser.add_argument("--check_data", action="store_true")
+    parser.add_argument("--check_indexes", action="store_true")
     parser.add_argument("--data_dir", default="artifacts/task2/data")
     parser.add_argument("--bm25_dir", default="artifacts/task2/indexes/bm25")
     parser.add_argument("--dek21_dir", default="artifacts/task2/indexes/dek21")
@@ -275,6 +288,7 @@ def main():
         expected_gpu_count=args.expected_gpus,
         allow_single_gpu=args.allow_single_gpu,
         check_dataset_files=args.check_data,
+        check_indexes=args.check_indexes,
         data_dir=args.data_dir,
         bm25_dir=args.bm25_dir,
         dek21_dir=args.dek21_dir,

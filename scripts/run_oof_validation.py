@@ -18,9 +18,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.common.bm25 import BM25Retriever
 from src.common.dense_dek21 import DEk21Retriever
+from src.common.hashing import sha256_file
 from src.common.normalize import clean_legal_text, normalize_question
 from src.common.reranker import BGEReranker
 from src.task2.article_stitcher import ArticleStitcher
+from src.task2.checkpoint_manifest import load_generator_manifest, load_reranker_manifest
 from src.task2.generator import QwenGenerator
 from src.task2.metrics import (
     calculate_official_meteor,
@@ -87,10 +89,13 @@ def run_oof_validation(
 
     # 1. Sparse BM25
     print(f"Loading BM25 index from {bm25_dir}...")
-    bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path) if os.path.exists(bm25_dir) else BM25Retriever()
-    if not bm25.corpus and os.path.exists(chunks_path):
-        df_c = pd.read_parquet(chunks_path)
-        bm25.fit(df_c.to_dict("records"))
+    if mode == "full":
+        bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path, fail_on_missing_index=True)
+    else:
+        bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path) if os.path.exists(bm25_dir) else BM25Retriever()
+        if not bm25.corpus and os.path.exists(chunks_path):
+            df_c = pd.read_parquet(chunks_path)
+            bm25.fit(df_c.to_dict("records"))
 
     # 2. Dense DEk21
     r_dev = retrieval_device or device
@@ -100,6 +105,7 @@ def run_oof_validation(
             dek21_dir,
             corpus_path=chunks_path,
             device=r_dev,
+            expected_model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
             expected_dtype="float16",
             final_mode=True,
         )
@@ -158,7 +164,7 @@ def run_oof_validation(
     ]
     family_scores: Dict[str, List[float]] = {f: [] for f in candidate_families}
 
-    # P0-15: Strictly respect held_out_fold when passed
+    # Strictly respect held_out_fold when passed
     if held_out_fold is not None:
         target_folds = [held_out_fold]
     else:
@@ -182,17 +188,32 @@ def run_oof_validation(
         all_fold_questions = set(fold_records["question_raw"].astype(str))
         isolated_mem = full_memory.filter_fold(val_qa_ids=all_fold_qa_ids, val_questions=all_fold_questions)
 
-        # If per-fold checkpoints are provided, reload fold-specific models
+        # If per-fold checkpoints are provided, validate provenance and reload fold-specific models (P1-4)
         current_reranker = reranker
         current_generator = generator
         if fold_checkpoint_map and fold_id in fold_checkpoint_map:
             ckpt_info = fold_checkpoint_map[fold_id]
             if "reranker" in ckpt_info:
-                current_reranker = BGEReranker(model_name=ckpt_info["reranker"], device=r_dev)
+                r_path = ckpt_info["reranker"]
+                r_man = load_reranker_manifest(r_path)
+                if r_man.get("smoke_only"):
+                    raise ValueError(f"Fold {fold_id} reranker is marked as smoke_only!")
+                r_exc = r_man.get("val_fold_excluded", r_man.get("val_fold"))
+                if r_exc != fold_id:
+                    raise ValueError(f"Fold {fold_id} reranker manifest excluded fold {r_exc} != {fold_id}")
+                current_reranker = BGEReranker(model_name=r_path, device=r_dev)
+
             if "adapter" in ckpt_info:
+                a_path = ckpt_info["adapter"]
+                g_man = load_generator_manifest(a_path)
+                if g_man.get("smoke_only"):
+                    raise ValueError(f"Fold {fold_id} generator adapter is marked as smoke_only!")
+                g_exc = g_man.get("val_fold_excluded", g_man.get("val_fold"))
+                if g_exc != fold_id:
+                    raise ValueError(f"Fold {fold_id} generator manifest excluded fold {g_exc} != {fold_id}")
                 current_generator = QwenGenerator.load(
                     model_path=model_path,
-                    adapter_path=ckpt_info["adapter"],
+                    adapter_path=a_path,
                     device=g_dev,
                     runtime="torch",
                     fail_on_fallback=True,
@@ -291,46 +312,3 @@ def run_oof_validation(
 
     print(f"Saved OOF predictions to {oof_out} and summary to {eval_output_dir}/oof_summary.json")
     return summary
-
-
-def main():
-    parser = argparse.ArgumentParser(description="LegalQA Task 2 5-Fold OOF Validation")
-    parser.add_argument("--qa_path", default="artifacts/task2/data/qa_unique.parquet")
-    parser.add_argument("--fold_path", default="artifacts/task2/data/fold_assignments.parquet")
-    parser.add_argument("--chunks_path", default="artifacts/task2/data/legal_chunks.parquet")
-    parser.add_argument("--bm25_dir", default="artifacts/task2/indexes/bm25")
-    parser.add_argument("--dek21_dir", default="artifacts/task2/indexes/dek21")
-    parser.add_argument("--eval_output_dir", default="artifacts/task2/evaluations")
-    parser.add_argument("--samples", type=int, default=50, help="Total sample count across folds (or 0 for all)")
-    parser.add_argument("--folds", type=int, default=5)
-    parser.add_argument("--mode", default="fast", choices=["fast", "full"])
-    parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
-    parser.add_argument("--adapter", default=None)
-    parser.add_argument("--reranker_checkpoint", default="BAAI/bge-reranker-v2-m3")
-    parser.add_argument("--held_out_fold", type=int, default=None)
-    parser.add_argument("--device", default=None)
-    parser.add_argument("--max_new_tokens", type=int, default=384)
-    args = parser.parse_args()
-
-    num_samples = args.samples if args.samples > 0 else None
-    run_oof_validation(
-        qa_path=args.qa_path,
-        fold_path=args.fold_path,
-        chunks_path=args.chunks_path,
-        bm25_dir=args.bm25_dir,
-        dek21_dir=args.dek21_dir,
-        eval_output_dir=args.eval_output_dir,
-        num_eval_samples=num_samples,
-        n_splits=args.folds,
-        mode=args.mode,
-        model_path=args.model,
-        adapter_path=args.adapter,
-        reranker_checkpoint=args.reranker_checkpoint,
-        held_out_fold=args.held_out_fold,
-        device=args.device,
-        max_new_tokens=args.max_new_tokens,
-    )
-
-
-if __name__ == "__main__":
-    main()

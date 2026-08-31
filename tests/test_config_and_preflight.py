@@ -65,6 +65,7 @@ def test_preflight_checks_basic():
         models_config_path="configs/models.yaml",
         require_cuda=False,
         check_dataset_files=False,
+        check_indexes=False,
     )
     assert res["passed"] is True
     assert len(res["errors"]) == 0
@@ -93,6 +94,8 @@ def test_preflight_index_checks(tmp_path: Path):
         models_config_path="configs/models.yaml",
         require_cuda=False,
         check_dataset_files=False,
+        check_indexes=True,
+        bm25_dir=None,
         dek21_dir=str(dek21_dir),
     )
     assert res["passed"] is False

@@ -48,7 +48,10 @@ def _is_legalqa_root(path: str) -> bool:
 
 
 def find_qwen_model_dir(base_path: str = "/kaggle/input", expected_arch: str = "Qwen2ForCausalLM") -> Optional[str]:
-    """Deterministically find and validate Qwen model directory by inspecting config.json."""
+    """Deterministically find and validate Qwen model directory by inspecting config.json.
+
+    P0-6: Hard-fails if multiple ambiguous Qwen model directories are found. Never returns candidate_dirs[0].
+    """
     if not os.path.exists(base_path):
         return None
 
@@ -72,24 +75,32 @@ def find_qwen_model_dir(base_path: str = "/kaggle/input", expected_arch: str = "
     if len(candidate_dirs) == 1:
         return candidate_dirs[0]
 
-    # Filter by 3B if specified
+    # Filter by 3B if multiple causal LMs are present (e.g. Qwen2.5-3B-Instruct)
     b3_candidates = [d for d in candidate_dirs if "3b" in d.lower() or "3B" in d]
     if len(b3_candidates) == 1:
         return b3_candidates[0]
 
-    return candidate_dirs[0]
+    # If still ambiguous, raise explicit RuntimeError instead of returning arbitrary first match
+    raise RuntimeError(
+        f"Ambiguous Qwen candidate model directories found under '{base_path}': {candidate_dirs}. "
+        f"Expected exactly 1 matching Qwen 3B causal LM directory."
+    )
 
 
 def resolve_runtime_paths(base_input_dir: str = "/kaggle/input") -> Dict[str, str]:
-    """Resolve all runtime artifact paths deterministically."""
+    """Resolve all runtime artifact paths deterministically.
+
+    P0-6: Hard-fails on ambiguous runtime dataset roots.
+    """
     roots = find_runtime_roots(base_input_dir)
 
     if len(roots) == 1:
         runtime_root = roots[0]
     elif len(roots) > 1:
-        # Prefer the one with dataset_manifest.json
-        manifest_roots = [r for r in roots if os.path.exists(os.path.join(r, "dataset_manifest.json"))]
-        runtime_root = manifest_roots[0] if manifest_roots else roots[0]
+        raise RuntimeError(
+            f"Ambiguous runtime dataset roots found under '{base_input_dir}': {roots}. "
+            f"Expected exactly 1 matching LegalQA dataset root."
+        )
     else:
         # Fallback to local workspace artifacts
         runtime_root = os.path.abspath("artifacts")
