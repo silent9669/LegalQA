@@ -1,4 +1,4 @@
-"""Honest, leakage-safe evaluation module for exact trained reranker and generator checkpoints (V7)."""
+"""Honest, leakage-safe evaluation module for exact trained reranker and generator checkpoints (V8)."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def decide_reranker_promotion(
     retrieval_tolerance: float = 0.001,
     meteor_tolerance: float = 0.005,
 ) -> Dict[str, Any]:
-    """Decide whether to promote the task-tuned reranker based on real chunk retrieval gains and downstream METEOR (Task 3)."""
+    """Decide whether to promote the task-tuned reranker based on real chunk retrieval gains and downstream METEOR."""
     base_retr = base_summary.get("retrieval_metrics") or {}
     tuned_retr = tuned_summary.get("retrieval_metrics") or {}
 
@@ -101,11 +101,10 @@ def decide_generator_promotion(
     qlora_summary: Dict[str, Any],
     meteor_tolerance: float = 0.005,
 ) -> Dict[str, Any]:
-    """Decide whether to promote QLoRA generator under the chosen reranker (Task 3)."""
+    """Decide whether to promote QLoRA generator under the chosen reranker."""
     base_best_name, base_best_score = best_deployable_candidate(base_summary)
     qlora_best_name, qlora_best_score = best_deployable_candidate(qlora_summary)
 
-    # QLoRA must beat the best deployable base-generator candidate by meteor_tolerance AND be a generator-dependent winner
     promote = bool(
         (qlora_best_score > base_best_score + meteor_tolerance)
         and (qlora_best_name in GENERATOR_DEPENDENT_FAMILIES)
@@ -124,6 +123,36 @@ def decide_generator_promotion(
         "qlora_best_candidate": qlora_best_name,
         "qlora_best_score": round(float(qlora_best_score), 4),
         "reason": reason,
+    }
+
+
+def write_promotion_report(
+    report: Dict[str, Any],
+    primary_path: str,
+    mirror_path: Optional[str] = None,
+) -> Dict[str, str]:
+    """Canonicalize and write exact byte-identical promotion reports to primary and optional mirror paths (Task 7)."""
+    os.makedirs(os.path.dirname(os.path.abspath(primary_path)), exist_ok=True)
+    payload = json.dumps(
+        report,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+
+    with open(primary_path, "wb") as f:
+        f.write(payload)
+
+    if mirror_path:
+        os.makedirs(os.path.dirname(os.path.abspath(mirror_path)), exist_ok=True)
+        with open(mirror_path, "wb") as f:
+            f.write(payload)
+
+    sha256 = hashlib.sha256(payload).hexdigest()
+    return {
+        "sha256": sha256,
+        "primary_path": primary_path,
+        "mirror_path": mirror_path or "",
     }
 
 
@@ -183,7 +212,7 @@ def evaluate_checkpoint(
     eval_qa_ids_sha256 = hashlib.sha256(" ".join(eval_qa_ids).encode("utf-8")).hexdigest()
     print(f"Held-out evaluation set: {len(val_subset)} rows (SHA256: {eval_qa_ids_sha256[:12]}...)")
 
-    # Load Gold Retrieval Labels (Task 4)
+    # Load Gold Retrieval Labels
     qa_to_gold_chunks: Dict[str, Set[str]] = defaultdict(set)
     qa_to_gold_articles: Dict[str, Set[str]] = defaultdict(set)
     if labels_path and os.path.exists(labels_path):
@@ -206,7 +235,7 @@ def evaluate_checkpoint(
     chunk_coverage = len(chunk_labeled_qids) / max(1, num_eval_queries)
     article_coverage = len(article_labeled_qids) / max(1, num_eval_queries)
 
-    # If supervision required, check coverage threshold (Task 4)
+    # If supervision required, check coverage threshold
     if require_retrieval_supervision:
         if chunk_coverage < min_retrieval_label_coverage:
             raise RuntimeError(
@@ -271,7 +300,6 @@ def evaluate_checkpoint(
     oracle_meteors: List[float] = []
     selected_meteors: List[float] = []
 
-    # Distinct Chunk & Article retrieval metrics (Task 4)
     chunk_recalls_at_1: List[float] = []
     chunk_recalls_at_5: List[float] = []
     chunk_recalls_at_8: List[float] = []
@@ -287,18 +315,15 @@ def evaluate_checkpoint(
         q = str(row["question_raw"])
         ref_ans = str(row["answer_raw"])
 
-        # Execute single prediction with full retrieval trace
         selected, cands, trace = pipeline.predict_single(
             qid, q, max_new_tokens=max_new_tokens, return_candidates=True, return_trace=True
         )
         cands["selected"] = selected
 
-        # Calculate distinct retrieval metrics (Task 4)
         reranked_hits = trace.get("reranked_results", [])
         gold_chunks = qa_to_gold_chunks.get(qid, set())
         gold_articles = qa_to_gold_articles.get(qid, set())
 
-        # Fallback to row target_article if present in QA dataframe
         if not gold_articles and "article_id" in row and pd.notna(row["article_id"]):
             gold_articles = {str(row["article_id"]).strip()}
 
@@ -444,8 +469,8 @@ def run_screen_matrix(
     meteor_tolerance: float = 0.005,
     min_retrieval_label_coverage: float = 0.70,
 ) -> Dict[str, Any]:
-    """Run staged component-consistent screening (R0G0 -> R1G0 -> R_SELECTED_G1) on identical held-out IDs (Task 3)."""
-    # Upfront validation of required checkpoints for canonical screen (Task 3)
+    """Run staged component-consistent screening (R0G0 -> R1G0 -> R_SELECTED_G1) on identical held-out IDs (Protocol 8)."""
+    # Upfront validation of required checkpoints for canonical screen
     if tuned_reranker is None or not os.path.exists(tuned_reranker):
         raise FileNotFoundError(
             f"Tuned reranker checkpoint directory missing at '{tuned_reranker}'. "
@@ -459,7 +484,7 @@ def run_screen_matrix(
         )
 
     print("\n=======================================================")
-    print(f"Running Component-Consistent Screening Matrix (Protocol 7) on Fold {held_out_fold}")
+    print(f"Running Component-Consistent Screening Matrix (Protocol 8) on Fold {held_out_fold}")
     print("=======================================================")
 
     # 1. Stage A: R0G0 = Base Reranker + Base Generator
@@ -563,7 +588,7 @@ def run_screen_matrix(
     print(f">> FINAL DEPLOYABLE SYSTEM: {final_measured_system_key} with Candidate '{final_candidate_name}' ({final_candidate_score:.4f})")
 
     promotion_report = {
-        "screen_protocol_version": 7,
+        "screen_protocol_version": 8,
         "held_out_fold": held_out_fold,
         "sample_ids_sha256": r0g0["sample_ids_sha256"],
         "sample_size": r0g0["sample_size"],
@@ -599,21 +624,13 @@ def run_screen_matrix(
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
     }
 
-    os.makedirs(eval_output_dir, exist_ok=True)
     report_path = os.path.join(eval_output_dir, "promotion_report.json")
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(promotion_report, f, indent=2)
-
-    report_sha = sha256_file(report_path)
-    promotion_report["report_sha256"] = report_sha
-
-    # Write to /kaggle/working if present
-    if os.path.exists("/kaggle/working"):
-        with open("/kaggle/working/promotion_report.json", "w", encoding="utf-8") as f:
-            json.dump(promotion_report, f, indent=2)
+    mirror_path = "/kaggle/working/promotion_report.json" if os.path.exists("/kaggle/working") else None
+    hash_meta = write_promotion_report(promotion_report, report_path, mirror_path)
+    report_sha = hash_meta["sha256"]
 
     print("\n================ PROMOTION SUMMARY REPORT ================")
-    print(f"Protocol Version:           7")
+    print(f"Protocol Version:           8")
     print(f"Selected Reranker:          {'Task-Tuned (' + selected_reranker + ')' if promote_reranker else 'Base'}")
     print(f"Selected Generator:         {'QLoRA (' + adapter_path + ')' if promote_qlora else 'Base Qwen / Extractive'}")
     print(f"Final Winning Candidate:    {final_candidate_name} (METEOR: {final_candidate_score:.4f})")

@@ -1,4 +1,4 @@
-"""Authoritative production selection configuration loader and validator (V7)."""
+"""Authoritative production selection configuration loader and validator (V8)."""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ def validate_production_selection_for_profile(
     profile: str,
     allow_unvalidated_final: bool = False,
 ) -> None:
-    """Validate that the production configuration is eligible for the chosen execution profile (Task 5)."""
+    """Validate that the production configuration is eligible for the chosen execution profile (Protocol 8)."""
     if profile in ("final_train_and_submit", "reuse_final_checkpoints_and_submit"):
         if config.status == "UNVALIDATED" and not allow_unvalidated_final:
             raise RuntimeError(
@@ -129,8 +129,8 @@ def validate_production_selection_for_profile(
             )
         if config.status == "PROMOTED" and not allow_unvalidated_final:
             protocol_v = config.raw_config.get("screen_protocol_version", 1)
-            if protocol_v < 7:
+            if protocol_v < 8:
                 raise RuntimeError(
-                    f"Promoted config uses screen_protocol_version={protocol_v} < 7. "
-                    f"Profile '{profile}' requires screening under Protocol 7 (staged component consistency)."
+                    f"Promoted config uses screen_protocol_version={protocol_v} < 8. "
+                    f"Profile '{profile}' requires screening under Protocol 8 (staged component consistency and provenance)."
                 )

@@ -49,9 +49,9 @@ def test_validate_production_selection_unvalidated_guard():
     # Should pass when allow_unvalidated_final=True
     validate_production_selection_for_profile(cfg, "final_train_and_submit", allow_unvalidated_final=True)
 
-    # Should pass when status is PROMOTED with protocol 7
+    # Should pass when status is PROMOTED with protocol 8
     cfg.status = "PROMOTED"
-    cfg.raw_config["screen_protocol_version"] = 7
+    cfg.raw_config["screen_protocol_version"] = 8
     validate_production_selection_for_profile(cfg, "final_train_and_submit", allow_unvalidated_final=False)
 
 

@@ -1,4 +1,4 @@
-"""5-Fold Out-Of-Fold (OOF) cross-validation and official whitespace-tokenized METEOR evaluation (V7)."""
+"""5-Fold Out-Of-Fold (OOF) cross-validation and official whitespace-tokenized METEOR evaluation (V8)."""
 
 from __future__ import annotations
 
@@ -39,6 +39,64 @@ from src.task2.source_snap import (
 )
 
 
+def assert_fold_reranker_checkpoint(
+    checkpoint_path: str,
+    fold_id: int,
+    expected_base_model: str = "BAAI/bge-reranker-v2-m3",
+) -> Dict[str, Any]:
+    """Validate fold-specific reranker checkpoint provenance (Task 9)."""
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Reranker checkpoint directory missing: {checkpoint_path}")
+    manifest = load_reranker_manifest(checkpoint_path)
+    if manifest.get("smoke_only"):
+        raise ValueError(f"Fold {fold_id} reranker checkpoint at {checkpoint_path} is marked as smoke_only!")
+    exc = manifest.get("val_fold_excluded", manifest.get("val_fold"))
+    if exc != fold_id:
+        raise ValueError(
+            f"Fold {fold_id} reranker checkpoint at {checkpoint_path} has val_fold_excluded={exc} != {fold_id}."
+        )
+    scope = manifest.get("training_scope")
+    if scope and scope != f"folds_excluding_{fold_id}":
+        raise ValueError(
+            f"Fold {fold_id} reranker training_scope '{scope}' != 'folds_excluding_{fold_id}'."
+        )
+    base_m = manifest.get("base_model_id") or manifest.get("base_model") or manifest.get("base_model_name_or_path")
+    if base_m and expected_base_model and base_m != expected_base_model:
+        raise ValueError(
+            f"Fold {fold_id} reranker base model mismatch: expected '{expected_base_model}', found '{base_m}'."
+        )
+    return manifest
+
+
+def assert_fold_generator_checkpoint(
+    adapter_path: str,
+    fold_id: int,
+    expected_base_model: str = "Qwen/Qwen2.5-3B-Instruct",
+) -> Dict[str, Any]:
+    """Validate fold-specific generator adapter provenance (Task 9)."""
+    if not os.path.exists(adapter_path):
+        raise FileNotFoundError(f"Generator adapter checkpoint directory missing: {adapter_path}")
+    manifest = load_generator_manifest(adapter_path)
+    if manifest.get("smoke_only"):
+        raise ValueError(f"Fold {fold_id} generator adapter at {adapter_path} is marked as smoke_only!")
+    exc = manifest.get("val_fold_excluded", manifest.get("val_fold"))
+    if exc != fold_id:
+        raise ValueError(
+            f"Fold {fold_id} generator adapter at {adapter_path} has val_fold_excluded={exc} != {fold_id}."
+        )
+    scope = manifest.get("training_scope")
+    if scope and scope != f"folds_excluding_{fold_id}":
+        raise ValueError(
+            f"Fold {fold_id} generator training_scope '{scope}' != 'folds_excluding_{fold_id}'."
+        )
+    base_m = manifest.get("base_model_id") or manifest.get("base_model") or manifest.get("base_model_name_or_path")
+    if base_m and expected_base_model and base_m != expected_base_model:
+        raise ValueError(
+            f"Fold {fold_id} generator base model mismatch: expected '{expected_base_model}', found '{base_m}'."
+        )
+    return manifest
+
+
 def run_oof_validation(
     qa_path: str = "artifacts/task2/data/qa_unique.parquet",
     fold_path: str = "artifacts/task2/data/fold_assignments.parquet",
@@ -71,6 +129,11 @@ def run_oof_validation(
                 "True full neural OOF requires one checkpoint per fold via fold_checkpoint_map "
                 "or an explicit single held_out_fold. Reusing one fold checkpoint across all folds is invalid."
             )
+        if held_out_fold is not None:
+            if reranker_checkpoint and reranker_checkpoint != "BAAI/bge-reranker-v2-m3" and os.path.exists(reranker_checkpoint):
+                assert_fold_reranker_checkpoint(reranker_checkpoint, held_out_fold, "BAAI/bge-reranker-v2-m3")
+            if adapter_path and os.path.exists(adapter_path):
+                assert_fold_generator_checkpoint(adapter_path, held_out_fold, model_path)
 
     print(f"Loading QA dataset from {qa_path}...")
     df_qa = pd.read_parquet(qa_path)
@@ -188,35 +251,19 @@ def run_oof_validation(
         all_fold_questions = set(fold_records["question_raw"].astype(str))
         isolated_mem = full_memory.filter_fold(val_qa_ids=all_fold_qa_ids, val_questions=all_fold_questions)
 
-        # If per-fold checkpoints are provided, validate provenance and reload fold-specific models (Task 11)
+        # If per-fold checkpoints are provided, validate provenance and reload fold-specific models (Task 9)
         current_reranker = reranker
         current_generator = generator
         if fold_checkpoint_map and fold_id in fold_checkpoint_map:
             ckpt_info = fold_checkpoint_map[fold_id]
             if "reranker" in ckpt_info:
                 r_path = ckpt_info["reranker"]
-                r_man = load_reranker_manifest(r_path)
-                if r_man.get("smoke_only"):
-                    raise ValueError(f"Fold {fold_id} reranker is marked as smoke_only!")
-                r_exc = r_man.get("val_fold_excluded", r_man.get("val_fold"))
-                if r_exc != fold_id:
-                    raise ValueError(f"Fold {fold_id} reranker manifest excluded fold {r_exc} != {fold_id}")
-                r_scope = r_man.get("training_scope")
-                if r_scope and r_scope != f"folds_excluding_{fold_id}":
-                    raise ValueError(f"Fold {fold_id} reranker training_scope '{r_scope}' != 'folds_excluding_{fold_id}'")
+                assert_fold_reranker_checkpoint(r_path, fold_id, "BAAI/bge-reranker-v2-m3")
                 current_reranker = BGEReranker(model_name=r_path, device=r_dev)
 
             if "adapter" in ckpt_info:
                 a_path = ckpt_info["adapter"]
-                g_man = load_generator_manifest(a_path)
-                if g_man.get("smoke_only"):
-                    raise ValueError(f"Fold {fold_id} generator adapter is marked as smoke_only!")
-                g_exc = g_man.get("val_fold_excluded", g_man.get("val_fold"))
-                if g_exc != fold_id:
-                    raise ValueError(f"Fold {fold_id} generator manifest excluded fold {g_exc} != {fold_id}")
-                g_scope = g_man.get("training_scope")
-                if g_scope and g_scope != f"folds_excluding_{fold_id}":
-                    raise ValueError(f"Fold {fold_id} generator training_scope '{g_scope}' != 'folds_excluding_{fold_id}'")
+                assert_fold_generator_checkpoint(a_path, fold_id, model_path)
                 current_generator = QwenGenerator.load(
                     model_path=model_path,
                     adapter_path=a_path,
