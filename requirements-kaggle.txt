@@ -1,9 +1,13 @@
-# Minimal pinned dependencies for Kaggle T4x2 runtime
-bm25s>=0.2.5
-sentence-transformers>=3.0.0
+# LegalQA Kaggle user-space compatibility floors.
+# Torch/CUDA are intentionally omitted; bootstrap protects Kaggle's preinstalled stack.
+transformers>=4.45.0
+accelerate>=0.34.0
+datasets>=2.20.0
 peft>=0.10.0
-trl>=0.8.0
+trl>=0.11.0
 bitsandbytes>=0.43.0
+sentence-transformers>=3.0.0
+bm25s>=0.2.5
 scikit-learn>=1.4.0
 nltk>=3.8.1
 pyvi>=0.1.1

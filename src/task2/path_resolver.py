@@ -1,4 +1,4 @@
-"""Deterministic runtime and dataset path resolver for Kaggle and local environments (V7)."""
+"""Deterministic runtime and dataset path resolver for Kaggle and local environments (V8)."""
 
 from __future__ import annotations
 
@@ -87,11 +87,16 @@ def find_qwen_model_dir(base_path: str = "/kaggle/input", expected_arch: str = "
     )
 
 
-def resolve_runtime_paths(base_input_dir: str = "/kaggle/input", strict: bool = False) -> Dict[str, str]:
-    """Resolve all runtime artifact paths deterministically (Task 8).
+def resolve_runtime_paths(
+    base_input_dir: str = "/kaggle/input",
+    strict: bool = False,
+    allow_remote_model_download: bool = True,
+) -> Dict[str, str]:
+    """Resolve all runtime artifact paths deterministically (Task 3 & 8).
 
     When strict=True, fails immediately if dataset root or model paths are missing or ambiguous,
     refusing silent fallback to local artifacts directory.
+    When allow_remote_model_download=False, fails if mounted Qwen model is not found under base_input_dir.
     """
     roots = find_runtime_roots(base_input_dir)
 
@@ -129,13 +134,17 @@ def resolve_runtime_paths(base_input_dir: str = "/kaggle/input", strict: bool = 
     bm25_dir = os.path.join(indexes_dir, "bm25")
     dek21_dir = os.path.join(indexes_dir, "dek21")
 
-    # Qwen model dir
+    # Qwen model dir resolution
     qwen_found = find_qwen_model_dir(base_input_dir)
-    if strict and qwen_found is None:
-        # In strict Kaggle mode, require mounted Qwen model
+    if qwen_found:
+        qwen_dir = qwen_found
+    elif allow_remote_model_download:
         qwen_dir = "Qwen/Qwen2.5-3B-Instruct"
     else:
-        qwen_dir = qwen_found or "Qwen/Qwen2.5-3B-Instruct"
+        raise RuntimeError(
+            f"Expected mounted Qwen2.5-3B model was not found under '{base_input_dir}'. "
+            f"Please attach the Qwen2.5-3B-Instruct Kaggle model to your notebook session."
+        )
 
     return {
         "runtime_root": runtime_root,

@@ -318,14 +318,19 @@ def test_promote_production_selection_script(tmp_path):
     """P1-6: Verify promote_production_selection updates config with report SHA256 and PROMOTED status."""
     report_file = tmp_path / "promotion_report.json"
     report_data = {
-        "screen_protocol_version": 7,
+        "screen_protocol_version": 8,
         "held_out_fold": 0,
         "sample_ids_sha256": "abcdef123456",
         "sample_size": 250,
         "evaluated_systems": {
-            "R0G0": {},
-            "R1G0": {},
-            "R_SELECTED_G1": {},
+            "R0G0": {"sample_ids_sha256": "abcdef123456", "sample_size": 250},
+            "R1G0": {
+                "sample_ids_sha256": "abcdef123456",
+                "sample_size": 250,
+                "reranker_checkpoint": "checkpoints/reranker/best",
+                "candidate_family_meteors": {"stitched_extract": 0.310},
+            },
+            "R_SELECTED_G1": {"sample_ids_sha256": "abcdef123456", "sample_size": 250},
         },
         "selected_reranker": {
             "use_task_tuned": True,
@@ -342,6 +347,8 @@ def test_promote_production_selection_script(tmp_path):
             "type": "fixed_baseline",
             "best_fixed_candidate": "stitched_extract",
         },
+        "overall_deployable_winner": "stitched_extract",
+        "overall_deployable_meteor": 0.310,
     }
     report_file.write_text(json.dumps(report_data))
 
@@ -353,7 +360,7 @@ def test_promote_production_selection_script(tmp_path):
     )
 
     assert promoted["status"] == "PROMOTED"
-    assert promoted["screen_protocol_version"] == 7
+    assert promoted["screen_protocol_version"] == 8
     assert promoted["source_screen_manifest"] == str(report_file)
     assert promoted["source_screen_sha256"] is not None
     assert promoted["reranker"]["use_task_tuned"] is True

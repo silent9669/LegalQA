@@ -1,4 +1,4 @@
-"""Package clean, self-contained LegalQA dataset and code runtime artifacts for Kaggle (V7)."""
+"""Package clean, self-contained LegalQA dataset and code runtime artifacts for Kaggle (V8)."""
 
 from __future__ import annotations
 
@@ -16,8 +16,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.common.hashing import sha256_file
 from src.common.security import assert_no_secrets_in_workspace
 from src.task2.production_config import load_production_selection
+from src.task2.runtime_integrity import (
+    EXPECTED_RUNTIME_API_VERSION,
+    validate_runtime_manifests,
+)
 
-RUNTIME_API_VERSION = 7
+RUNTIME_API_VERSION = EXPECTED_RUNTIME_API_VERSION
 
 REQUIRED_FILES = [
     "data/legal_chunks.parquet",
@@ -263,6 +267,13 @@ def package_kaggle_dataset(
 
         with open(Path("kaggle_dataset/dataset-metadata.json"), "w", encoding="utf-8") as f:
             json.dump(kaggle_meta, f, indent=2)
+
+        # Self-validate staged manifests (Task 6)
+        validate_runtime_manifests(
+            runtime_root=str(stage),
+            code_root=str(stage / "code" / "LegalQA") if include_code else str(stage),
+            expected_api_version=RUNTIME_API_VERSION,
+        )
 
     print(f"\nSuccessfully staged clean dataset to {stage}.")
     print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}' | Runtime API: v{RUNTIME_API_VERSION}")

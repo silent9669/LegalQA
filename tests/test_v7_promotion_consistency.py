@@ -105,14 +105,14 @@ def test_promoter_rejects_inconsistent_report(tmp_path):
 
     # Inconsistent: selected_generator is use_qlora=False, but final_measured_system_key is R_SELECTED_G1
     bad_report = {
-        "screen_protocol_version": 7,
+        "screen_protocol_version": 8,
         "held_out_fold": 0,
         "sample_ids_sha256": "abc123456",
         "sample_size": 250,
         "evaluated_systems": {
-            "R0G0": {},
-            "R1G0": {},
-            "R_SELECTED_G1": {},
+            "R0G0": {"sample_ids_sha256": "abc123456", "sample_size": 250},
+            "R1G0": {"sample_ids_sha256": "abc123456", "sample_size": 250},
+            "R_SELECTED_G1": {"sample_ids_sha256": "abc123456", "sample_size": 250},
         },
         "selected_reranker": {
             "use_task_tuned": True,
@@ -129,6 +129,8 @@ def test_promoter_rejects_inconsistent_report(tmp_path):
             "type": "fixed_baseline",
             "best_fixed_candidate": "strategy_f_1000",
         },
+        "overall_deployable_winner": "strategy_f_1000",
+        "overall_deployable_meteor": 0.330,
     }
     report_file.write_text(json.dumps(bad_report))
 

@@ -74,7 +74,7 @@ jobs:
 
       - name: Run runtime integrity tests
         run: |
-          pytest tests/test_v7_runtime_integrity.py -v
+          pytest tests/test_v7_runtime_integrity.py tests/test_v8_fail_loud_integration.py -v
 
   training-api-compat:
     name: SFT Training API & Module Compatibility
@@ -103,4 +103,4 @@ jobs:
 
       - name: Run promotion consistency and training tests
         run: |
-          pytest tests/test_v7_promotion_consistency.py tests/test_generator_training_data.py -v
+          pytest tests/test_v7_promotion_consistency.py tests/test_v8_promotion_provenance.py tests/test_generator_training_data.py -v

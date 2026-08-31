@@ -1,11 +1,11 @@
-"""Kaggle Dual-T4 environment bootstrap & dependency compatibility verifier (V7).
+"""Kaggle Dual-T4 environment bootstrap & dependency compatibility verifier (V8).
 
 Guarantees:
 1. Dynamically snapshots and proves preinstalled PyTorch, CUDA runtime wheels, cuDNN, NCCL, and Triton remain immutable.
 2. Generates exact constraints to prevent pip from replacing protected distributions.
 3. Tests version specifiers for required user-space packages using packaging.specifiers.
-4. Executes pip check to ensure dependency tree consistency.
-5. Verifies modern TRL completion_only_loss API and neural module imports.
+4. Executes pip check to ensure dependency tree consistency (fails loud on conflicts).
+5. Verifies modern TRL completion_only_loss API and neural module imports (fails loud on missing modules).
 """
 
 from __future__ import annotations
@@ -114,7 +114,7 @@ def assert_protected_versions_unchanged(before: Dict[str, str], after: Dict[str,
 
 
 def run_pip_check() -> None:
-    """Run python -m pip check to ensure dependency tree has no broken requirements."""
+    """Run python -m pip check to ensure dependency tree has no broken requirements (fails loud)."""
     res = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"pip check reported broken dependencies:\n{res.stdout}\n{res.stderr}")
@@ -162,7 +162,7 @@ def bootstrap_dependencies(
     constraints_path: str = "/tmp/legalqa_protected_constraints.txt",
     allow_unprotected_drift: bool = False,
 ) -> Dict[str, Any]:
-    """Safely install missing or outdated user-space dependencies using protected constraints."""
+    """Safely install missing or outdated user-space dependencies using protected constraints (Task 4)."""
     print("\n=======================================================")
     print("         BOOTSTRAPPING USER-SPACE DEPENDENCIES         ")
     print("=======================================================")
@@ -206,11 +206,8 @@ def bootstrap_dependencies(
     else:
         print("All required user-space packages already satisfy version constraints.")
 
-    # Validate dependency consistency
-    try:
-        run_pip_check()
-    except Exception as e:
-        print(f"Warning during pip check: {e}", file=sys.stderr)
+    # Validate dependency consistency (Task 4: fail loud)
+    run_pip_check()
 
     protected_after = snapshot_protected_versions()
     if not allow_unprotected_drift:
@@ -221,16 +218,19 @@ def bootstrap_dependencies(
         "protected_before": protected_before,
         "protected_after": protected_after,
         "installed_or_updated": to_install_or_update,
+        "pip_check_passed": True,
     }
 
 
-def verify_runtime_imports() -> Dict[str, Any]:
-    """Test and verify all critical neural and retrieval modules and modern TRL SFT API."""
+def verify_runtime_imports(strict: bool = True) -> Dict[str, Any]:
+    """Test and verify all critical neural and retrieval modules and modern TRL SFT API (Task 4: fail loud)."""
     print("\n=======================================================")
     print("         VERIFYING CRITICAL RUNTIME IMPORTS           ")
     print("=======================================================")
 
     import_results: Dict[str, str] = {}
+    failures: List[str] = []
+
     modules_to_test = [
         ("torch", "PyTorch"),
         ("transformers", "Hugging Face Transformers"),
@@ -254,6 +254,7 @@ def verify_runtime_imports() -> Dict[str, Any]:
             print(f"  + {desc:32s} ({mod_name}): PASS ({ver})")
         except Exception as e:
             import_results[mod_name] = f"FAIL ({e})"
+            failures.append(f"{desc} ({mod_name}): {e}")
             print(f"  ! {desc:32s} ({mod_name}): FAIL ({e})", file=sys.stderr)
 
     # Check TRL completion_only_loss support explicitly (P0-1)
@@ -261,16 +262,23 @@ def verify_runtime_imports() -> Dict[str, Any]:
         from trl import SFTConfig, SFTTrainer
         sig = inspect.signature(SFTConfig)
         if "completion_only_loss" not in sig.parameters:
-            raise RuntimeError(
+            msg = (
                 "Installed TRL SFTConfig does not support completion_only_loss parameter. "
                 "Update TRL to >=0.11.0 to preserve exact completion-only loss semantics."
             )
-        print("  + TRL SFTConfig.completion_only_loss: AVAILABLE")
+            failures.append(msg)
+            print(f"  ! TRL SFTConfig check: {msg}", file=sys.stderr)
+        else:
+            print("  + TRL SFTConfig.completion_only_loss: AVAILABLE")
     except Exception as e:
+        failures.append(f"TRL SFTConfig/SFTTrainer import: {e}")
         print(f"  ! TRL SFTConfig check: {e}", file=sys.stderr)
-        # In CPU testing environment without trl, log warning, but raise on real Kaggle
-        if "trl" in sys.modules:
-            raise
+
+    if failures and strict:
+        raise RuntimeError(
+            "Required runtime import verification failed:\n"
+            + "\n".join(f" - {f}" for f in failures)
+        )
 
     return import_results
 
@@ -293,6 +301,7 @@ def save_bootstrap_manifest(output_path: str = "/kaggle/working/kaggle_environme
     manifest = {
         "python": sys.version,
         "packages": pkg_dict,
+        "pip_check_passed": True,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
     }
     try:
@@ -306,7 +315,7 @@ def save_bootstrap_manifest(output_path: str = "/kaggle/working/kaggle_environme
 def main():
     print_preinstalled_environment()
     bootstrap_dependencies()
-    verify_runtime_imports()
+    verify_runtime_imports(strict=True)
     save_bootstrap_manifest()
 
 
