@@ -51,6 +51,15 @@ def format_qwen_chat_prompt(question: str, evidence: str, tokenizer: Optional[An
     )
 
 
+def is_peft_model(model: Any) -> bool:
+    """Check if model instance is PEFT-wrapped."""
+    if PeftModel is not None and isinstance(model, PeftModel):
+        return True
+    if hasattr(model, "peft_config"):
+        return True
+    return False
+
+
 class QwenGenerator:
     """Qwen2.5 (3B / 1.5B) Generator for evidence-conditioned statutory legal answer generation."""
 
@@ -61,12 +70,14 @@ class QwenGenerator:
         runtime: str = "auto",
         device: Optional[str] = None,
         final_mode: bool = False,
+        require_adapter: bool = False,
     ):
         self.model_path = model_path
         self.adapter_path = adapter_path
         self.runtime = runtime
         self.device = device
         self.final_mode = final_mode
+        self.require_adapter = require_adapter
         self.model = None
         self.tokenizer = None
 
@@ -79,6 +90,7 @@ class QwenGenerator:
         runtime: str = "auto",
         fail_on_fallback: bool = False,
         final_mode: bool = False,
+        require_adapter: bool = False,
     ) -> QwenGenerator:
         """Load generator model, enforcing explicit device mapping and loud failure in competition mode."""
         gen = cls(
@@ -87,7 +99,17 @@ class QwenGenerator:
             runtime=runtime,
             device=device,
             final_mode=final_mode,
+            require_adapter=require_adapter,
         )
+
+        # P0-9: Strict adapter requirements validation before loading
+        if require_adapter:
+            if not adapter_path:
+                raise RuntimeError("require_adapter=True but adapter_path was not provided.")
+            if not os.path.exists(adapter_path):
+                raise FileNotFoundError(f"require_adapter=True but adapter_path does not exist: {adapter_path}")
+            if PeftModel is None:
+                raise RuntimeError("require_adapter=True but PEFT library is not installed / PeftModel is None.")
 
         if runtime == "fallback":
             if fail_on_fallback or final_mode:
@@ -125,6 +147,9 @@ class QwenGenerator:
                     print(f"Loading PEFT adapter from {adapter_path}...")
                     model = PeftModel.from_pretrained(model, adapter_path)
 
+                if require_adapter and not is_peft_model(model):
+                    raise RuntimeError(f"require_adapter=True but loaded model is not a PEFT model: {type(model)}")
+
                 if dev not in ("cuda", "cpu") and not dev.startswith("cuda"):
                     model = model.to(dev)
 
@@ -135,11 +160,11 @@ class QwenGenerator:
                 return gen
             except Exception as e:
                 msg = f"Failed to load PyTorch generator ({model_path}): {e}"
-                if fail_on_fallback or final_mode:
+                if fail_on_fallback or final_mode or require_adapter:
                     raise RuntimeError(f"FINAL_PIPELINE_ERROR: {msg}") from e
                 print(f"Warning: {msg}, falling back to extractive generator...", file=sys.stderr)
 
-        if fail_on_fallback or final_mode:
+        if fail_on_fallback or final_mode or require_adapter:
             raise RuntimeError("FINAL_PIPELINE_ERROR: PyTorch/Transformers not available for neural generator.")
 
         gen.runtime = "fallback"

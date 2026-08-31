@@ -1,6 +1,10 @@
 import os
 import pandas as pd
-from src.task2.training.train_generator import build_grounded_training_examples, truncate_evidence_preserving_answer
+from src.task2.training.train_generator import (
+    build_grounded_training_examples,
+    build_sft_example_token_aware,
+    truncate_evidence_preserving_answer,
+)
 
 
 def test_answer_preserving_truncation():
@@ -19,6 +23,38 @@ def test_answer_preserving_truncation():
     assert len(truncated_ev) <= 1200
     # Gold answer must remain intact
     assert "5.000.000 đồng" in gold_answer
+
+
+def test_build_sft_example_token_aware_mock_tokenizer():
+    class MockTokenizer:
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+            user_content = messages[1]["content"]
+            return f"<|im_start|>system\nPrompt<|im_end|>\n<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n"
+
+        def encode(self, text, add_special_tokens=False):
+            # 1 word roughly 1 token in mock
+            return text.split()
+
+        def decode(self, ids, skip_special_tokens=True):
+            return " ".join(ids)
+
+    tok = MockTokenizer()
+    q = "Hỏi luật?"
+    ev = "Điều 1. " + "Nội dung chi tiết quy định luật. " * 100
+    ans = "Căn cứ Điều 1, phạt tiền từ 1 đến 2 triệu đồng."
+
+    full_text, diag = build_sft_example_token_aware(
+        question=q,
+        evidence_text=ev,
+        answer=ans,
+        tokenizer=tok,
+        max_seq_len=50,
+    )
+
+    assert full_text is not None
+    assert diag["total_tokens"] <= 50
+    assert diag["answer_truncated"] is False
+    assert ans in full_text
 
 
 def test_build_grounded_training_examples_structure():

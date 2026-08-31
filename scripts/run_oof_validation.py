@@ -10,16 +10,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import nltk
 import numpy as np
 import pandas as pd
-from nltk.translate.meteor_score import meteor_score
 from tqdm import tqdm
-
-try:
-    from rouge_score import rouge_scorer
-except ImportError:
-    rouge_scorer = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -29,6 +22,12 @@ from src.common.normalize import clean_legal_text, normalize_question
 from src.common.reranker import BGEReranker
 from src.task2.article_stitcher import ArticleStitcher
 from src.task2.generator import QwenGenerator
+from src.task2.metrics import (
+    calculate_official_meteor,
+    calculate_rouge_l,
+    ensure_meteor_resources,
+    official_meteor,
+)
 from src.task2.predict import LegalQAPipeline
 from src.task2.qa_memory import QAMemory
 from src.task2.source_snap import (
@@ -36,34 +35,6 @@ from src.task2.source_snap import (
     select_best_answer_candidate,
     snap_facts_to_evidence,
 )
-
-try:
-    nltk.data.find("corpora/wordnet.zip")
-except LookupError:
-    try:
-        nltk.download("wordnet", quiet=True)
-        nltk.download("omw-1.4", quiet=True)
-    except Exception:
-        pass
-
-
-def calculate_official_meteor(references: List[str], predictions: List[str]) -> float:
-    """Compute official whitespace-tokenized METEOR score matching competition scoring."""
-    scores = []
-    for r, p in zip(references, predictions):
-        r_tokens = str(r).split()
-        p_tokens = str(p).split()
-        scores.append(meteor_score([r_tokens], p_tokens))
-    return float(np.mean(scores)) if scores else 0.0
-
-
-def calculate_rouge_l(references: List[str], predictions: List[str]) -> float:
-    """Compute ROUGE-L f-measure without stemming."""
-    if rouge_scorer is None or not references:
-        return 0.0
-    scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
-    scores = [scorer.score(str(r), str(p))["rougeL"].fmeasure for r, p in zip(references, predictions)]
-    return float(np.mean(scores))
 
 
 def run_oof_validation(
@@ -80,16 +51,25 @@ def run_oof_validation(
     adapter_path: Optional[str] = None,
     reranker_checkpoint: str = "BAAI/bge-reranker-v2-m3",
     held_out_fold: Optional[int] = None,
+    fold_checkpoint_map: Optional[Dict[int, Dict[str, str]]] = None,
     device: Optional[str] = None,
     gen_device: Optional[str] = None,
     retrieval_device: Optional[str] = None,
     max_new_tokens: int = 384,
 ) -> Dict[str, Any]:
+    ensure_meteor_resources()
     print(f"=== Starting LegalQA Task 2 OOF Validation (Mode: {mode.upper()}) ===")
     if mode == "fast":
         print("*******************************************************************************")
         print("  DIAGNOSTIC ONLY — NOT VALID FOR MODEL QUALITY, CHECKPOINT VERIFICATION OR PROMOTION")
         print("*******************************************************************************")
+    elif mode == "full":
+        if held_out_fold is None and not fold_checkpoint_map:
+            raise RuntimeError(
+                "True full neural OOF requires one checkpoint per fold via fold_checkpoint_map "
+                "or an explicit single held_out_fold. Reusing one fold checkpoint across all folds is invalid."
+            )
+
     print(f"Loading QA dataset from {qa_path}...")
     df_qa = pd.read_parquet(qa_path)
 
@@ -116,9 +96,15 @@ def run_oof_validation(
     r_dev = retrieval_device or device
     if mode == "full" and os.path.exists(dek21_dir) and os.path.exists(os.path.join(dek21_dir, "embeddings.npy")):
         print(f"Loading real DEk21 embeddings on {r_dev}...")
-        dense = DEk21Retriever.load_index(dek21_dir, corpus_path=chunks_path, device=r_dev)
+        dense = DEk21Retriever.load_index(
+            dek21_dir,
+            corpus_path=chunks_path,
+            device=r_dev,
+            expected_dtype="float16",
+            final_mode=True,
+        )
     else:
-        print("Using mock DEk21 dense retriever for fast validation...")
+        print("Using fast lexical retriever for fast validation...")
         dense = DEk21Retriever(model_name="mock", device=r_dev)
         if bm25.corpus:
             dense.fit_mock(bm25.corpus)
@@ -143,6 +129,9 @@ def run_oof_validation(
             adapter_path=adapter_path,
             device=g_dev,
             runtime="torch",
+            fail_on_fallback=True,
+            final_mode=True,
+            require_adapter=bool(adapter_path),
         )
     else:
         print("Using extractive fallback generator for fast validation...")
@@ -169,21 +158,49 @@ def run_oof_validation(
     ]
     family_scores: Dict[str, List[float]] = {f: [] for f in candidate_families}
 
-    samples_per_fold = (num_eval_samples // n_splits) if num_eval_samples else None
-    print(f"\nEvaluating {'all' if not samples_per_fold else samples_per_fold} samples per fold across {n_splits} folds...")
+    # P0-15: Strictly respect held_out_fold when passed
+    if held_out_fold is not None:
+        target_folds = [held_out_fold]
+    else:
+        target_folds = list(range(n_splits))
 
-    for fold_id in range(n_splits):
+    samples_per_fold = (num_eval_samples // len(target_folds)) if num_eval_samples else None
+    print(f"\nEvaluating {'all' if not samples_per_fold else samples_per_fold} samples per fold across {len(target_folds)} folds: {target_folds}...")
+
+    for fold_id in target_folds:
         fold_records = df_qa[df_qa["fold_id"] == fold_id]
-        if samples_per_fold:
-            val_subset = fold_records.head(samples_per_fold)
+        if fold_records.empty:
+            raise RuntimeError(f"Fold {fold_id} has no records to evaluate.")
+
+        if samples_per_fold and samples_per_fold < len(fold_records):
+            val_subset = fold_records.sample(n=samples_per_fold, random_state=42).reset_index(drop=True)
         else:
-            val_subset = fold_records
+            val_subset = fold_records.reset_index(drop=True)
 
         # Strict zero-leakage fold memory: exclude ALL records assigned to this validation fold
         all_fold_qa_ids = set(fold_records["qa_id"].astype(str))
         all_fold_questions = set(fold_records["question_raw"].astype(str))
         isolated_mem = full_memory.filter_fold(val_qa_ids=all_fold_qa_ids, val_questions=all_fold_questions)
-        pipeline = LegalQAPipeline(isolated_mem, bm25, dense, reranker, stitcher, generator)
+
+        # If per-fold checkpoints are provided, reload fold-specific models
+        current_reranker = reranker
+        current_generator = generator
+        if fold_checkpoint_map and fold_id in fold_checkpoint_map:
+            ckpt_info = fold_checkpoint_map[fold_id]
+            if "reranker" in ckpt_info:
+                current_reranker = BGEReranker(model_name=ckpt_info["reranker"], device=r_dev)
+            if "adapter" in ckpt_info:
+                current_generator = QwenGenerator.load(
+                    model_path=model_path,
+                    adapter_path=ckpt_info["adapter"],
+                    device=g_dev,
+                    runtime="torch",
+                    fail_on_fallback=True,
+                    final_mode=True,
+                    require_adapter=True,
+                )
+
+        pipeline = LegalQAPipeline(isolated_mem, bm25, dense, current_reranker, stitcher, current_generator)
 
         fold_preds = []
         fold_refs = []
@@ -192,7 +209,6 @@ def run_oof_validation(
             qid = str(row["qa_id"])
             q = str(row["question_raw"])
             ref_ans = str(row["answer_raw"])
-            ref_tokens = ref_ans.split()
 
             selected, cands, ev = pipeline.predict_single(
                 qid, q, max_new_tokens=max_new_tokens, return_candidates=True
@@ -205,7 +221,7 @@ def run_oof_validation(
             best_cand_name = "selected"
 
             for name, cand_text in cands.items():
-                sc = meteor_score([ref_tokens], str(cand_text).split())
+                sc = official_meteor(ref_ans, str(cand_text))
                 cand_meteors[name] = sc
                 if name in family_scores:
                     family_scores[name].append(sc)
@@ -242,8 +258,8 @@ def run_oof_validation(
     mean_rouge = float(np.mean(fold_rouges))
 
     print("\n=======================================================")
-    print(f"5-Fold OOF METEOR:  {mean_meteor:.4f} ± {std_meteor:.4f}")
-    print(f"5-Fold OOF ROUGE-L: {mean_rouge:.4f}")
+    print(f"OOF METEOR:  {mean_meteor:.4f} ± {std_meteor:.4f}")
+    print(f"OOF ROUGE-L: {mean_rouge:.4f}")
     print("-------------------------------------------------------")
     print("Candidate Family Breakdown (Mean METEOR across all OOF):")
     cand_summary = {}
@@ -261,7 +277,7 @@ def run_oof_validation(
 
     summary = {
         "mode": mode,
-        "num_folds": n_splits,
+        "evaluated_folds": target_folds,
         "total_evaluated": len(df_oof),
         "mean_meteor": mean_meteor,
         "std_meteor": std_meteor,

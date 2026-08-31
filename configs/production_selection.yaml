@@ -1,5 +1,11 @@
 # Frozen Production Model Selection & Strategy for Kaggle Stack A
-schema_version: 2
+schema_version: 3
+
+# Status must be "PROMOTED" after screen_fold0 to run final_train_and_submit without emergency override
+status: "UNVALIDATED"
+source_screen_manifest: null
+source_screen_sha256: null
+
 stack: "stack_a"
 
 retrieval:
@@ -36,4 +42,5 @@ generator:
 candidate_policy:
   type: "fixed_baseline"
   best_fixed_candidate: "stitched_extract"
+  selector_checkpoint: null
   guardrail_enabled: true

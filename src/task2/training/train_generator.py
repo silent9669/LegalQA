@@ -52,40 +52,46 @@ def build_sft_example_token_aware(
     answer: str,
     tokenizer: Optional[Any] = None,
     max_seq_len: int = 2048,
-) -> Tuple[str, Dict[str, Any]]:
+    safety_margin: int = 8,
+) -> Tuple[Optional[str], Dict[str, Any]]:
     """Token-aware example builder guaranteeing gold answer tokens are 100% preserved."""
     ans_clean = str(answer).strip()
     q_clean = str(question).strip()
 
     if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
-        # 1. Measure answer token count
         ans_tokens = tokenizer.encode(f"{ans_clean}<|im_end|>", add_special_tokens=False)
         ans_token_count = len(ans_tokens)
 
-        # 2. Measure framing with empty evidence
         empty_prompt = format_qwen_chat_prompt(q_clean, "", tokenizer=tokenizer)
         framing_tokens = tokenizer.encode(empty_prompt, add_special_tokens=False)
         framing_token_count = len(framing_tokens)
 
-        # 3. Available tokens for evidence
-        avail_for_evidence = max(50, max_seq_len - framing_token_count - ans_token_count - 10)
+        minimum_required = framing_token_count + ans_token_count
+        if minimum_required > max_seq_len:
+            # Dropped: answer itself plus minimal framing cannot fit within max_seq_len
+            return None, {
+                "total_tokens": minimum_required,
+                "evidence_truncated": False,
+                "answer_truncated": False,
+                "dropped": True,
+            }
 
-        # 4. Pack evidence paragraphs within token budget
-        paragraphs = evidence_text.split("\n\n") if evidence_text else []
+        evidence_budget = max_seq_len - minimum_required - safety_margin
+
+        paragraphs = [p.strip() for p in evidence_text.split("\n\n") if p.strip()] if evidence_text else []
         packed_paragraphs = []
         curr_ev_tokens = 0
         ev_truncated = False
 
         for p in paragraphs:
             p_toks = len(tokenizer.encode(p, add_special_tokens=False))
-            if curr_ev_tokens + p_toks <= avail_for_evidence:
+            if curr_ev_tokens + p_toks <= evidence_budget:
                 packed_paragraphs.append(p)
                 curr_ev_tokens += p_toks
             else:
                 ev_truncated = True
-                remaining_toks = avail_for_evidence - curr_ev_tokens
-                if remaining_toks > 20:
-                    # Truncate final paragraph at token boundary
+                remaining_toks = evidence_budget - curr_ev_tokens
+                if remaining_toks > 15:
                     p_enc = tokenizer.encode(p, add_special_tokens=False)[:remaining_toks]
                     p_dec = tokenizer.decode(p_enc, skip_special_tokens=True).rstrip() + "..."
                     packed_paragraphs.append(p_dec)
@@ -94,12 +100,24 @@ def build_sft_example_token_aware(
         final_evidence = "\n\n".join(packed_paragraphs) if packed_paragraphs else ""
         prompt = format_qwen_chat_prompt(q_clean, final_evidence, tokenizer=tokenizer)
         full_text = f"{prompt}{ans_clean}<|im_end|>"
-        total_tokens = len(tokenizer.encode(full_text, add_special_tokens=False))
+        full_ids = tokenizer.encode(full_text, add_special_tokens=False)
+
+        # While loop safety guard: remove packed paragraphs from the end if tokenizer special tokens exceed max_seq_len
+        while len(full_ids) > max_seq_len and packed_paragraphs:
+            packed_paragraphs.pop()
+            final_evidence = "\n\n".join(packed_paragraphs)
+            prompt = format_qwen_chat_prompt(q_clean, final_evidence, tokenizer=tokenizer)
+            full_text = f"{prompt}{ans_clean}<|im_end|>"
+            full_ids = tokenizer.encode(full_text, add_special_tokens=False)
+            ev_truncated = True
+
+        assert len(full_ids) <= max_seq_len, f"Full text token length {len(full_ids)} > {max_seq_len}"
 
         diagnostics = {
-            "total_tokens": total_tokens,
+            "total_tokens": len(full_ids),
             "evidence_truncated": ev_truncated,
             "answer_truncated": False,
+            "dropped": False,
         }
         return full_text, diagnostics
 
@@ -107,7 +125,7 @@ def build_sft_example_token_aware(
     ev_safe = truncate_evidence_preserving_answer(q_clean, evidence_text, ans_clean, max_chars=3000)
     prompt = format_qwen_chat_prompt(q_clean, ev_safe, tokenizer=None)
     full_text = f"{prompt}{ans_clean}<|im_end|>"
-    return full_text, {"total_tokens": len(full_text.split()), "evidence_truncated": False, "answer_truncated": False}
+    return full_text, {"total_tokens": len(full_text.split()), "evidence_truncated": False, "answer_truncated": False, "dropped": False}
 
 
 def build_grounded_training_examples(
@@ -119,6 +137,7 @@ def build_grounded_training_examples(
     tokenizer: Optional[Any] = None,
     max_seq_len: int = 2048,
     max_train_examples: Optional[int] = None,
+    seed: int = 42,
 ) -> List[Dict[str, str]]:
     """Build multi-positive structured SFT training examples ensuring exact prompt parity with inference."""
     if df_qa is None:
@@ -130,8 +149,11 @@ def build_grounded_training_examples(
     if fold_to_exclude is not None and "fold_id" in df_qa.columns:
         df_qa = df_qa[df_qa["fold_id"] != fold_to_exclude]
 
+    # Deterministic sampling for smoke / limited training subsets
     if max_train_examples is not None and len(df_qa) > max_train_examples:
-        df_qa = df_qa.head(max_train_examples)
+        df_qa = df_qa.sample(n=max_train_examples, random_state=seed).reset_index(drop=True)
+    else:
+        df_qa = df_qa.reset_index(drop=True)
 
     chunk_map: Dict[str, str] = {}
     if chunks_path and os.path.exists(chunks_path):
@@ -154,7 +176,7 @@ def build_grounded_training_examples(
     examples: List[Dict[str, str]] = []
     token_lengths = []
     ev_truncated_count = 0
-    ans_truncated_count = 0
+    dropped_count = 0
 
     for _, row in df_qa.iterrows():
         qid = str(row.get("qa_id") or row.get("id", "")).strip()
@@ -174,21 +196,55 @@ def build_grounded_training_examples(
             tokenizer=tokenizer,
             max_seq_len=max_seq_len,
         )
+
+        if diag.get("dropped") or full_text is None:
+            dropped_count += 1
+            continue
+
         examples.append({"text": full_text})
         token_lengths.append(diag["total_tokens"])
         if diag.get("evidence_truncated"):
             ev_truncated_count += 1
-        if diag.get("answer_truncated"):
-            ans_truncated_count += 1
 
     if token_lengths:
         p50 = float(np.percentile(token_lengths, 50))
         p90 = float(np.percentile(token_lengths, 90))
         p95 = float(np.percentile(token_lengths, 95))
         max_t = int(max(token_lengths))
-        print(f"SFT Dataset Stats ({len(examples)} examples): P50={p50:.0f}, P90={p90:.0f}, P95={p95:.0f}, Max={max_t}, Ev Truncated={ev_truncated_count/len(examples)*100:.1f}%, Ans Truncated={ans_truncated_count/len(examples)*100:.1f}%")
+        print(f"SFT Dataset Stats ({len(examples)} kept, {dropped_count} dropped): P50={p50:.0f}, P90={p90:.0f}, P95={p95:.0f}, Max={max_t}, Ev Truncated={ev_truncated_count/len(examples)*100:.1f}%")
 
     return examples
+
+
+def run_seq_len_diagnostic(
+    qa_path: str = "artifacts/task2/data/qa_unique.parquet",
+    labels_path: str = "artifacts/task2/data/retrieval_labels.parquet",
+    chunks_path: str = "artifacts/task2/data/legal_chunks.parquet",
+    model_name: str = "Qwen/Qwen2.5-3B-Instruct",
+    seq_lens: List[int] = [2048, 3072],
+) -> Dict[int, Dict[str, Any]]:
+    """Run sequence length diagnostic comparing truncation and drop rates at different lengths."""
+    try:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    except Exception:
+        tokenizer = None
+
+    results = {}
+    print("\n=== Running SFT Sequence-Length Diagnostic ===")
+    for length in seq_lens:
+        examples = build_grounded_training_examples(
+            qa_path=qa_path,
+            labels_path=labels_path,
+            chunks_path=chunks_path,
+            tokenizer=tokenizer,
+            max_seq_len=length,
+        )
+        results[length] = {
+            "num_examples": len(examples),
+            "max_seq_len": length,
+        }
+    return results
 
 
 def run_qlora_training(
@@ -357,12 +413,14 @@ def run_qlora_training(
         "dataset_size": len(dataset),
         "adapter_trainable_params": adapter_trainable_params,
     }
+    with open(os.path.join(output_dir, "generator_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
     with open(os.path.join(output_dir, "training_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
     print(f"QLoRA Training complete (is_final={is_final}, scope={training_scope}). Adapter saved to {output_dir}")
 
-    # Strict Reload Smoke Verification
+    # Strict Reload Smoke Verification with require_adapter=True
     print("Executing strict reload smoke verification...")
     del trainer, model
     if torch.cuda.is_available():
@@ -376,6 +434,7 @@ def run_qlora_training(
             runtime="torch",
             fail_on_fallback=True,
             final_mode=True,
+            require_adapter=True,
         )
         if reload_gen.runtime != "torch" or reload_gen.model is None or reload_gen.tokenizer is None:
             raise RuntimeError(f"Reloaded generator is not running in neural torch mode (runtime={reload_gen.runtime})")

@@ -34,6 +34,24 @@ def clean_statutory_text(raw_text: str) -> str:
     return "\n".join(unique_lines)
 
 
+def trim_at_complete_sentence(text: str, max_chars: int = 1200) -> str:
+    """Trim text at complete clause/sentence boundary (., ;, or newline) up to max_chars."""
+    if not text or len(text) <= max_chars:
+        return text.strip()
+
+    truncated = text[:max_chars]
+    # Search backwards for sentence-ending punct or newline
+    last_dot = max(truncated.rfind(".\n"), truncated.rfind(". "), truncated.rfind(";\n"), truncated.rfind("; "))
+    if last_dot > max_chars * 0.4:
+        return truncated[:last_dot + 1].strip()
+
+    last_newline = truncated.rfind("\n")
+    if last_newline > max_chars * 0.4:
+        return truncated[:last_newline].strip()
+
+    return truncated.rstrip() + "..."
+
+
 def build_citation_header(doc_name: str, article_num: str = "", clause_num: str = "") -> str:
     """Build canonical statutory citation header (e.g. Căn cứ khoản 3 Điều 17 Nghị định 90/2017/NĐ-CP quy định:)."""
     parts = []
@@ -143,11 +161,15 @@ def generate_candidate_ensemble(
     focused_ext = clean_ev[:800] if clean_ev else ""
     stitched_ext = f"{header}\n{clean_ev[:1500]}" if clean_ev else header
 
+    # Section 15: Structured complete clause/sentence extracts
+    focused_clause = f"{header}\n{trim_at_complete_sentence(clean_ev, max_chars=800)}" if clean_ev else header
+
     candidates: Dict[str, str] = {
         "exact_memory": exact_ans,
         "fuzzy_memory": fuzzy_ans,
         "focused_extract": focused_ext,
         "stitched_extract": stitched_ext,
+        "focused_complete_clause": focused_clause,
         "generated": gen_ans,
         "snapped": snapped,
         "strategy_f_300": apply_strategy_f(snapped or gen_ans, clean_ev, max_chars=300),
@@ -160,5 +182,13 @@ def generate_candidate_ensemble(
         for p_name, p_text in evidence_packs.items():
             if p_text:
                 candidates[f"pack_{p_name}"] = f"{header}\n{clean_statutory_text(p_text)}"
+
+        if "top2_relevance" in evidence_packs and evidence_packs["top2_relevance"]:
+            t2 = clean_statutory_text(evidence_packs["top2_relevance"])
+            candidates["top2_relevance_complete_units"] = f"{header}\n{trim_at_complete_sentence(t2, max_chars=2000)}"
+
+        if "full_article" in evidence_packs and evidence_packs["full_article"]:
+            fa = clean_statutory_text(evidence_packs["full_article"])
+            candidates["primary_article_budgeted_units"] = f"{header}\n{trim_at_complete_sentence(fa, max_chars=2500)}"
 
     return {k: v for k, v in candidates.items() if v}
