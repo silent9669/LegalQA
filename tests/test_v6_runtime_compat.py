@@ -318,10 +318,26 @@ def test_promote_production_selection_script(tmp_path):
     """P1-6: Verify promote_production_selection updates config with report SHA256 and PROMOTED status."""
     report_file = tmp_path / "promotion_report.json"
     report_data = {
+        "screen_protocol_version": 7,
         "held_out_fold": 0,
         "sample_ids_sha256": "abcdef123456",
-        "recommended_use_task_tuned_reranker": True,
-        "recommended_use_qlora": False,
+        "sample_size": 250,
+        "evaluated_systems": {
+            "R0G0": {},
+            "R1G0": {},
+            "R_SELECTED_G1": {},
+        },
+        "selected_reranker": {
+            "use_task_tuned": True,
+            "checkpoint": "checkpoints/reranker/best",
+            "decision_reason": "improved chunk MRR",
+        },
+        "selected_generator": {
+            "use_qlora": False,
+            "adapter": None,
+            "decision_reason": "did not beat fixed baseline",
+        },
+        "final_measured_system_key": "R1G0",
         "candidate_policy": {
             "type": "fixed_baseline",
             "best_fixed_candidate": "stitched_extract",
@@ -337,6 +353,7 @@ def test_promote_production_selection_script(tmp_path):
     )
 
     assert promoted["status"] == "PROMOTED"
+    assert promoted["screen_protocol_version"] == 7
     assert promoted["source_screen_manifest"] == str(report_file)
     assert promoted["source_screen_sha256"] is not None
     assert promoted["reranker"]["use_task_tuned"] is True

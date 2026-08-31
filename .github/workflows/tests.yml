@@ -7,8 +7,8 @@ on:
     branches: [ main, master ]
 
 jobs:
-  test:
-    name: CPU Test Suite & Runtime Compatibility
+  unit-tests:
+    name: CPU Unit Test Suite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,18 +25,82 @@ jobs:
           pip install -r requirements.txt
           pip install pyyaml pytest pytest-cov
 
-      - name: Install Kaggle runtime compatibility stack (PEFT, TRL, Transformers)
-        run: |
-          pip install transformers peft trl bitsandbytes accelerate
-
       - name: Download NLTK data
         run: |
           python -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')"
 
-      - name: Verify runtime import bootstrap
-        run: |
-          python scripts/bootstrap_kaggle_env.py
-
       - name: Run test suite
         run: |
           pytest tests/ -v
+
+  bootstrap-protection:
+    name: Bootstrap Protected-Version Preservation Proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install fixed PyTorch CPU fixture
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Record PyTorch version before bootstrap
+        id: pre_version
+        run: |
+          TORCH_PRE=$(python -c "import torch; print(torch.__version__)")
+          echo "torch_pre=$TORCH_PRE" >> $GITHUB_OUTPUT
+          echo "Preinstalled PyTorch version: $TORCH_PRE"
+
+      - name: Run dependency bootstrap
+        run: |
+          pip install pyyaml pytest packaging
+          python scripts/bootstrap_kaggle_env.py
+
+      - name: Assert exact PyTorch preservation
+        run: |
+          TORCH_POST=$(python -c "import torch; print(torch.__version__)")
+          echo "Post-bootstrap PyTorch version: $TORCH_POST"
+          if [ "$TORCH_POST" != "${{ steps.pre_version.outputs.torch_pre }}" ]; then
+            echo "ERROR: Protected PyTorch was modified during bootstrap!"
+            exit 1
+          fi
+          echo "SUCCESS: Protected PyTorch version preserved exactly ($TORCH_POST)."
+
+      - name: Run runtime integrity tests
+        run: |
+          pytest tests/test_v7_runtime_integrity.py -v
+
+  training-api-compat:
+    name: SFT Training API & Module Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies and TRL/PEFT stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyyaml pytest packaging
+          pip install transformers peft trl bitsandbytes accelerate
+
+      - name: Verify SFT completion_only_loss API and imports
+        run: |
+          python -c "import inspect; from trl import SFTConfig; assert 'completion_only_loss' in inspect.signature(SFTConfig).parameters"
+          python -c "import src.task2.training.train_generator as tg; assert not hasattr(tg, 'DataCollatorForCompletionOnlyLM')"
+          python -c "from src.task2.training.train_generator import build_sft_config, build_grounded_training_examples"
+
+      - name: Run promotion consistency and training tests
+        run: |
+          pytest tests/test_v7_promotion_consistency.py tests/test_generator_training_data.py -v

@@ -48,7 +48,7 @@ def assert_final_checkpoint(
 ) -> Dict[str, Any]:
     """Strictly assert that a checkpoint was trained on full data as a final checkpoint.
 
-    P0-13: Checks both 'val_fold_excluded' and 'val_fold' keys to ensure no fold was held out.
+    Task 2 & P0-13: Checks base_model_id and both 'val_fold_excluded' and 'val_fold' keys.
     """
     if not os.path.exists(checkpoint_dir):
         raise FileNotFoundError(f"Checkpoint directory does not exist: {checkpoint_dir}")
@@ -86,7 +86,7 @@ def assert_final_checkpoint(
             f"Refusing to use smoke checkpoint in final/reuse profile."
         )
 
-    # P0-13: Check both val_fold_excluded and val_fold
+    # Check both val_fold_excluded and val_fold
     excluded_fold = manifest.get("val_fold_excluded", manifest.get("val_fold"))
     if excluded_fold is not None:
         raise ValueError(
@@ -94,7 +94,8 @@ def assert_final_checkpoint(
             f"Final checkpoints must be trained on all allowed data with val_fold=None."
         )
 
-    base_m = manifest.get("base_model") or manifest.get("base_model_name_or_path")
+    # Task 2: Check canonical base_model_id, base_model, or base_model_name_or_path
+    base_m = manifest.get("base_model_id") or manifest.get("base_model") or manifest.get("base_model_name_or_path")
     if base_m and expected_base_model and base_m != expected_base_model:
         raise ValueError(
             f"Checkpoint in {checkpoint_dir} base model mismatch. "

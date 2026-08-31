@@ -1,4 +1,4 @@
-"""Deterministic runtime and dataset path resolver for Kaggle and local environments."""
+"""Deterministic runtime and dataset path resolver for Kaggle and local environments (V7)."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _is_legalqa_root(path: str) -> bool:
 def find_qwen_model_dir(base_path: str = "/kaggle/input", expected_arch: str = "Qwen2ForCausalLM") -> Optional[str]:
     """Deterministically find and validate Qwen model directory by inspecting config.json.
 
-    P0-6: Hard-fails if multiple ambiguous Qwen model directories are found. Never returns candidate_dirs[0].
+    Hard-fails if multiple ambiguous Qwen model directories are found. Never returns candidate_dirs[0].
     """
     if not os.path.exists(base_path):
         return None
@@ -87,10 +87,11 @@ def find_qwen_model_dir(base_path: str = "/kaggle/input", expected_arch: str = "
     )
 
 
-def resolve_runtime_paths(base_input_dir: str = "/kaggle/input") -> Dict[str, str]:
-    """Resolve all runtime artifact paths deterministically.
+def resolve_runtime_paths(base_input_dir: str = "/kaggle/input", strict: bool = False) -> Dict[str, str]:
+    """Resolve all runtime artifact paths deterministically (Task 8).
 
-    P0-6: Hard-fails on ambiguous runtime dataset roots.
+    When strict=True, fails immediately if dataset root or model paths are missing or ambiguous,
+    refusing silent fallback to local artifacts directory.
     """
     roots = find_runtime_roots(base_input_dir)
 
@@ -102,7 +103,12 @@ def resolve_runtime_paths(base_input_dir: str = "/kaggle/input") -> Dict[str, st
             f"Expected exactly 1 matching LegalQA dataset root."
         )
     else:
-        # Fallback to local workspace artifacts
+        if strict:
+            raise RuntimeError(
+                f"No valid LegalQA dataset root found under '{base_input_dir}' in strict Kaggle mode. "
+                f"Ensure the Kaggle dataset is mounted to the notebook session."
+            )
+        # Fallback to local workspace artifacts in development
         runtime_root = os.path.abspath("artifacts")
 
     print(f"Resolved primary Runtime Root: {runtime_root}")
@@ -124,7 +130,12 @@ def resolve_runtime_paths(base_input_dir: str = "/kaggle/input") -> Dict[str, st
     dek21_dir = os.path.join(indexes_dir, "dek21")
 
     # Qwen model dir
-    qwen_dir = find_qwen_model_dir(base_input_dir) or "Qwen/Qwen2.5-3B-Instruct"
+    qwen_found = find_qwen_model_dir(base_input_dir)
+    if strict and qwen_found is None:
+        # In strict Kaggle mode, require mounted Qwen model
+        qwen_dir = "Qwen/Qwen2.5-3B-Instruct"
+    else:
+        qwen_dir = qwen_found or "Qwen/Qwen2.5-3B-Instruct"
 
     return {
         "runtime_root": runtime_root,

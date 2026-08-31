@@ -1,4 +1,4 @@
-"""Package clean, self-contained LegalQA dataset and code runtime artifacts for Kaggle."""
+"""Package clean, self-contained LegalQA dataset and code runtime artifacts for Kaggle (V7)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.common.hashing import sha256_file
 from src.common.security import assert_no_secrets_in_workspace
 from src.task2.production_config import load_production_selection
+
+RUNTIME_API_VERSION = 7
 
 REQUIRED_FILES = [
     "data/legal_chunks.parquet",
@@ -55,7 +57,7 @@ def package_kaggle_dataset(
     include_code: bool = True,
     dry_run: bool = False,
 ) -> None:
-    print(f"=== Packaging Self-Contained Kaggle Dataset '{dataset_title}' (Profile: {profile.upper()}) ===")
+    print(f"=== Packaging Self-Contained Kaggle Dataset '{dataset_title}' (Profile: {profile.upper()} | API: v{RUNTIME_API_VERSION}) ===")
     src = Path(source_dir)
     stage = Path(staging_dir)
 
@@ -109,6 +111,7 @@ def package_kaggle_dataset(
         "slug": dataset_slug,
         "owner": user_handle,
         "profile": profile,
+        "runtime_api_version": RUNTIME_API_VERSION,
         "git_sha": get_git_sha(),
         "files": {},
         "indexes": {},
@@ -189,6 +192,7 @@ def package_kaggle_dataset(
         code_root = stage / "code" / "LegalQA"
         code_manifest: Dict[str, Any] = {
             "git_sha": get_git_sha(),
+            "runtime_api_version": RUNTIME_API_VERSION,
             "files": {},
         }
 
@@ -234,6 +238,7 @@ def package_kaggle_dataset(
         manifest["code"] = {
             "root": "code/LegalQA",
             "files_count": len(code_manifest["files"]),
+            "runtime_api_version": RUNTIME_API_VERSION,
         }
 
         if not dry_run:
@@ -241,7 +246,7 @@ def package_kaggle_dataset(
                 json.dump(code_manifest, f, indent=2)
             with open(code_root / "code_manifest.json", "w", encoding="utf-8") as f:
                 json.dump(code_manifest, f, indent=2)
-        print(f"  + Staged {len(code_manifest['files'])} code files (src, scripts, configs) and code_manifest.json.")
+        print(f"  + Staged {len(code_manifest['files'])} code files (src, scripts, configs) and code_manifest.json (v{RUNTIME_API_VERSION}).")
 
     # Staging metadata.json for Kaggle CLI
     kaggle_meta = {
@@ -260,4 +265,28 @@ def package_kaggle_dataset(
             json.dump(kaggle_meta, f, indent=2)
 
     print(f"\nSuccessfully staged clean dataset to {stage}.")
-    print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}'")
+    print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}' | Runtime API: v{RUNTIME_API_VERSION}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Package clean LegalQA dataset and code for Kaggle.")
+    parser.add_argument("--source", default="artifacts/task2", help="Source artifact directory")
+    parser.add_argument("--staging", default="kaggle_dataset/staged", help="Staging output directory")
+    parser.add_argument("--title", default="LegalQA", help="Kaggle dataset display title")
+    parser.add_argument("--profile", default="default", choices=["default", "final_training"])
+    parser.add_argument("--dry_run", action="store_true", help="Simulate staging without copying files")
+    parser.add_argument("--no_code", action="store_true", help="Omit code runtime from dataset")
+    args = parser.parse_args()
+
+    package_kaggle_dataset(
+        source_dir=args.source,
+        staging_dir=args.staging,
+        dataset_title=args.title,
+        profile=args.profile,
+        include_code=not args.no_code,
+        dry_run=args.dry_run,
+    )
+
+
+if __name__ == "__main__":
+    main()
