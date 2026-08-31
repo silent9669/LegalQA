@@ -1,0 +1,39 @@
+# Frozen Production Model Selection & Strategy for Kaggle Stack A
+schema_version: 2
+stack: "stack_a"
+
+retrieval:
+  sparse:
+    method: "bm25s"
+    top_k: 50
+  dense:
+    model: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    dtype: "float16"
+    device: "cuda:1"
+    top_k: 50
+  fusion:
+    method: "rrf"
+    rrf_k: 60
+
+reranker:
+  base_model: "BAAI/bge-reranker-v2-m3"
+  use_task_tuned: true
+  checkpoint: "checkpoints/reranker/best"
+  top_k: 8
+  device: "cuda:1"
+
+evidence:
+  primary_pack: "multi_seed_2500_chars"
+  max_chars: 3500
+
+generator:
+  base_model: "Qwen/Qwen2.5-3B-Instruct"
+  use_qlora: true
+  adapter_path: "checkpoints/generator/hf_adapter"
+  max_new_tokens: 384
+  device: "cuda:0"
+
+candidate_policy:
+  type: "fixed_baseline"
+  best_fixed_candidate: "stitched_extract"
+  guardrail_enabled: true

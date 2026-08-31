@@ -60,11 +60,13 @@ class QwenGenerator:
         adapter_path: Optional[str] = None,
         runtime: str = "auto",
         device: Optional[str] = None,
+        final_mode: bool = False,
     ):
         self.model_path = model_path
         self.adapter_path = adapter_path
         self.runtime = runtime
         self.device = device
+        self.final_mode = final_mode
         self.model = None
         self.tokenizer = None
 
@@ -76,11 +78,20 @@ class QwenGenerator:
         device: Optional[str] = None,
         runtime: str = "auto",
         fail_on_fallback: bool = False,
+        final_mode: bool = False,
     ) -> QwenGenerator:
         """Load generator model, enforcing explicit device mapping and loud failure in competition mode."""
-        gen = cls(model_path=model_path, adapter_path=adapter_path, runtime=runtime, device=device)
+        gen = cls(
+            model_path=model_path,
+            adapter_path=adapter_path,
+            runtime=runtime,
+            device=device,
+            final_mode=final_mode,
+        )
 
         if runtime == "fallback":
+            if fail_on_fallback or final_mode:
+                raise RuntimeError("FINAL_PIPELINE_ERROR: Fallback runtime requested in final/strict mode.")
             gen.runtime = "fallback"
             return gen
 
@@ -124,11 +135,11 @@ class QwenGenerator:
                 return gen
             except Exception as e:
                 msg = f"Failed to load PyTorch generator ({model_path}): {e}"
-                if fail_on_fallback:
-                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: {msg}")
+                if fail_on_fallback or final_mode:
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: {msg}") from e
                 print(f"Warning: {msg}, falling back to extractive generator...", file=sys.stderr)
 
-        if fail_on_fallback:
+        if fail_on_fallback or final_mode:
             raise RuntimeError("FINAL_PIPELINE_ERROR: PyTorch/Transformers not available for neural generator.")
 
         gen.runtime = "fallback"
@@ -162,7 +173,12 @@ class QwenGenerator:
                 decoded = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
                 return decoded.strip()
             except Exception as e:
+                if self.final_mode:
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: Qwen generation failed on {self.device}: {e}") from e
                 print(f"PyTorch generation error: {e}", file=sys.stderr)
+
+        if self.final_mode:
+            raise RuntimeError("FINAL_PIPELINE_ERROR: Neural generator unavailable in final mode.")
 
         # 2. Fallback extractive generator
         lines = [
@@ -183,32 +199,39 @@ class QwenGenerator:
             return []
 
         if self.runtime != "torch" or self.model is None or self.tokenizer is None:
+            if self.final_mode:
+                raise RuntimeError("FINAL_PIPELINE_ERROR: Neural generator unavailable for batch generation in final mode.")
             return [self.generate(q, ev, max_new_tokens=max_new_tokens) for q, ev in items]
 
         prompts = [self.format_instance_prompt(q, ev) for q, ev in items]
         results: List[str] = []
 
-        for i in range(0, len(prompts), batch_size):
-            b_prompts = prompts[i:i + batch_size]
-            enc = self.tokenizer(
-                b_prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=2048,
-            )
-            enc = {k: v.to(self.device) for k, v in enc.items()}
-            with torch.inference_mode():
-                out = self.model.generate(
-                    **enc,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    repetition_penalty=1.05,
-                    pad_token_id=self.tokenizer.pad_token_id,
+        try:
+            for i in range(0, len(prompts), batch_size):
+                b_prompts = prompts[i:i + batch_size]
+                enc = self.tokenizer(
+                    b_prompts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=2048,
                 )
-            for j, prompt_len in enumerate(enc["input_ids"].shape[1] for _ in range(len(b_prompts))):
-                gen_ids = out[j][enc["input_ids"].shape[1]:]
-                decoded = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
-                results.append(decoded.strip())
-
-        return results
+                enc = {k: v.to(self.device) for k, v in enc.items()}
+                with torch.inference_mode():
+                    out = self.model.generate(
+                        **enc,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        repetition_penalty=1.05,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                    )
+                for j in range(len(b_prompts)):
+                    gen_ids = out[j][enc["input_ids"].shape[1]:]
+                    decoded = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
+                    results.append(decoded.strip())
+            return results
+        except Exception as e:
+            if self.final_mode:
+                raise RuntimeError(f"FINAL_PIPELINE_ERROR: Qwen batch generation failed on {self.device}: {e}") from e
+            print(f"Batch generation error: {e}, falling back to single generate...", file=sys.stderr)
+            return [self.generate(q, ev, max_new_tokens=max_new_tokens) for q, ev in items]

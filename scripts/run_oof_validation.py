@@ -78,12 +78,18 @@ def run_oof_validation(
     mode: str = "fast",  # "fast" or "full"
     model_path: str = "Qwen/Qwen2.5-3B-Instruct",
     adapter_path: Optional[str] = None,
+    reranker_checkpoint: str = "BAAI/bge-reranker-v2-m3",
+    held_out_fold: Optional[int] = None,
     device: Optional[str] = None,
     gen_device: Optional[str] = None,
     retrieval_device: Optional[str] = None,
     max_new_tokens: int = 384,
 ) -> Dict[str, Any]:
-    print(f"=== Starting LegalQA Task 2 5-Fold OOF Validation (Mode: {mode.upper()}) ===")
+    print(f"=== Starting LegalQA Task 2 OOF Validation (Mode: {mode.upper()}) ===")
+    if mode == "fast":
+        print("*******************************************************************************")
+        print("  DIAGNOSTIC ONLY — NOT VALID FOR MODEL QUALITY, CHECKPOINT VERIFICATION OR PROMOTION")
+        print("*******************************************************************************")
     print(f"Loading QA dataset from {qa_path}...")
     df_qa = pd.read_parquet(qa_path)
 
@@ -119,8 +125,8 @@ def run_oof_validation(
 
     # 3. Reranker
     if mode == "full" and device != "cpu":
-        print(f"Loading Neural Cross-Encoder Reranker on {r_dev}...")
-        reranker = BGEReranker(model_name="BAAI/bge-reranker-v2-m3", device=r_dev)
+        print(f"Loading Neural Cross-Encoder Reranker ({reranker_checkpoint}) on {r_dev}...")
+        reranker = BGEReranker(model_name=reranker_checkpoint, device=r_dev)
     else:
         print("Using fast lexical reranker for validation...")
         reranker = BGEReranker(model_name="mock", device="cpu")
@@ -284,6 +290,8 @@ def main():
     parser.add_argument("--mode", default="fast", choices=["fast", "full"])
     parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--adapter", default=None)
+    parser.add_argument("--reranker_checkpoint", default="BAAI/bge-reranker-v2-m3")
+    parser.add_argument("--held_out_fold", type=int, default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--max_new_tokens", type=int, default=384)
     args = parser.parse_args()
@@ -301,6 +309,8 @@ def main():
         mode=args.mode,
         model_path=args.model,
         adapter_path=args.adapter,
+        reranker_checkpoint=args.reranker_checkpoint,
+        held_out_fold=args.held_out_fold,
         device=args.device,
         max_new_tokens=args.max_new_tokens,
     )

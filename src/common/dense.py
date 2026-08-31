@@ -124,7 +124,6 @@ class DenseRetriever:
         if self.device.startswith("cuda") and torch.cuda.is_available():
             target_dtype = torch.float16 if self.dtype_str == "float16" else torch.float32
             try:
-                # Direct conversion from numpy maintaining FP16 without extra FP32 allocation
                 t = torch.as_tensor(self.corpus_embeddings, dtype=target_dtype, device=self.device)
                 self.gpu_tensor = t
             except Exception as e:
@@ -164,7 +163,7 @@ class DenseRetriever:
                 return results
             except Exception as e:
                 if self.final_mode:
-                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: GPU dense search failed on {self.device}: {e}")
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: GPU dense search failed on {self.device}: {e}") from e
                 print(f"GPU search fallback to CPU: {e}", file=sys.stderr)
 
         if self.final_mode and self.device.startswith("cuda"):
@@ -226,7 +225,7 @@ class DenseRetriever:
                 return all_results
             except Exception as e:
                 if self.final_mode:
-                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: GPU batched dense search failed: {e}")
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: GPU batched dense search failed: {e}") from e
                 print(f"GPU batch search fallback to CPU: {e}", file=sys.stderr)
 
         # 2. CPU Batched Fallback
@@ -276,6 +275,9 @@ class DenseRetriever:
         device: Optional[str] = None,
         dtype: str = "float16",
         final_mode: bool = False,
+        expected_model_name: Optional[str] = None,
+        expected_dtype: Optional[str] = None,
+        verify_embeddings_hash: bool = False,
     ) -> DenseRetriever:
         """Load precomputed embeddings from disk using mmap and verify row alignment and hash integrity."""
         meta_path = os.path.join(index_dir, "dense_manifest.json")
@@ -285,19 +287,28 @@ class DenseRetriever:
         revision = None
         saved_doc_ids = []
         saved_chunk_sha = ""
+        saved_emb_sha = ""
         expected_rows = None
         expected_dim = None
 
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
-                model_name = meta.get("model_id") or meta.get("model_name", model_name)
+                manifest_model = meta.get("model_id") or meta.get("model_name", model_name)
                 revision = meta.get("revision")
                 saved_doc_ids = meta.get("doc_ids", [])
                 saved_chunk_sha = meta.get("chunk_ids_sha256", "")
+                saved_emb_sha = meta.get("embeddings_sha256", "")
                 dtype = meta.get("dtype", dtype)
                 expected_rows = meta.get("corpus_rows")
                 expected_dim = meta.get("dim")
+
+                # Verify expected model name
+                if expected_model_name and manifest_model != expected_model_name:
+                    raise ValueError(
+                        f"FINAL_PIPELINE_ERROR: Dense model mismatch! Expected '{expected_model_name}', but index has '{manifest_model}'"
+                    )
+                model_name = manifest_model
 
         retriever = cls(model_name=model_name, revision=revision, device=device, dtype=dtype, final_mode=final_mode)
 
@@ -316,6 +327,15 @@ class DenseRetriever:
                 raise ValueError(
                     f"FINAL_PIPELINE_ERROR: Embedding dim ({retriever.corpus_embeddings.shape[1]}) != manifest dim ({expected_dim})"
                 )
+            if expected_dtype is not None and str(retriever.corpus_embeddings.dtype) != expected_dtype:
+                raise ValueError(
+                    f"FINAL_PIPELINE_ERROR: Embedding dtype ({retriever.corpus_embeddings.dtype}) != expected dtype ({expected_dtype})"
+                )
+            if verify_embeddings_hash and saved_emb_sha:
+                with open(emb_path, "rb") as f:
+                    curr_emb_sha = hashlib.sha256(f.read()).hexdigest()
+                if curr_emb_sha != saved_emb_sha:
+                    raise ValueError("FINAL_PIPELINE_ERROR: Dense embeddings.npy SHA256 checksum mismatch against manifest!")
 
         if corpus_path and os.path.exists(corpus_path):
             df = pd.read_parquet(corpus_path)

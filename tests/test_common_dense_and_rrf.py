@@ -2,7 +2,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from src.common.dense import DenseRetriever
 from src.common.dense_dek21 import DEk21Retriever
+from src.common.reranker import BGEReranker
 from src.common.rrf import reciprocal_rank_fusion
 
 
@@ -56,20 +58,38 @@ def test_dek21_retriever_mock(tmp_path: Path):
     assert loaded.doc_ids == ["c1", "c2"]
 
 
-def test_dek21_row_alignment_mismatch_fails(tmp_path: Path):
-    retriever = DEk21Retriever(model_name="mock")
-    corpus = [
-        {"chunk_id": "c1", "text_raw": "Text 1"},
-        {"chunk_id": "c2", "text_raw": "Text 2"}
-    ]
+def test_dense_expected_model_mismatch_fails(tmp_path: Path):
+    retriever = DenseRetriever(model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2")
+    corpus = [{"chunk_id": "c1", "text_raw": "T1"}]
     retriever.fit_mock(corpus)
-    index_dir = tmp_path / "dek21_index"
+    index_dir = tmp_path / "dense_index"
     retriever.save_index(str(index_dir))
 
-    # Create a corrupted corpus with 3 items instead of 2
-    corrupted_corpus = corpus + [{"chunk_id": "c3", "text_raw": "Text 3"}]
-    corrupted_file = tmp_path / "corrupted_chunks.parquet"
-    pd.DataFrame(corrupted_corpus).to_parquet(corrupted_file, index=False)
+    # Loading with mismatched expected model name in final mode must raise ValueError
+    with pytest.raises(ValueError, match="Dense model mismatch"):
+        DenseRetriever.load_index(
+            str(index_dir),
+            expected_model_name="BAAI/bge-m3",
+            final_mode=True,
+        )
 
-    with pytest.raises(ValueError, match="Dense index row count mismatch"):
-        DEk21Retriever.load_index(str(index_dir), corpus_path=str(corrupted_file), model_name="mock")
+
+def test_reranker_batch_matches_single():
+    reranker = BGEReranker(model_name="mock")
+    candidates_1 = [
+        {"chunk_id": "c1", "text_raw": "Luật giao thông đường bộ"},
+        {"chunk_id": "c2", "text_raw": "Luật đất đai quy định sổ đỏ"},
+    ]
+    candidates_2 = [
+        {"chunk_id": "c3", "text_raw": "Nghị định 90 xử phạt thú y"},
+        {"chunk_id": "c4", "text_raw": "Thông tư tiêm phòng vắc xin"},
+    ]
+
+    single_1 = reranker.rerank("giao thông", candidates_1, top_k=2)
+    single_2 = reranker.rerank("tiêm phòng", candidates_2, top_k=2)
+
+    batch_out = reranker.rerank_batch(["giao thông", "tiêm phòng"], [candidates_1, candidates_2], top_k=2)
+
+    assert len(batch_out) == 2
+    assert [c["chunk_id"] for c in batch_out[0]] == [c["chunk_id"] for c in single_1]
+    assert [c["chunk_id"] for c in batch_out[1]] == [c["chunk_id"] for c in single_2]
