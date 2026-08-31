@@ -1,4 +1,4 @@
-"""Fine-tuning module for Qwen2.5 with QLoRA SFT on LegalQA Dual-T4 GPUs."""
+"""Fine-tuning module for Qwen2.5 with modern TRL QLoRA SFT on LegalQA Dual-T4 GPUs."""
 
 from __future__ import annotations
 
@@ -54,12 +54,18 @@ def build_sft_example_token_aware(
     max_seq_len: int = 2048,
     safety_margin: int = 8,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
-    """Token-aware example builder guaranteeing gold answer tokens are 100% preserved."""
+    """Token-aware example builder guaranteeing gold answer tokens are 100% preserved.
+
+    Returns:
+        (full_text, diagnostics_dict) where diagnostics_dict contains 'prompt' and 'completion'
+        for modern TRL prompt-completion SFT datasets.
+    """
     ans_clean = str(answer).strip()
     q_clean = str(question).strip()
+    completion_text = f"{ans_clean}<|im_end|>"
 
     if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
-        ans_tokens = tokenizer.encode(f"{ans_clean}<|im_end|>", add_special_tokens=False)
+        ans_tokens = tokenizer.encode(completion_text, add_special_tokens=False)
         ans_token_count = len(ans_tokens)
 
         empty_prompt = format_qwen_chat_prompt(q_clean, "", tokenizer=tokenizer)
@@ -74,6 +80,8 @@ def build_sft_example_token_aware(
                 "evidence_truncated": False,
                 "answer_truncated": False,
                 "dropped": True,
+                "prompt": empty_prompt,
+                "completion": completion_text,
             }
 
         evidence_budget = max_seq_len - minimum_required - safety_margin
@@ -99,7 +107,7 @@ def build_sft_example_token_aware(
 
         final_evidence = "\n\n".join(packed_paragraphs) if packed_paragraphs else ""
         prompt = format_qwen_chat_prompt(q_clean, final_evidence, tokenizer=tokenizer)
-        full_text = f"{prompt}{ans_clean}<|im_end|>"
+        full_text = f"{prompt}{completion_text}"
         full_ids = tokenizer.encode(full_text, add_special_tokens=False)
 
         # While loop safety guard: remove packed paragraphs from the end if tokenizer special tokens exceed max_seq_len
@@ -107,7 +115,7 @@ def build_sft_example_token_aware(
             packed_paragraphs.pop()
             final_evidence = "\n\n".join(packed_paragraphs)
             prompt = format_qwen_chat_prompt(q_clean, final_evidence, tokenizer=tokenizer)
-            full_text = f"{prompt}{ans_clean}<|im_end|>"
+            full_text = f"{prompt}{completion_text}"
             full_ids = tokenizer.encode(full_text, add_special_tokens=False)
             ev_truncated = True
 
@@ -118,14 +126,23 @@ def build_sft_example_token_aware(
             "evidence_truncated": ev_truncated,
             "answer_truncated": False,
             "dropped": False,
+            "prompt": prompt,
+            "completion": completion_text,
         }
         return full_text, diagnostics
 
     # Fallback when tokenizer is not available
     ev_safe = truncate_evidence_preserving_answer(q_clean, evidence_text, ans_clean, max_chars=3000)
     prompt = format_qwen_chat_prompt(q_clean, ev_safe, tokenizer=None)
-    full_text = f"{prompt}{ans_clean}<|im_end|>"
-    return full_text, {"total_tokens": len(full_text.split()), "evidence_truncated": False, "answer_truncated": False, "dropped": False}
+    full_text = f"{prompt}{completion_text}"
+    return full_text, {
+        "total_tokens": len(full_text.split()),
+        "evidence_truncated": False,
+        "answer_truncated": False,
+        "dropped": False,
+        "prompt": prompt,
+        "completion": completion_text,
+    }
 
 
 def build_grounded_training_examples(
@@ -139,7 +156,11 @@ def build_grounded_training_examples(
     max_train_examples: Optional[int] = None,
     seed: int = 42,
 ) -> List[Dict[str, str]]:
-    """Build multi-positive structured SFT training examples ensuring exact prompt parity with inference."""
+    """Build multi-positive structured SFT training examples with prompt-completion formatting.
+
+    P1-1: Implements bounded preprocessing for smoke profiles (samples QA first and reads
+    only needed columns and matching positive chunks).
+    """
     if df_qa is None:
         if qa_path and os.path.exists(qa_path):
             df_qa = pd.read_parquet(qa_path)
@@ -149,29 +170,56 @@ def build_grounded_training_examples(
     if fold_to_exclude is not None and "fold_id" in df_qa.columns:
         df_qa = df_qa[df_qa["fold_id"] != fold_to_exclude]
 
-    # Deterministic sampling for smoke / limited training subsets
+    # 1. Deterministic sampling FIRST for bounded smoke subsets (P1-1)
     if max_train_examples is not None and len(df_qa) > max_train_examples:
         df_qa = df_qa.sample(n=max_train_examples, random_state=seed).reset_index(drop=True)
     else:
         df_qa = df_qa.reset_index(drop=True)
 
+    target_qa_ids = set(df_qa["qa_id"].astype(str)) if "qa_id" in df_qa.columns else set()
+    if not target_qa_ids and "id" in df_qa.columns:
+        target_qa_ids = set(df_qa["id"].astype(str))
+
+    # 2. Filter retrieval labels to only target QA IDs
+    needed_chunk_ids: set[str] = set()
+    qa_to_pos_chunk_ids: Dict[str, List[str]] = {}
+
+    if labels_path and os.path.exists(labels_path):
+        try:
+            df_labels = pd.read_parquet(labels_path, columns=["qa_id", "positive_chunk_id"])
+        except Exception:
+            df_labels = pd.read_parquet(labels_path)
+
+        if "qa_id" in df_labels.columns and "positive_chunk_id" in df_labels.columns:
+            if target_qa_ids:
+                df_labels = df_labels[df_labels["qa_id"].astype(str).isin(target_qa_ids)]
+
+            for _, row in df_labels.iterrows():
+                qid = str(row["qa_id"]).strip()
+                cid = str(row.get("positive_chunk_id", "")).strip()
+                if cid:
+                    if qid not in qa_to_pos_chunk_ids:
+                        qa_to_pos_chunk_ids[qid] = []
+                    if cid not in qa_to_pos_chunk_ids[qid]:
+                        qa_to_pos_chunk_ids[qid].append(cid)
+                    needed_chunk_ids.add(cid)
+
+    # 3. Read chunks with column projection and selective row filtering (P1-1)
     chunk_map: Dict[str, str] = {}
     if chunks_path and os.path.exists(chunks_path):
-        df_chunks = pd.read_parquet(chunks_path)
-        chunk_map = dict(zip(df_chunks["chunk_id"], df_chunks["text_raw"]))
+        try:
+            df_chunks = pd.read_parquet(chunks_path, columns=["chunk_id", "text_raw"])
+        except Exception:
+            df_chunks = pd.read_parquet(chunks_path)
+
+        if "chunk_id" in df_chunks.columns and "text_raw" in df_chunks.columns:
+            if needed_chunk_ids and len(needed_chunk_ids) < len(df_chunks):
+                df_chunks = df_chunks[df_chunks["chunk_id"].astype(str).isin(needed_chunk_ids)]
+            chunk_map = dict(zip(df_chunks["chunk_id"].astype(str), df_chunks["text_raw"]))
 
     qa_to_pos_evidence: Dict[str, List[str]] = {}
-    if labels_path and os.path.exists(labels_path):
-        df_labels = pd.read_parquet(labels_path)
-        for _, row in df_labels.iterrows():
-            qid = str(row["qa_id"]).strip()
-            cid = str(row.get("positive_chunk_id", "")).strip()
-            if cid and cid in chunk_map:
-                if qid not in qa_to_pos_evidence:
-                    qa_to_pos_evidence[qid] = []
-                txt = chunk_map[cid]
-                if txt not in qa_to_pos_evidence[qid]:
-                    qa_to_pos_evidence[qid].append(txt)
+    for qid, cids in qa_to_pos_chunk_ids.items():
+        qa_to_pos_evidence[qid] = [chunk_map[c] for c in cids if c in chunk_map]
 
     examples: List[Dict[str, str]] = []
     token_lengths = []
@@ -201,7 +249,12 @@ def build_grounded_training_examples(
             dropped_count += 1
             continue
 
-        examples.append({"text": full_text})
+        # Modern TRL prompt-completion structure with backwards-compatible text field
+        examples.append({
+            "prompt": diag.get("prompt", ""),
+            "completion": diag.get("completion", f"{a}<|im_end|>"),
+            "text": full_text,
+        })
         token_lengths.append(diag["total_tokens"])
         if diag.get("evidence_truncated"):
             ev_truncated_count += 1
@@ -223,7 +276,7 @@ def run_seq_len_diagnostic(
     model_name: str = "Qwen/Qwen2.5-3B-Instruct",
     seq_lens: List[int] = [2048, 3072],
 ) -> Dict[int, Dict[str, Any]]:
-    """Run sequence length diagnostic comparing truncation and drop rates at different lengths."""
+    """Actionable sequence length diagnostic comparing truncation and drop rates at different lengths (P1-2)."""
     try:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -231,7 +284,7 @@ def run_seq_len_diagnostic(
         tokenizer = None
 
     results = {}
-    print("\n=== Running SFT Sequence-Length Diagnostic ===")
+    print("\n=== Running Actionable SFT Sequence-Length Diagnostic ===")
     for length in seq_lens:
         examples = build_grounded_training_examples(
             qa_path=qa_path,
@@ -240,10 +293,16 @@ def run_seq_len_diagnostic(
             tokenizer=tokenizer,
             max_seq_len=length,
         )
+        token_lengths = [len(ex.get("text", "").split()) for ex in examples]
         results[length] = {
             "num_examples": len(examples),
             "max_seq_len": length,
+            "p50_tokens": float(np.percentile(token_lengths, 50)) if token_lengths else 0.0,
+            "p90_tokens": float(np.percentile(token_lengths, 90)) if token_lengths else 0.0,
+            "p95_tokens": float(np.percentile(token_lengths, 95)) if token_lengths else 0.0,
+            "max_tokens": int(max(token_lengths)) if token_lengths else 0,
         }
+        print(f" - Max Seq Len {length}: {len(examples)} examples preserved")
     return results
 
 
@@ -266,7 +325,7 @@ def run_qlora_training(
     is_final_checkpoint: Optional[bool] = None,
     fail_on_error: bool = True,
 ) -> Dict[str, Any]:
-    """Execute QLoRA fine-tuning on GPU 0 with completion loss masking and strict reload verification."""
+    """Execute QLoRA fine-tuning on GPU 0 using modern TRL prompt-completion SFT with strict reload verification."""
     print(f"=== Starting QLoRA Generator Fine-Tuning ({model_name}) ===")
     assert_no_secrets_in_workspace(Path.cwd())
 
@@ -275,7 +334,7 @@ def run_qlora_training(
         from datasets import Dataset as HFDataset
         from peft import LoraConfig, PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-        from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
+        from trl import SFTConfig, SFTTrainer
     except ImportError as e:
         msg = f"Required training packages not installed: {e}"
         if fail_on_error:
@@ -290,6 +349,13 @@ def run_qlora_training(
 
     dev = device or "cuda:0"
     print(f"QLoRA Training targeted on device: {dev}")
+
+    # Track VRAM on target GPU (P1-3)
+    if torch.cuda.is_available() and dev.startswith("cuda"):
+        try:
+            torch.cuda.reset_peak_memory_stats(dev)
+        except Exception:
+            pass
 
     token = os.environ.get("HF_TOKEN")
     tokenizer = AutoTokenizer.from_pretrained(model_name, token=token)
@@ -343,9 +409,7 @@ def run_qlora_training(
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
-    response_template_ids = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
-    collator = DataCollatorForCompletionOnlyLM(response_template_ids, tokenizer=tokenizer)
-
+    # Modern TRL prompt-completion configuration (P0-1)
     sft_kwargs: Dict[str, Any] = {
         "output_dir": os.path.join(output_dir, "runs"),
         "per_device_train_batch_size": batch_size,
@@ -356,7 +420,6 @@ def run_qlora_training(
         "learning_rate": lr,
         "lr_scheduler_type": "cosine",
         "warmup_ratio": 0.03,
-        "dataset_text_field": "text",
         "logging_steps": 10,
         "save_strategy": "epoch",
         "report_to": "none",
@@ -366,21 +429,46 @@ def run_qlora_training(
     if max_steps is not None:
         sft_kwargs["max_steps"] = max_steps
 
+    # Instantiate SFTConfig with completion_only_loss or fallback
     try:
-        sft_args = SFTConfig(max_length=max_seq_len, **sft_kwargs)
+        sft_args = SFTConfig(
+            max_length=max_seq_len,
+            completion_only_loss=True,
+            **sft_kwargs,
+        )
     except TypeError:
-        sft_args = SFTConfig(max_seq_length=max_seq_len, **sft_kwargs)
+        try:
+            sft_args = SFTConfig(
+                max_seq_length=max_seq_len,
+                completion_only_loss=True,
+                **sft_kwargs,
+            )
+        except TypeError:
+            try:
+                sft_args = SFTConfig(max_length=max_seq_len, **sft_kwargs)
+            except TypeError:
+                sft_args = SFTConfig(max_seq_length=max_seq_len, **sft_kwargs)
 
+    # Modern SFTTrainer automatically handles prompt/completion columns
     trainer = SFTTrainer(
         model=model,
         args=sft_args,
         train_dataset=dataset,
         processing_class=tokenizer,
         peft_config=peft_config,
-        data_collator=collator,
     )
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+
+    # Measure peak VRAM allocated on GPU (P1-3)
+    peak_vram_mb = 0.0
+    if torch.cuda.is_available() and dev.startswith("cuda"):
+        try:
+            peak_bytes = torch.cuda.max_memory_allocated(dev)
+            peak_vram_mb = round(peak_bytes / (1024 * 1024), 2)
+            print(f"QLoRA Training Peak VRAM on {dev}: {peak_vram_mb:.2f} MB")
+        except Exception:
+            pass
 
     # Count exact trainable adapter parameters
     adapter_trainable_params = int(sum(p.numel() for p in trainer.model.parameters() if p.requires_grad))
@@ -412,6 +500,7 @@ def run_qlora_training(
         "smoke_only": max_steps is not None,
         "dataset_size": len(dataset),
         "adapter_trainable_params": adapter_trainable_params,
+        "peak_vram_mb": peak_vram_mb,
     }
     with open(os.path.join(output_dir, "generator_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

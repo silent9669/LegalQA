@@ -6,6 +6,8 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+from src.common.hashing import sha256_file
+
 
 def load_reranker_manifest(checkpoint_dir: str) -> Dict[str, Any]:
     """Load reranker checkpoint manifest from directory."""
@@ -26,7 +28,9 @@ def load_generator_manifest(checkpoint_dir: str) -> Dict[str, Any]:
     """Load QLoRA generator checkpoint manifest from directory."""
     manifest_path = os.path.join(checkpoint_dir, "generator_manifest.json")
     if not os.path.exists(manifest_path):
-        general_manifest = os.path.join(checkpoint_dir, "manifest.json")
+        general_manifest = os.path.join(checkpoint_dir, "training_manifest.json")
+        if not os.path.exists(general_manifest):
+            general_manifest = os.path.join(checkpoint_dir, "manifest.json")
         if os.path.exists(general_manifest):
             manifest_path = general_manifest
         else:
@@ -42,7 +46,10 @@ def assert_final_checkpoint(
     component_name: str,
     expected_scope: str = "all_allowed_task2_data",
 ) -> Dict[str, Any]:
-    """Strictly assert that a checkpoint was trained on full data as a final checkpoint."""
+    """Strictly assert that a checkpoint was trained on full data as a final checkpoint.
+
+    P0-13: Checks both 'val_fold_excluded' and 'val_fold' keys to ensure no fold was held out.
+    """
     if not os.path.exists(checkpoint_dir):
         raise FileNotFoundError(f"Checkpoint directory does not exist: {checkpoint_dir}")
 
@@ -79,9 +86,11 @@ def assert_final_checkpoint(
             f"Refusing to use smoke checkpoint in final/reuse profile."
         )
 
-    if manifest.get("val_fold") is not None:
+    # P0-13: Check both val_fold_excluded and val_fold
+    excluded_fold = manifest.get("val_fold_excluded", manifest.get("val_fold"))
+    if excluded_fold is not None:
         raise ValueError(
-            f"Checkpoint in {checkpoint_dir} was trained with held-out val_fold={manifest.get('val_fold')}. "
+            f"Checkpoint in {checkpoint_dir} was trained with held-out val_fold={excluded_fold}. "
             f"Final checkpoints must be trained on all allowed data with val_fold=None."
         )
 

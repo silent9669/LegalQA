@@ -8,6 +8,15 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+GENERATOR_DEPENDENT_CANDIDATES = {
+    "generated",
+    "snapped",
+    "strategy_f_300",
+    "strategy_f_600",
+    "strategy_f_1000",
+    "strategy_f_1500",
+}
+
 
 @dataclass
 class ProductionSelection:
@@ -36,18 +45,22 @@ class ProductionSelection:
 
 
 def policy_requires_generator(candidate_policy: str, best_fixed_candidate: Optional[str] = None) -> bool:
-    """Check if the candidate policy or fixed choice requires Qwen generator output."""
-    if candidate_policy in ("learned", "meta_selector"):
+    """Check if the candidate policy or fixed choice requires Qwen generator output (P0-11)."""
+    p = str(candidate_policy).lower().strip()
+    if p in ("learned", "learned_model", "meta_selector"):
         return True
-    if candidate_policy in ("fixed_baseline", "fixed"):
-        if best_fixed_candidate in ("generated", "strategy_f_1000", "strategy_f_1500", "strategy_f_600", "strategy_f_300"):
-            return True
-        return False
+    if p in ("fixed_baseline", "fixed", "direct_candidate"):
+        cand = str(best_fixed_candidate).lower().strip() if best_fixed_candidate else ""
+        return cand in GENERATOR_DEPENDENT_CANDIDATES
     return False
 
 
 def load_production_selection(config_path: str = "configs/production_selection.yaml") -> ProductionSelection:
-    """Load and parse production selection YAML into a typed ProductionSelection dataclass."""
+    """Load and parse production selection YAML into a typed ProductionSelection dataclass.
+
+    P0-10: Enforces valid policy types ('fixed_baseline', 'learned_model', 'direct_candidate')
+    and rejects overloading candidate names as policy types.
+    """
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Production selection config not found at: {config_path}")
 
@@ -70,6 +83,17 @@ def load_production_selection(config_path: str = "configs/production_selection.y
     policy_cfg = data.get("candidate_policy", {})
     evidence_cfg = data.get("evidence", {})
 
+    policy_type = policy_cfg.get("type", "fixed_baseline")
+    # P0-10: Reject overloading candidate names as policy types
+    if policy_type in GENERATOR_DEPENDENT_CANDIDATES or policy_type in ("stitched_extract", "focused_extract"):
+        raise ValueError(
+            f"Invalid candidate_policy type '{policy_type}' in {config_path}. "
+            f"Policy type must be 'fixed_baseline', 'learned_model', or 'direct_candidate'. "
+            f"Set 'type: fixed_baseline' and 'best_fixed_candidate: {policy_type}' instead."
+        )
+
+    best_fixed = policy_cfg.get("best_fixed_candidate", "stitched_extract")
+
     return ProductionSelection(
         schema_version=schema_v,
         status=status,
@@ -83,8 +107,8 @@ def load_production_selection(config_path: str = "configs/production_selection.y
         generator_base_model=generator_cfg.get("base_model", "Qwen/Qwen2.5-3B-Instruct"),
         adapter_path=generator_cfg.get("adapter_path", "checkpoints/generator/hf_adapter"),
         max_new_tokens=int(generator_cfg.get("max_new_tokens", 384)),
-        candidate_policy=policy_cfg.get("type", "fixed_baseline"),
-        best_fixed_candidate=policy_cfg.get("best_fixed_candidate", "stitched_extract"),
+        candidate_policy=policy_type,
+        best_fixed_candidate=best_fixed,
         selector_checkpoint=policy_cfg.get("selector_checkpoint"),
         primary_evidence_pack=evidence_cfg.get("primary_pack", "multi_seed_2500_chars"),
         raw_config=data,

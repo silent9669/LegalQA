@@ -58,6 +58,7 @@ class LegalQAPipeline:
                 "chunk_id": "c1",
                 "doc_name": "Nghị định 90/2017/NĐ-CP",
                 "parent_article_id": "doc1_art17",
+                "article_id": "doc1_art17",
                 "article_number": "17",
                 "clause_number": "3",
                 "text_raw": "[DOCUMENT] Nghị định 90/2017/NĐ-CP\n[ARTICLE] Điều 17. Phạt tiền từ 1.000.000 đồng đến 2.000.000 đồng đối với hành vi không tiêm phòng.",
@@ -169,17 +170,62 @@ class LegalQAPipeline:
 
         return cls(memory, bm25, dense, reranker, packer, generator, selector)
 
+    def retrieve_and_rerank(self, question: str, top_k_rerank: int = 8) -> Dict[str, Any]:
+        """Perform hybrid retrieval (BM25 + GPU Dense) and Cross-Encoder reranking returning full trace (P0-7)."""
+        bm25_res = self.bm25.search(question, top_k=50) if self.bm25 else []
+        dense_res = self.dense.search(question, top_k=50) if self.dense else []
+        if bm25_res and dense_res:
+            fused_res = reciprocal_rank_fusion([bm25_res, dense_res], k=60, weights=[0.5, 0.5])
+        else:
+            fused_res = bm25_res or dense_res
+
+        top_seeds = self.reranker.rerank(question, fused_res, top_k=top_k_rerank) if (self.reranker and fused_res) else fused_res[:top_k_rerank]
+
+        pack_multi = self.packer.pack_evidence(top_seeds, pack_type="multi_seed_2500_chars", max_chars=3500)
+        primary_evidence = pack_multi.get("text") or (top_seeds[0]["text_raw"] if top_seeds else "")
+
+        r1 = float(top_seeds[0].get("rerank_score", top_seeds[0].get("score", 0.0))) if top_seeds else 0.0
+        r2 = float(top_seeds[1].get("rerank_score", top_seeds[1].get("score", 0.0))) if len(top_seeds) > 1 else r1
+
+        retrieval_meta = {
+            "rerank_top1": r1,
+            "rerank_margin": r1 - r2,
+            "bm25_top1": float(bm25_res[0].get("score", 0.0)) if bm25_res else 0.0,
+            "dense_top1": float(dense_res[0].get("score", 0.0)) if dense_res else 0.0,
+        }
+
+        return {
+            "bm25_results": bm25_res,
+            "dense_results": dense_res,
+            "fused_results": fused_res,
+            "reranked_results": top_seeds,
+            "primary_evidence": primary_evidence,
+            "retrieval_meta": retrieval_meta,
+            "pack_multi": pack_multi,
+        }
+
     def predict_single(
         self,
         qa_id: str,
         question: str,
         max_new_tokens: int = 384,
         return_candidates: bool = False,
+        return_trace: bool = False,
     ) -> Any:
-        """Execute inference on a single query."""
+        """Execute inference on a single query with optional candidates and retrieval trace (P0-7)."""
         # 1. Exact QA Memory Lookup
         exact_ans = self.memory.lookup_exact(qa_id, question)
         if exact_ans:
+            if return_trace:
+                empty_trace = {
+                    "bm25_results": [],
+                    "dense_results": [],
+                    "fused_results": [],
+                    "reranked_results": [],
+                    "primary_evidence": exact_ans,
+                    "retrieval_meta": {"is_exact_memory": True},
+                }
+                return exact_ans, {"exact_memory": exact_ans}, empty_trace
             if return_candidates:
                 return exact_ans, {"exact_memory": exact_ans}, exact_ans
             return exact_ans
@@ -188,31 +234,25 @@ class LegalQAPipeline:
         fuzzy_hit = self.memory.lookup_fuzzy(question, threshold=0.90)
         fuzzy_ans = fuzzy_hit["answer"] if fuzzy_hit else ""
 
-        # 3. Hybrid Retrieval (BM25 + GPU Dense)
-        bm25_res = self.bm25.search(question, top_k=50) if self.bm25 else []
-        dense_res = self.dense.search(question, top_k=50) if self.dense else []
-        if bm25_res and dense_res:
-            fused_res = reciprocal_rank_fusion([bm25_res, dense_res], k=60, weights=[0.5, 0.5])
-        else:
-            fused_res = bm25_res or dense_res
+        # 3. Hybrid Retrieval & Reranking Trace (P0-7)
+        trace = self.retrieve_and_rerank(question, top_k_rerank=8)
+        top_seeds = trace["reranked_results"]
+        primary_evidence = trace["primary_evidence"]
+        retrieval_meta = trace["retrieval_meta"]
+        retrieval_meta["fuzzy_sim"] = float(fuzzy_hit["similarity"]) if fuzzy_hit else 0.0
+        pack_multi = trace.get("pack_multi", {})
 
-        # 4. Neural Cross-Encoder Reranking
-        top_seeds = self.reranker.rerank(question, fused_res, top_k=8) if (self.reranker and fused_res) else fused_res[:8]
-
-        # 5. Multi-Granularity Evidence Packing
-        pack_multi = self.packer.pack_evidence(top_seeds, pack_type="multi_seed_2500_chars", max_chars=3500)
+        # 4. Multi-Granularity Evidence Packing
         pack_focused = self.packer.pack_evidence(top_seeds, pack_type="focused_clause")
         pack_full_art = self.packer.pack_evidence(top_seeds, pack_type="primary_full_article")
         pack_top2_rel = self.packer.pack_evidence(top_seeds, pack_type="relevance_selected_top2_articles", max_chars=2500)
 
-        primary_evidence = pack_multi.get("text") or (top_seeds[0]["text_raw"] if top_seeds else "")
-
-        # 6. Generator Candidate (Optional if generator loaded & needed)
+        # 5. Generator Candidate (Optional if generator loaded & needed)
         gen_ans = ""
         if self.generator is not None and (self.policy_needs_generator or return_candidates):
             gen_ans = self.generator.generate(question, primary_evidence, max_new_tokens=max_new_tokens)
 
-        # 7. Candidate Ensemble
+        # 6. Candidate Ensemble
         top_doc = pack_multi.get("top_doc_name", "")
         top_art = pack_multi.get("top_article_num", "")
         top_clause = pack_multi.get("top_clause_num", "")
@@ -234,17 +274,6 @@ class LegalQAPipeline:
             evidence_packs=evidence_packs,
         )
 
-        r1 = float(top_seeds[0].get("rerank_score", top_seeds[0].get("score", 0.0))) if top_seeds else 0.0
-        r2 = float(top_seeds[1].get("rerank_score", top_seeds[1].get("score", 0.0))) if len(top_seeds) > 1 else r1
-
-        retrieval_meta = {
-            "rerank_top1": r1,
-            "rerank_margin": r1 - r2,
-            "bm25_top1": float(bm25_res[0].get("score", 0.0)) if bm25_res else 0.0,
-            "dense_top1": float(dense_res[0].get("score", 0.0)) if dense_res else 0.0,
-            "fuzzy_sim": float(fuzzy_hit["similarity"]) if fuzzy_hit else 0.0,
-        }
-
         selected = self.selector.select(
             candidates=candidates,
             question=question,
@@ -252,6 +281,9 @@ class LegalQAPipeline:
             retrieval_meta=retrieval_meta,
             features=fuzzy_hit,
         )
+
+        if return_trace:
+            return selected, candidates, trace
 
         if return_candidates:
             return selected, candidates, primary_evidence
@@ -314,7 +346,7 @@ class LegalQAPipeline:
                 fused = bm25_res or dense_res
             fused_candidate_lists.append(fused)
 
-        # 4. Batch Rerank across all queries (Section 8: use rerank_batch!)
+        # 4. Batch Rerank across all queries
         if self.reranker and hasattr(self.reranker, "rerank_batch"):
             all_top_seeds = self.reranker.rerank_batch(
                 unseen_queries,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -14,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.common.hashing import sha256_file
 from src.common.security import assert_no_secrets_in_workspace
 from src.task2.production_config import load_production_selection
 
@@ -34,14 +34,6 @@ OPTIONAL_DIRS = [
     "indexes/bm25",
     "indexes/dek21",
 ]
-
-
-def compute_file_sha256(filepath: str | Path) -> str:
-    h = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def get_git_sha() -> str:
@@ -127,7 +119,7 @@ def package_kaggle_dataset(
     for rel_path in REQUIRED_FILES:
         src_file = src / rel_path
         dest_file = stage / Path(rel_path).name
-        file_sha = compute_file_sha256(src_file)
+        file_sha = sha256_file(src_file)
         file_size_mb = src_file.stat().st_size / (1024 * 1024)
 
         manifest["files"][Path(rel_path).name] = {
@@ -145,7 +137,7 @@ def package_kaggle_dataset(
         src_opt = src / opt_rel
         if src_opt.exists():
             dest_file = stage / Path(opt_rel).name
-            file_sha = compute_file_sha256(src_opt)
+            file_sha = sha256_file(src_opt)
             file_size_mb = src_opt.stat().st_size / (1024 * 1024)
             manifest["files"][Path(opt_rel).name] = {
                 "source": str(opt_rel),
@@ -161,7 +153,7 @@ def package_kaggle_dataset(
     # Stage public-official.json if present
     public_official = Path("artifacts/raw/public-official.json")
     if public_official.exists():
-        file_sha = compute_file_sha256(public_official)
+        file_sha = sha256_file(public_official)
         manifest["files"]["public-official.json"] = {
             "source": "artifacts/raw/public-official.json",
             "sha256": file_sha,
@@ -216,7 +208,7 @@ def package_kaggle_dataset(
             shutil.copytree(src_dir, code_root / "src", dirs_exist_ok=True, ignore=ignore_patterns)
         for py_file in src_dir.rglob("*.py"):
             if "__pycache__" not in str(py_file):
-                code_manifest["files"][str(py_file)] = compute_file_sha256(py_file)
+                code_manifest["files"][str(py_file)] = sha256_file(py_file)
 
         # 2. scripts/
         scripts_dir = Path("scripts")
@@ -224,20 +216,20 @@ def package_kaggle_dataset(
             shutil.copytree(scripts_dir, code_root / "scripts", dirs_exist_ok=True, ignore=ignore_patterns)
         for py_file in scripts_dir.rglob("*.py"):
             if "__pycache__" not in str(py_file):
-                code_manifest["files"][str(py_file)] = compute_file_sha256(py_file)
+                code_manifest["files"][str(py_file)] = sha256_file(py_file)
 
         # 3. configs/
         cfg_dir = Path("configs")
         if cfg_dir.exists() and not dry_run:
             shutil.copytree(cfg_dir, code_root / "configs", dirs_exist_ok=True, ignore=ignore_patterns)
         for yaml_file in cfg_dir.rglob("*.yaml"):
-            code_manifest["files"][str(yaml_file)] = compute_file_sha256(yaml_file)
+            code_manifest["files"][str(yaml_file)] = sha256_file(yaml_file)
 
         # 4. requirements-kaggle.txt
         req_file = Path("requirements-kaggle.txt")
         if req_file.exists() and not dry_run:
             shutil.copy2(req_file, code_root / "requirements-kaggle.txt")
-            code_manifest["files"]["requirements-kaggle.txt"] = compute_file_sha256(req_file)
+            code_manifest["files"]["requirements-kaggle.txt"] = sha256_file(req_file)
 
         manifest["code"] = {
             "root": "code/LegalQA",
@@ -269,27 +261,3 @@ def package_kaggle_dataset(
 
     print(f"\nSuccessfully staged clean dataset to {stage}.")
     print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}'")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Package clean LegalQA dataset and code for Kaggle.")
-    parser.add_argument("--source", default="artifacts/task2", help="Source artifact directory")
-    parser.add_argument("--staging", default="kaggle_dataset/staged", help="Staging output directory")
-    parser.add_argument("--title", default="LegalQA", help="Kaggle dataset display title")
-    parser.add_argument("--profile", default="default", choices=["default", "final_training"])
-    parser.add_argument("--dry_run", action="store_true", help="Simulate staging without copying files")
-    parser.add_argument("--no_code", action="store_true", help="Omit code runtime from dataset")
-    args = parser.parse_args()
-
-    package_kaggle_dataset(
-        source_dir=args.source,
-        staging_dir=args.staging,
-        dataset_title=args.title,
-        profile=args.profile,
-        include_code=not args.no_code,
-        dry_run=args.dry_run,
-    )
-
-
-if __name__ == "__main__":
-    main()

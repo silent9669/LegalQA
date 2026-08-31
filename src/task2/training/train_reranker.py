@@ -99,6 +99,13 @@ def train_bge_reranker(
     dev = device or ("cuda:1" if torch.cuda.device_count() > 1 else "cuda:0")
     print(f"Training Reranker on device: {dev}")
 
+    # Track VRAM on target GPU (P1-3)
+    if torch.cuda.is_available() and dev.startswith("cuda"):
+        try:
+            torch.cuda.reset_peak_memory_stats(dev)
+        except Exception:
+            pass
+
     train_examples, val_examples = prepare_reranker_dataset(
         pairs_path=pairs_path,
         val_fold=val_fold,
@@ -259,6 +266,16 @@ def train_bge_reranker(
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
 
+    # Measure peak VRAM allocated on GPU (P1-3)
+    peak_vram_mb = 0.0
+    if torch.cuda.is_available() and dev.startswith("cuda"):
+        try:
+            peak_bytes = torch.cuda.max_memory_allocated(dev)
+            peak_vram_mb = round(peak_bytes / (1024 * 1024), 2)
+            print(f"Reranker Training Peak VRAM on {dev}: {peak_vram_mb:.2f} MB")
+        except Exception:
+            pass
+
     # Determine finality and scope
     if is_final_checkpoint is None:
         is_final = (val_fold is None and max_steps is None)
@@ -283,6 +300,7 @@ def train_bge_reranker(
         "num_training_pairs": len(train_examples),
         "best_val_loss": round(float(best_val_loss), 4) if best_val_loss != float("inf") else round(float(avg_train_loss), 4),
         "best_val_accuracy": round(float(best_accuracy), 4),
+        "peak_vram_mb": peak_vram_mb,
     }
     with open(os.path.join(output_dir, "reranker_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
