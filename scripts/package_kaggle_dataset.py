@@ -1,4 +1,4 @@
-"""Package clean, self-contained LegalQA dataset and code runtime artifacts for Kaggle (V8)."""
+"""Package clean, self-contained LegalQA dataset and code runtime artifacts for Kaggle (V9)."""
 
 from __future__ import annotations
 
@@ -42,12 +42,20 @@ OPTIONAL_DIRS = [
 ]
 
 
-def get_git_sha() -> str:
+def get_git_sha(strict: bool = False) -> str:
+    """Retrieve 40-character lowercase Git commit SHA (Task 2)."""
     try:
         res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
-        return res.stdout.strip()
-    except Exception:
-        return "unknown"
+        sha = res.stdout.strip().lower()
+        if len(sha) == 40:
+            return sha
+        if strict:
+            raise RuntimeError(f"git rev-parse HEAD returned non-40-character SHA: {sha!r}")
+        return "0" * 40
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("Could not resolve Git HEAD commit SHA for production package.") from exc
+        return "0" * 40
 
 
 def package_kaggle_dataset(
@@ -67,6 +75,9 @@ def package_kaggle_dataset(
 
     # Security check
     assert_no_secrets_in_workspace(Path.cwd())
+
+    # Resolve git commit SHA once for exact parity
+    resolved_git_sha = get_git_sha(strict=(profile == "final_training"))
 
     # Verify required source files exist
     missing = []
@@ -116,7 +127,7 @@ def package_kaggle_dataset(
         "owner": user_handle,
         "profile": profile,
         "runtime_api_version": RUNTIME_API_VERSION,
-        "git_sha": get_git_sha(),
+        "git_sha": resolved_git_sha,
         "files": {},
         "indexes": {},
         "code": {},
@@ -195,7 +206,7 @@ def package_kaggle_dataset(
         print("Staging code runtime into code/LegalQA/ :")
         code_root = stage / "code" / "LegalQA"
         code_manifest: Dict[str, Any] = {
-            "git_sha": get_git_sha(),
+            "git_sha": resolved_git_sha,
             "runtime_api_version": RUNTIME_API_VERSION,
             "files": {},
         }
@@ -276,7 +287,7 @@ def package_kaggle_dataset(
         )
 
     print(f"\nSuccessfully staged clean dataset to {stage}.")
-    print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}' | Runtime API: v{RUNTIME_API_VERSION}")
+    print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}' | Runtime API: v{RUNTIME_API_VERSION} | Git SHA: {resolved_git_sha[:10]}")
 
 
 def main():

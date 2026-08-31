@@ -103,6 +103,19 @@ def test_promoter_rejects_inconsistent_report(tmp_path):
     """Task 5: Verify promote_production_selection rejects component-inconsistent report."""
     report_file = tmp_path / "inconsistent_report.json"
 
+    sys_template = {
+        "sample_ids_sha256": "abc123456",
+        "sample_size": 250,
+        "candidate_family_meteors": {"strategy_f_1000": 0.330},
+        "retrieval_metrics": {"chunk_mrr": 0.45},
+        "reranker_checkpoint": "checkpoints/reranker/best",
+        "generator_model": "Qwen/Qwen2.5-3B-Instruct",
+        "adapter_path": None,
+        "dense_model": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        "no_mocks": True,
+        "no_fallbacks": True,
+    }
+
     # Inconsistent: selected_generator is use_qlora=False, but final_measured_system_key is R_SELECTED_G1
     bad_report = {
         "screen_protocol_version": 8,
@@ -110,9 +123,9 @@ def test_promoter_rejects_inconsistent_report(tmp_path):
         "sample_ids_sha256": "abc123456",
         "sample_size": 250,
         "evaluated_systems": {
-            "R0G0": {"sample_ids_sha256": "abc123456", "sample_size": 250},
-            "R1G0": {"sample_ids_sha256": "abc123456", "sample_size": 250},
-            "R_SELECTED_G1": {"sample_ids_sha256": "abc123456", "sample_size": 250},
+            "R0G0": dict(sys_template, reranker_checkpoint="BAAI/bge-reranker-v2-m3"),
+            "R1G0": dict(sys_template, reranker_checkpoint="checkpoints/reranker/best"),
+            "R_SELECTED_G1": dict(sys_template, reranker_checkpoint="checkpoints/reranker/best"),
         },
         "selected_reranker": {
             "use_task_tuned": True,

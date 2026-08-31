@@ -1,4 +1,4 @@
-"""Tests for LegalQA V7 runtime integrity, bootstrap protection, and preflight."""
+"""Tests for LegalQA V7/V9 runtime integrity, bootstrap protection, and preflight."""
 
 from __future__ import annotations
 
@@ -180,7 +180,7 @@ def test_stale_runtime_api_manifest_detection():
     import yaml
     with open("configs/runtime_api.yaml", "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    assert data.get("runtime_api_version") == 8
+    assert data.get("runtime_api_version") == 9
 
 
 def test_sequence_diagnostics_use_tokenizer_counts(tmp_path):
