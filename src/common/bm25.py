@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import sys
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -188,7 +189,12 @@ class BM25Retriever:
             self.bm25s_index.save(os.path.join(index_dir, "bm25s_index"))
 
     @classmethod
-    def load(cls, index_dir: str, corpus_path: Optional[str] = None) -> BM25Retriever:
+    def load(
+        cls,
+        index_dir: str,
+        corpus_path: Optional[str] = None,
+        fail_on_missing_index: bool = False,
+    ) -> BM25Retriever:
         """Load BM25 index referencing canonical corpus parquet with mmap and zero redundant postings rebuilding."""
         corpus: List[Dict[str, Any]] = []
 
@@ -221,12 +227,15 @@ class BM25Retriever:
         if bm25s is not None and os.path.exists(os.path.join(bm25s_dir, "params.index.json")):
             try:
                 retriever.bm25s_index = bm25s.BM25.load(bm25s_dir, mmap=True)
-                # Success loading BM25S index -> do NOT rebuild Python postings!
                 return retriever
             except Exception as e:
+                if fail_on_missing_index:
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: Failed to load BM25S index at {bm25s_dir}: {e}")
                 print(f"Warning: Failed to mmap load bm25s index ({e}), falling back to fit...", file=sys.stderr)
                 retriever.fit(corpus)
         else:
+            if fail_on_missing_index:
+                raise FileNotFoundError(f"FINAL_PIPELINE_ERROR: BM25S index not found at {bm25s_dir}")
             retriever.fit(corpus)
 
         return retriever

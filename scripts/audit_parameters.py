@@ -27,6 +27,7 @@ def load_config_file(config_path: str) -> dict:
 def audit_parameter_budget(
     config_path: str = "configs/models.yaml",
     stack: Optional[str] = "stack_a",
+    adapter_manifest_path: Optional[str] = None,
     extra_adapter_params: int = 0,
     adapter_name: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -54,7 +55,19 @@ def audit_parameter_budget(
                 total += p
                 breakdown[mid] = p
 
-    if extra_adapter_params > 0:
+    # Read trained adapter parameter count dynamically if manifest path is supplied
+    if adapter_manifest_path and os.path.exists(adapter_manifest_path):
+        try:
+            with open(adapter_manifest_path, "r", encoding="utf-8") as f:
+                man = json.load(f)
+            ad_p = int(man.get("adapter_trainable_params", 0))
+            if ad_p > 0:
+                name = adapter_name or "trained_qlora_adapter"
+                total += ad_p
+                breakdown[name] = ad_p
+        except Exception:
+            pass
+    elif extra_adapter_params > 0:
         name = adapter_name or "lora_adapter"
         total += extra_adapter_params
         breakdown[name] = extra_adapter_params

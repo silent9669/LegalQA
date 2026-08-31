@@ -22,11 +22,14 @@ def run_preflight_checks(
     expected_gpu_count: int = 2,
     check_dataset_files: bool = False,
     data_dir: str = "artifacts/task2/data",
-    index_dir: str = "artifacts/task2/indexes",
+    index_dir: Optional[str] = None,
+    bm25_dir: str = "artifacts/task2/indexes/bm25",
+    dek21_dir: str = "artifacts/task2/indexes/dek21",
     public_path: Optional[str] = "artifacts/raw/public-official.json",
     stack: str = "stack_a",
+    require_training_files: bool = False,
 ) -> Dict[str, Any]:
-    """Perform preflight checks and return diagnostic status."""
+    """Perform comprehensive preflight checks and return diagnostic status."""
     errors: List[str] = []
     warnings: List[str] = []
     details: Dict[str, Any] = {}
@@ -89,6 +92,9 @@ def run_preflight_checks(
             os.path.join(data_dir, "known_qa.json"),
             os.path.join(data_dir, "fold_assignments.parquet"),
         ]
+        if require_training_files:
+            required_data_files.append(os.path.join(data_dir, "reranker_training_pairs.parquet"))
+
         for df_path in required_data_files:
             if not os.path.exists(df_path):
                 errors.append(f"Missing required data file: {df_path}")
@@ -136,7 +142,9 @@ def main():
     parser.add_argument("--require_cuda", action="store_true")
     parser.add_argument("--expected_gpus", type=int, default=2)
     parser.add_argument("--check_data", action="store_true")
+    parser.add_argument("--data_dir", default="artifacts/task2/data")
     parser.add_argument("--stack", default="stack_a", choices=["stack_a", "stack_b"])
+    parser.add_argument("--require_training", action="store_true")
     args = parser.parse_args()
 
     res = run_preflight_checks(
@@ -145,7 +153,9 @@ def main():
         require_cuda=args.require_cuda,
         expected_gpu_count=args.expected_gpus,
         check_dataset_files=args.check_data,
+        data_dir=args.data_dir,
         stack=args.stack,
+        require_training_files=args.require_training,
     )
     if not res["passed"]:
         sys.exit(1)

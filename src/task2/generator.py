@@ -134,12 +134,16 @@ class QwenGenerator:
         gen.runtime = "fallback"
         return gen
 
+    def format_instance_prompt(self, question: str, evidence: str) -> str:
+        """Format prompt using the instance's loaded tokenizer."""
+        return format_qwen_chat_prompt(question, evidence, tokenizer=self.tokenizer)
+
     @staticmethod
     def format_prompt(question: str, evidence: str, tokenizer: Optional[Any] = None) -> str:
         return format_qwen_chat_prompt(question, evidence, tokenizer=tokenizer)
 
     def generate(self, question: str, evidence: str, max_new_tokens: int = 384) -> str:
-        prompt = self.format_prompt(question, evidence)
+        prompt = self.format_instance_prompt(question, evidence)
 
         # 1. PyTorch / CUDA Generation
         if self.runtime == "torch" and self.model is not None and self.tokenizer is not None:
@@ -181,7 +185,7 @@ class QwenGenerator:
         if self.runtime != "torch" or self.model is None or self.tokenizer is None:
             return [self.generate(q, ev, max_new_tokens=max_new_tokens) for q, ev in items]
 
-        prompts = [self.format_prompt(q, ev) for q, ev in items]
+        prompts = [self.format_instance_prompt(q, ev) for q, ev in items]
         results: List[str] = []
 
         for i in range(0, len(prompts), batch_size):
