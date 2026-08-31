@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -154,23 +155,24 @@ def build_grounded_training_examples(
     tokenizer: Optional[Any] = None,
     max_seq_len: int = 2048,
     max_train_examples: Optional[int] = None,
+    return_diagnostics: bool = False,
     seed: int = 42,
-) -> List[Dict[str, str]]:
+) -> Union[List[Dict[str, str]], Tuple[List[Dict[str, str]], Dict[str, Any]]]:
     """Build multi-positive structured SFT training examples with prompt-completion formatting.
 
-    P1-1: Implements bounded preprocessing for smoke profiles (samples QA first and reads
-    only needed columns and matching positive chunks).
+    P1-1 & Task 10: Implements bounded preprocessing for smoke profiles with optional
+    PyArrow column & filter pushdown.
     """
     if df_qa is None:
         if qa_path and os.path.exists(qa_path):
             df_qa = pd.read_parquet(qa_path)
         else:
-            return []
+            return ([], {}) if return_diagnostics else []
 
     if fold_to_exclude is not None and "fold_id" in df_qa.columns:
         df_qa = df_qa[df_qa["fold_id"] != fold_to_exclude]
 
-    # 1. Deterministic sampling FIRST for bounded smoke subsets (P1-1)
+    # 1. Deterministic sampling FIRST for bounded smoke subsets
     if max_train_examples is not None and len(df_qa) > max_train_examples:
         df_qa = df_qa.sample(n=max_train_examples, random_state=seed).reset_index(drop=True)
     else:
@@ -204,18 +206,34 @@ def build_grounded_training_examples(
                         qa_to_pos_chunk_ids[qid].append(cid)
                     needed_chunk_ids.add(cid)
 
-    # 3. Read chunks with column projection and selective row filtering (P1-1)
+    # 3. Read chunks with column projection and selective row filtering (Task 10)
     chunk_map: Dict[str, str] = {}
     if chunks_path and os.path.exists(chunks_path):
-        try:
-            df_chunks = pd.read_parquet(chunks_path, columns=["chunk_id", "text_raw"])
-        except Exception:
-            df_chunks = pd.read_parquet(chunks_path)
+        read_success = False
+        if needed_chunk_ids:
+            try:
+                import pyarrow.dataset as ds
+                dataset = ds.dataset(chunks_path, format="parquet")
+                table = dataset.to_table(
+                    columns=["chunk_id", "text_raw"],
+                    filter=ds.field("chunk_id").isin(list(needed_chunk_ids)),
+                )
+                df_chunks = table.to_pandas()
+                chunk_map = dict(zip(df_chunks["chunk_id"].astype(str), df_chunks["text_raw"]))
+                read_success = True
+            except Exception:
+                read_success = False
 
-        if "chunk_id" in df_chunks.columns and "text_raw" in df_chunks.columns:
-            if needed_chunk_ids and len(needed_chunk_ids) < len(df_chunks):
-                df_chunks = df_chunks[df_chunks["chunk_id"].astype(str).isin(needed_chunk_ids)]
-            chunk_map = dict(zip(df_chunks["chunk_id"].astype(str), df_chunks["text_raw"]))
+        if not read_success:
+            try:
+                df_chunks = pd.read_parquet(chunks_path, columns=["chunk_id", "text_raw"])
+            except Exception:
+                df_chunks = pd.read_parquet(chunks_path)
+
+            if "chunk_id" in df_chunks.columns and "text_raw" in df_chunks.columns:
+                if needed_chunk_ids and len(needed_chunk_ids) < len(df_chunks):
+                    df_chunks = df_chunks[df_chunks["chunk_id"].astype(str).isin(needed_chunk_ids)]
+                chunk_map = dict(zip(df_chunks["chunk_id"].astype(str), df_chunks["text_raw"]))
 
     qa_to_pos_evidence: Dict[str, List[str]] = {}
     for qid, cids in qa_to_pos_chunk_ids.items():
@@ -259,13 +277,30 @@ def build_grounded_training_examples(
         if diag.get("evidence_truncated"):
             ev_truncated_count += 1
 
-    if token_lengths:
-        p50 = float(np.percentile(token_lengths, 50))
-        p90 = float(np.percentile(token_lengths, 90))
-        p95 = float(np.percentile(token_lengths, 95))
-        max_t = int(max(token_lengths))
-        print(f"SFT Dataset Stats ({len(examples)} kept, {dropped_count} dropped): P50={p50:.0f}, P90={p90:.0f}, P95={p95:.0f}, Max={max_t}, Ev Truncated={ev_truncated_count/len(examples)*100:.1f}%")
+    diag_summary = {
+        "kept_count": len(examples),
+        "dropped_count": dropped_count,
+        "drop_rate": dropped_count / max(1, len(examples) + dropped_count),
+        "evidence_truncated_count": ev_truncated_count,
+        "evidence_truncated_rate": ev_truncated_count / max(1, len(examples)),
+        "token_lengths": token_lengths,
+        "p50_tokens": float(np.percentile(token_lengths, 50)) if token_lengths else 0.0,
+        "p90_tokens": float(np.percentile(token_lengths, 90)) if token_lengths else 0.0,
+        "p95_tokens": float(np.percentile(token_lengths, 95)) if token_lengths else 0.0,
+        "p99_tokens": float(np.percentile(token_lengths, 99)) if token_lengths else 0.0,
+        "max_tokens": int(max(token_lengths)) if token_lengths else 0,
+    }
 
+    if token_lengths:
+        print(
+            f"SFT Dataset Stats ({len(examples)} kept, {dropped_count} dropped): "
+            f"P50={diag_summary['p50_tokens']:.0f}, P90={diag_summary['p90_tokens']:.0f}, "
+            f"P95={diag_summary['p95_tokens']:.0f}, Max={diag_summary['max_tokens']}, "
+            f"Ev Truncated={diag_summary['evidence_truncated_rate']*100:.1f}%"
+        )
+
+    if return_diagnostics:
+        return examples, diag_summary
     return examples
 
 
@@ -276,7 +311,7 @@ def run_seq_len_diagnostic(
     model_name: str = "Qwen/Qwen2.5-3B-Instruct",
     seq_lens: List[int] = [2048, 3072],
 ) -> Dict[int, Dict[str, Any]]:
-    """Actionable sequence length diagnostic comparing truncation and drop rates at different lengths (P1-2)."""
+    """Actionable sequence length diagnostic comparing truncation and drop rates at different lengths (Task 9)."""
     try:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -284,30 +319,62 @@ def run_seq_len_diagnostic(
         tokenizer = None
 
     results = {}
-    print("\n=== Running Actionable SFT Sequence-Length Diagnostic ===")
+    print("\n=== Running Actionable SFT Sequence-Length Diagnostic (Tokenizer-Derived) ===")
     for length in seq_lens:
-        examples = build_grounded_training_examples(
+        examples, diag = build_grounded_training_examples(
             qa_path=qa_path,
             labels_path=labels_path,
             chunks_path=chunks_path,
             tokenizer=tokenizer,
             max_seq_len=length,
+            return_diagnostics=True,
         )
-        token_lengths = [len(ex.get("text", "").split()) for ex in examples]
         results[length] = {
-            "num_examples": len(examples),
             "max_seq_len": length,
-            "p50_tokens": float(np.percentile(token_lengths, 50)) if token_lengths else 0.0,
-            "p90_tokens": float(np.percentile(token_lengths, 90)) if token_lengths else 0.0,
-            "p95_tokens": float(np.percentile(token_lengths, 95)) if token_lengths else 0.0,
-            "max_tokens": int(max(token_lengths)) if token_lengths else 0,
+            "num_examples": len(examples),
+            "dropped_count": diag["dropped_count"],
+            "drop_rate": round(diag["drop_rate"], 4),
+            "evidence_truncated_rate": round(diag["evidence_truncated_rate"], 4),
+            "p50_tokens": round(diag["p50_tokens"], 1),
+            "p90_tokens": round(diag["p90_tokens"], 1),
+            "p95_tokens": round(diag["p95_tokens"], 1),
+            "p99_tokens": round(diag["p99_tokens"], 1),
+            "max_tokens": diag["max_tokens"],
         }
-        print(f" - Max Seq Len {length}: {len(examples)} examples preserved")
+        print(
+            f" - Max Seq Len {length:4d}: {len(examples)} kept, {diag['dropped_count']} dropped ({diag['drop_rate']*100:.1f}%), "
+            f"P95={diag['p95_tokens']:.0f}, Max={diag['max_tokens']}"
+        )
     return results
 
 
+def build_sft_config(max_seq_len: int, **kwargs) -> Any:
+    """Build SFTConfig requiring modern completion_only_loss support, failing loud if unavailable (Step 1.6)."""
+    from trl import SFTConfig
+
+    sig = inspect.signature(SFTConfig)
+    if "completion_only_loss" not in sig.parameters:
+        raise RuntimeError(
+            "Installed TRL SFTConfig does not support completion_only_loss parameter. "
+            "Refusing to train with changed/corrupted loss semantics."
+        )
+
+    config_kwargs = dict(kwargs)
+    config_kwargs["completion_only_loss"] = True
+
+    if "max_length" in sig.parameters:
+        config_kwargs["max_length"] = max_seq_len
+    elif "max_seq_length" in sig.parameters:
+        config_kwargs["max_seq_length"] = max_seq_len
+    else:
+        config_kwargs["max_length"] = max_seq_len
+
+    return SFTConfig(**config_kwargs)
+
+
 def run_qlora_training(
-    model_name: str = "Qwen/Qwen2.5-3B-Instruct",
+    model_name_or_path: str = "Qwen/Qwen2.5-3B-Instruct",
+    base_model_id: str = "Qwen/Qwen2.5-3B-Instruct",
     qa_path: str = "artifacts/task2/data/qa_unique.parquet",
     labels_path: str = "artifacts/task2/data/retrieval_labels.parquet",
     chunks_path: str = "artifacts/task2/data/legal_chunks.parquet",
@@ -326,7 +393,7 @@ def run_qlora_training(
     fail_on_error: bool = True,
 ) -> Dict[str, Any]:
     """Execute QLoRA fine-tuning on GPU 0 using modern TRL prompt-completion SFT with strict reload verification."""
-    print(f"=== Starting QLoRA Generator Fine-Tuning ({model_name}) ===")
+    print(f"=== Starting QLoRA Generator Fine-Tuning (Base: {base_model_id} | Path: {model_name_or_path}) ===")
     assert_no_secrets_in_workspace(Path.cwd())
 
     try:
@@ -350,7 +417,7 @@ def run_qlora_training(
     dev = device or "cuda:0"
     print(f"QLoRA Training targeted on device: {dev}")
 
-    # Track VRAM on target GPU (P1-3)
+    # Track VRAM on target GPU
     if torch.cuda.is_available() and dev.startswith("cuda"):
         try:
             torch.cuda.reset_peak_memory_stats(dev)
@@ -358,7 +425,7 @@ def run_qlora_training(
             pass
 
     token = os.environ.get("HF_TOKEN")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=token)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, token=token)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -392,7 +459,7 @@ def run_qlora_training(
     )
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        model_name_or_path,
         quantization_config=bnb_config,
         torch_dtype=compute_dtype,
         device_map={"": dev} if dev.startswith("cuda") else "auto",
@@ -409,7 +476,7 @@ def run_qlora_training(
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
-    # Modern TRL prompt-completion configuration (P0-1)
+    # Modern TRL prompt-completion configuration (Step 1.6)
     sft_kwargs: Dict[str, Any] = {
         "output_dir": os.path.join(output_dir, "runs"),
         "per_device_train_batch_size": batch_size,
@@ -429,25 +496,7 @@ def run_qlora_training(
     if max_steps is not None:
         sft_kwargs["max_steps"] = max_steps
 
-    # Instantiate SFTConfig with completion_only_loss or fallback
-    try:
-        sft_args = SFTConfig(
-            max_length=max_seq_len,
-            completion_only_loss=True,
-            **sft_kwargs,
-        )
-    except TypeError:
-        try:
-            sft_args = SFTConfig(
-                max_seq_length=max_seq_len,
-                completion_only_loss=True,
-                **sft_kwargs,
-            )
-        except TypeError:
-            try:
-                sft_args = SFTConfig(max_length=max_seq_len, **sft_kwargs)
-            except TypeError:
-                sft_args = SFTConfig(max_seq_length=max_seq_len, **sft_kwargs)
+    sft_args = build_sft_config(max_seq_len=max_seq_len, **sft_kwargs)
 
     # Modern SFTTrainer automatically handles prompt/completion columns
     trainer = SFTTrainer(
@@ -460,7 +509,7 @@ def run_qlora_training(
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
-    # Measure peak VRAM allocated on GPU (P1-3)
+    # Measure peak VRAM allocated on GPU
     peak_vram_mb = 0.0
     if torch.cuda.is_available() and dev.startswith("cuda"):
         try:
@@ -489,7 +538,9 @@ def run_qlora_training(
         training_scope = f"smoke_subset_{max_steps}_steps"
 
     manifest = {
-        "base_model": model_name,
+        "base_model_id": base_model_id,
+        "base_model": base_model_id,
+        "resolved_model_path": model_name_or_path,
         "epochs": epochs,
         "batch_size_per_device": batch_size,
         "gradient_accumulation_steps": grad_accum,
@@ -517,7 +568,7 @@ def run_qlora_training(
 
     try:
         reload_gen = QwenGenerator.load(
-            model_path=model_name,
+            model_path=model_name_or_path,
             adapter_path=output_dir,
             device=dev,
             runtime="torch",

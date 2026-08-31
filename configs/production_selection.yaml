@@ -1,5 +1,6 @@
-# Frozen Production Model Selection & Strategy for Kaggle Stack A
+# Frozen Production Model Selection & Strategy for Kaggle Stack A (Protocol 7)
 schema_version: 3
+screen_protocol_version: 7
 
 # Status must be "PROMOTED" after screen_fold0 to run final_train_and_submit without emergency override
 status: "UNVALIDATED"

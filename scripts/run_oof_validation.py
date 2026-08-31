@@ -1,4 +1,4 @@
-"""5-Fold Out-Of-Fold (OOF) cross-validation and official whitespace-tokenized METEOR evaluation."""
+"""5-Fold Out-Of-Fold (OOF) cross-validation and official whitespace-tokenized METEOR evaluation (V7)."""
 
 from __future__ import annotations
 
@@ -188,7 +188,7 @@ def run_oof_validation(
         all_fold_questions = set(fold_records["question_raw"].astype(str))
         isolated_mem = full_memory.filter_fold(val_qa_ids=all_fold_qa_ids, val_questions=all_fold_questions)
 
-        # If per-fold checkpoints are provided, validate provenance and reload fold-specific models (P1-4)
+        # If per-fold checkpoints are provided, validate provenance and reload fold-specific models (Task 11)
         current_reranker = reranker
         current_generator = generator
         if fold_checkpoint_map and fold_id in fold_checkpoint_map:
@@ -201,6 +201,9 @@ def run_oof_validation(
                 r_exc = r_man.get("val_fold_excluded", r_man.get("val_fold"))
                 if r_exc != fold_id:
                     raise ValueError(f"Fold {fold_id} reranker manifest excluded fold {r_exc} != {fold_id}")
+                r_scope = r_man.get("training_scope")
+                if r_scope and r_scope != f"folds_excluding_{fold_id}":
+                    raise ValueError(f"Fold {fold_id} reranker training_scope '{r_scope}' != 'folds_excluding_{fold_id}'")
                 current_reranker = BGEReranker(model_name=r_path, device=r_dev)
 
             if "adapter" in ckpt_info:
@@ -211,6 +214,9 @@ def run_oof_validation(
                 g_exc = g_man.get("val_fold_excluded", g_man.get("val_fold"))
                 if g_exc != fold_id:
                     raise ValueError(f"Fold {fold_id} generator manifest excluded fold {g_exc} != {fold_id}")
+                g_scope = g_man.get("training_scope")
+                if g_scope and g_scope != f"folds_excluding_{fold_id}":
+                    raise ValueError(f"Fold {fold_id} generator training_scope '{g_scope}' != 'folds_excluding_{fold_id}'")
                 current_generator = QwenGenerator.load(
                     model_path=model_path,
                     adapter_path=a_path,

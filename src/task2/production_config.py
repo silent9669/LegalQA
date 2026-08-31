@@ -1,4 +1,4 @@
-"""Authoritative production selection configuration loader and validator."""
+"""Authoritative production selection configuration loader and validator (V7)."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class ProductionSelection:
 
 
 def policy_requires_generator(candidate_policy: str, best_fixed_candidate: Optional[str] = None) -> bool:
-    """Check if the candidate policy or fixed choice requires Qwen generator output (P0-11)."""
+    """Check if the candidate policy or fixed choice requires Qwen generator output."""
     p = str(candidate_policy).lower().strip()
     if p in ("learned", "learned_model", "meta_selector"):
         return True
@@ -58,7 +58,7 @@ def policy_requires_generator(candidate_policy: str, best_fixed_candidate: Optio
 def load_production_selection(config_path: str = "configs/production_selection.yaml") -> ProductionSelection:
     """Load and parse production selection YAML into a typed ProductionSelection dataclass.
 
-    P0-10: Enforces valid policy types ('fixed_baseline', 'learned_model', 'direct_candidate')
+    Enforces valid policy types ('fixed_baseline', 'learned_model', 'direct_candidate')
     and rejects overloading candidate names as policy types.
     """
     if not os.path.exists(config_path):
@@ -84,7 +84,6 @@ def load_production_selection(config_path: str = "configs/production_selection.y
     evidence_cfg = data.get("evidence", {})
 
     policy_type = policy_cfg.get("type", "fixed_baseline")
-    # P0-10: Reject overloading candidate names as policy types
     if policy_type in GENERATOR_DEPENDENT_CANDIDATES or policy_type in ("stitched_extract", "focused_extract"):
         raise ValueError(
             f"Invalid candidate_policy type '{policy_type}' in {config_path}. "
@@ -120,7 +119,7 @@ def validate_production_selection_for_profile(
     profile: str,
     allow_unvalidated_final: bool = False,
 ) -> None:
-    """Validate that the production configuration is eligible for the chosen execution profile."""
+    """Validate that the production configuration is eligible for the chosen execution profile (Task 5)."""
     if profile in ("final_train_and_submit", "reuse_final_checkpoints_and_submit"):
         if config.status == "UNVALIDATED" and not allow_unvalidated_final:
             raise RuntimeError(
@@ -128,3 +127,10 @@ def validate_production_selection_for_profile(
                 f"Running profile '{profile}' requires a validated 'PROMOTED' config resulting from screen_fold0, "
                 f"or setting ALLOW_UNVALIDATED_FINAL=True for emergency override."
             )
+        if config.status == "PROMOTED" and not allow_unvalidated_final:
+            protocol_v = config.raw_config.get("screen_protocol_version", 1)
+            if protocol_v < 7:
+                raise RuntimeError(
+                    f"Promoted config uses screen_protocol_version={protocol_v} < 7. "
+                    f"Profile '{profile}' requires screening under Protocol 7 (staged component consistency)."
+                )
