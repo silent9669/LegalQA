@@ -26,7 +26,7 @@ def find_runtime_roots(base_path: str = "/kaggle/input") -> List[str]:
         matching_roots.add(abs_base)
 
     # 2. Recursive traversal across arbitrary nesting depth
-    for root, dirs, files in os.walk(base_path, followlinks=True):
+    for root, dirs, files in os.walk(base_path, followlinks=False):
         abs_root = os.path.abspath(root)
 
         # Skip subdirectories inside code/ to prevent finding packaged code subtrees
