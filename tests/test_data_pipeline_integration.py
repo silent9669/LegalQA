@@ -134,10 +134,14 @@ def test_qa_memory_conflict_handling_and_fold_isolation():
 
     mem = QAMemory.from_records(records)
 
-    # Exact ID lookup always works
-    assert mem.lookup_exact("q1", "something else") == "Tối đa 4 triệu đồng/tháng."
-    assert mem.lookup_exact("q3", "something else") == "Từ 1 đến 5 năm."
-    assert mem.lookup_exact("q4", "something else") == "Từ 6 tháng đến 3 năm."
+    # Exact ID lookup works with matching question or empty question
+    assert mem.lookup_exact("q1", "Học sinh vay vốn được bao nhiêu?") == "Tối đa 4 triệu đồng/tháng."
+    assert mem.lookup_exact("q1", "") == "Tối đa 4 triệu đồng/tháng."
+    assert mem.lookup_exact("q3", "Thời hạn án treo là bao lâu?") == "Từ 1 đến 5 năm."
+    assert mem.lookup_exact("q4", "Thời hạn án treo là bao lâu?") == "Từ 6 tháng đến 3 năm."
+
+    # ID collision with conflicting question returns None for safety
+    assert mem.lookup_exact("q1", "something else") is None
 
     # Normalized question lookup works for consistent duplicates
     assert mem.lookup_exact(None, "học sinh vay vốn được bao nhiêu?") == "Tối đa 4 triệu đồng/tháng."

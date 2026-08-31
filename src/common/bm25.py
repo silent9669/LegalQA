@@ -1,4 +1,4 @@
-"""BM25 Sparse Retriever with Vietnamese word segmentation and statutory legal signal boosting."""
+"""BM25 Sparse Retriever with Vietnamese word segmentation, BM25S mmap support, and statutory legal boosting."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ except ImportError:
 
 
 class BM25Retriever:
-    """Fast lexical retriever supporting bm25s C-bindings and exact inverted index Python fallback."""
+    """Fast lexical retriever supporting bm25s C-bindings (mmap) and exact inverted index Python fallback."""
 
     def __init__(self, k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
@@ -31,13 +31,13 @@ class BM25Retriever:
         self.doc_len: List[int] = []
         self.avg_doc_len: float = 0.0
         self.df: Counter = Counter()
-        # Inverted index stores (doc_idx, tf) for zero-truncation exact BM25
+        # Inverted index stores (doc_idx, tf) for zero-truncation exact BM25 Python fallback
         self.postings: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
         self.corpus_size: int = 0
         self.bm25s_index: Any = None
 
     def fit(self, corpus: List[Dict[str, Any]]) -> None:
-        """Fit BM25 index on a collection of chunk dictionaries without any posting truncation."""
+        """Fit BM25 index on a collection of chunk dictionaries without posting truncation."""
         self.corpus = corpus
         self.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
         self.corpus_size = len(corpus)
@@ -76,7 +76,7 @@ class BM25Retriever:
                 self.bm25s_index = None
 
     def search(self, query: str, top_k: int = 60) -> List[Dict[str, Any]]:
-        """Search query across indexed corpus and return ranked results with legal entity boosts."""
+        """Search query across indexed corpus and return ranked results with isolated legal entity boosts."""
         if not self.corpus or self.corpus_size == 0 or not query.strip():
             return []
 
@@ -84,8 +84,9 @@ class BM25Retriever:
         seg_query = tokenize_vietnamese(query.lower())
         q_tokens = seg_query.split()
 
-        scores: Dict[int, float] = defaultdict(float)
+        raw_scores: Dict[int, float] = defaultdict(float)
 
+        # 1. BM25S fast retrieval if index is loaded
         if self.bm25s_index is not None and q_tokens:
             try:
                 bm25_res = self.bm25s_index.retrieve(
@@ -97,64 +98,76 @@ class BM25Retriever:
                 bm25_scores = bm25_res.scores[0]
                 for idx, sc in zip(doc_indices, bm25_scores):
                     if isinstance(idx, (int, np.integer)) and 0 <= idx < self.corpus_size:
-                        scores[int(idx)] = float(sc)
+                        raw_scores[int(idx)] = float(sc)
             except Exception:
                 pass
 
-        if not scores:
-            # Exact Python Inverted Index BM25 fallback
+        # 2. Python Inverted Index Fallback
+        if not raw_scores and self.postings:
             for t in q_tokens:
                 if t in self.postings:
                     df_val = self.df[t]
-                    # Standard Robertson-Spärck Jones IDF
                     idf = math.log((self.corpus_size - df_val + 0.5) / (df_val + 0.5) + 1.0)
                     if idf <= 0:
                         idf = 1e-4
 
                     for doc_idx, tf in self.postings[t]:
-                        doc_l = self.doc_len[doc_idx]
+                        doc_l = self.doc_len[doc_idx] if doc_idx < len(self.doc_len) else int(self.avg_doc_len)
                         denom = tf + self.k1 * (1.0 - self.b + self.b * (doc_l / max(1e-6, self.avg_doc_len)))
                         score = idf * (tf * (self.k1 + 1.0)) / max(1e-6, denom)
-                        scores[doc_idx] += score
+                        raw_scores[doc_idx] += score
 
-        if not scores:
+        if not raw_scores:
             return []
 
-        # Candidate pool for entity boost (top candidates by lexical BM25)
-        top_candidates = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:max(top_k * 4, 200)]
+        # Candidate pool for legal entity boosting
+        top_candidate_indices = sorted(raw_scores.keys(), key=lambda x: raw_scores[x], reverse=True)[:max(top_k * 4, 200)]
 
-        # Apply Legal Entity Booster on candidate pool
-        for i in top_candidates:
-            raw = self.corpus[i].get("text_raw", "")
-            raw_upper = raw.upper()
+        boosts: Dict[int, float] = defaultdict(float)
+        final_scores: Dict[int, float] = {}
+
+        for i in top_candidate_indices:
+            raw_sc = raw_scores[i]
+            boost = 0.0
+            raw_text = self.corpus[i].get("text_raw", "")
+            raw_upper = raw_text.upper()
+
             # Boost exact document number matches
             for d in signals.get("doc_numbers", []):
                 if d.upper() in raw_upper:
-                    scores[i] += 25.0
+                    boost += 25.0
+
             # Boost exact article number matches
             for a in signals.get("articles", []):
-                if re.search(rf'\b[Đđ]iều\s+{re.escape(a)}\b', raw, re.IGNORECASE):
-                    scores[i] += 12.0
+                if re.search(rf'\b[Đđ]iều\s+{re.escape(a)}\b', raw_text, re.IGNORECASE):
+                    boost += 12.0
+
             # Boost exact clause matches
             for cl in signals.get("clauses", []):
-                if re.search(rf'\b(?:[Kk]hoản\s+{re.escape(cl)}|\n{re.escape(cl)}\.)\b', raw, re.IGNORECASE):
-                    scores[i] += 6.0
+                if re.search(rf'\b(?:[Kk]hoản\s+{re.escape(cl)}|\n{re.escape(cl)}\.)\b', raw_text, re.IGNORECASE):
+                    boost += 6.0
 
-        ranked_indices = sorted(top_candidates, key=lambda i: scores[i], reverse=True)[:top_k]
+            boosts[i] = boost
+            final_scores[i] = raw_sc + boost
+
+        ranked_indices = sorted(top_candidate_indices, key=lambda i: final_scores[i], reverse=True)[:top_k]
         results: List[Dict[str, Any]] = []
+
         for rank, idx in enumerate(ranked_indices, start=1):
-            if scores[idx] <= 0:
+            if final_scores[idx] <= 0 and raw_scores[idx] <= 0:
                 continue
             item = dict(self.corpus[idx])
-            item["score"] = float(scores[idx])
-            item["bm25_score"] = float(scores[idx])
+            item["bm25_raw_score"] = float(raw_scores[idx])
+            item["legal_boost"] = float(boosts[idx])
+            item["bm25_score"] = float(final_scores[idx])
+            item["score"] = float(final_scores[idx])
             item["rank"] = rank
             results.append(item)
 
         return results
 
     def save(self, index_dir: str, save_corpus_meta: bool = False) -> None:
-        """Save BM25 index and parameters without duplicating full corpus parquet by default."""
+        """Save BM25 index and metadata."""
         os.makedirs(index_dir, exist_ok=True)
         manifest = {
             "corpus_size": self.corpus_size,
@@ -176,7 +189,7 @@ class BM25Retriever:
 
     @classmethod
     def load(cls, index_dir: str, corpus_path: Optional[str] = None) -> BM25Retriever:
-        """Load BM25 index referencing canonical corpus path."""
+        """Load BM25 index referencing canonical corpus parquet with mmap and zero redundant postings rebuilding."""
         corpus: List[Dict[str, Any]] = []
 
         if corpus_path and os.path.exists(corpus_path):
@@ -189,29 +202,29 @@ class BM25Retriever:
                 corpus = df.to_dict("records")
 
         retriever = cls()
+        retriever.corpus = corpus
+        retriever.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
+        retriever.corpus_size = len(corpus)
+
+        manifest_path = os.path.join(index_dir, "bm25_manifest.json")
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                    retriever.k1 = manifest.get("k1", 1.5)
+                    retriever.b = manifest.get("b", 0.75)
+                    retriever.avg_doc_len = manifest.get("avg_doc_len", 0.0)
+            except Exception:
+                pass
+
         bm25s_dir = os.path.join(index_dir, "bm25s_index")
         if bm25s is not None and os.path.exists(os.path.join(bm25s_dir, "params.index.json")):
-            retriever.corpus = corpus
-            retriever.doc_ids = [c["chunk_id"] for c in corpus]
-            retriever.corpus_size = len(corpus)
             try:
                 retriever.bm25s_index = bm25s.BM25.load(bm25s_dir, mmap=True)
-                # Also fit postings for python fallback compatibility
-                tokenized_corpus = []
-                for idx, c in enumerate(corpus):
-                    raw_tokens = c.get("text_norm", "")
-                    if not raw_tokens:
-                        raw_tokens = tokenize_vietnamese(c.get("text_raw", ""))
-                    tokens = raw_tokens.split() if isinstance(raw_tokens, str) else list(raw_tokens)
-                    tokenized_corpus.append(tokens)
-                    doc_l = len(tokens)
-                    retriever.doc_len.append(doc_l)
-                    counts = Counter(tokens)
-                    for t, tf in counts.items():
-                        retriever.df[t] += 1
-                        retriever.postings[t].append((idx, tf))
-                retriever.avg_doc_len = sum(retriever.doc_len) / max(1, retriever.corpus_size)
-            except Exception:
+                # Success loading BM25S index -> do NOT rebuild Python postings!
+                return retriever
+            except Exception as e:
+                print(f"Warning: Failed to mmap load bm25s index ({e}), falling back to fit...", file=sys.stderr)
                 retriever.fit(corpus)
         else:
             retriever.fit(corpus)

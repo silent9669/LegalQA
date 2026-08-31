@@ -1,10 +1,9 @@
-"""Qwen2.5-3B-Instruct Generator wrapper with prompt parity and FP16/BF16 auto-detection."""
+"""Qwen2.5 Generator wrapper with tokenizer chat template parity, FP16 auto-detection, and fail-loudly policy."""
 
 from __future__ import annotations
 
-import math
 import os
-import re
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -30,8 +29,30 @@ SYSTEM_PROMPT = (
 )
 
 
+def format_qwen_chat_prompt(question: str, evidence: str, tokenizer: Optional[Any] = None) -> str:
+    """Format prompt with 100% parity between training and inference using native chat template."""
+    ev_clean = evidence.strip() if evidence else "Không có căn cứ cụ thể."
+    user_content = f"[CĂN CỨ PHÁP LÝ]\n{ev_clean}\n\n[CÂU HỎI]\n{question.strip()}"
+
+    if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+    # Standard Qwen ChatML fallback format
+    return (
+        f"<|im_start|>system\n"
+        f"{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>user\n"
+        f"{user_content}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+
+
 class QwenGenerator:
-    """Qwen2.5-3B-Instruct generator for evidence-conditioned statutory legal answer generation."""
+    """Qwen2.5 (3B / 1.5B) Generator for evidence-conditioned statutory legal answer generation."""
 
     def __init__(
         self,
@@ -54,8 +75,9 @@ class QwenGenerator:
         adapter_path: Optional[str] = None,
         device: Optional[str] = None,
         runtime: str = "auto",
+        fail_on_fallback: bool = False,
     ) -> QwenGenerator:
-        """Load generator model, defaulting to full PyTorch/CUDA when available or fallback on CPU."""
+        """Load generator model, enforcing explicit device mapping and loud failure in competition mode."""
         gen = cls(model_path=model_path, adapter_path=adapter_path, runtime=runtime, device=device)
 
         if runtime == "fallback":
@@ -67,7 +89,7 @@ class QwenGenerator:
                 dev = device or ("cuda:0" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
                 token = os.environ.get("HF_TOKEN")
 
-                # Detect compute dtype: FP16 on T4 / general CUDA, BF16 only if supported
+                # Detect compute dtype: FP16 on T4 / CUDA, BF16 only if supported
                 if dev.startswith("cuda") and torch.cuda.is_bf16_supported():
                     compute_dtype = torch.bfloat16
                 elif dev.startswith("cuda") or dev == "mps":
@@ -75,7 +97,7 @@ class QwenGenerator:
                 else:
                     compute_dtype = torch.float32
 
-                print(f"Loading Qwen2.5 Generator ({model_path}) on {dev} with dtype={compute_dtype}...")
+                print(f"Loading Qwen Generator ({model_path}) on {dev} with dtype={compute_dtype}...")
                 gen.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
                 if gen.tokenizer.pad_token is None:
                     gen.tokenizer.pad_token = gen.tokenizer.eos_token
@@ -101,23 +123,20 @@ class QwenGenerator:
                 gen.runtime = "torch"
                 return gen
             except Exception as e:
-                print(f"PyTorch generator load skipped ({e}), falling back to extractive generator...")
+                msg = f"Failed to load PyTorch generator ({model_path}): {e}"
+                if fail_on_fallback:
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: {msg}")
+                print(f"Warning: {msg}, falling back to extractive generator...", file=sys.stderr)
+
+        if fail_on_fallback:
+            raise RuntimeError("FINAL_PIPELINE_ERROR: PyTorch/Transformers not available for neural generator.")
 
         gen.runtime = "fallback"
         return gen
 
     @staticmethod
-    def format_prompt(question: str, evidence: str) -> str:
-        """Standardized chat prompt ensuring 100% parity between training and inference."""
-        ev_clean = evidence.strip() if evidence else "Không có căn cứ cụ thể."
-        return (
-            f"<|im_start|>system\n"
-            f"{SYSTEM_PROMPT}<|im_end|>\n"
-            f"<|im_start|>user\n"
-            f"[CĂN CỨ PHÁP LÝ]\n{ev_clean}\n\n"
-            f"[CÂU HỎI]\n{question.strip()}<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
+    def format_prompt(question: str, evidence: str, tokenizer: Optional[Any] = None) -> str:
+        return format_qwen_chat_prompt(question, evidence, tokenizer=tokenizer)
 
     def generate(self, question: str, evidence: str, max_new_tokens: int = 384) -> str:
         prompt = self.format_prompt(question, evidence)
@@ -139,7 +158,7 @@ class QwenGenerator:
                 decoded = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
                 return decoded.strip()
             except Exception as e:
-                print(f"PyTorch generation error: {e}")
+                print(f"PyTorch generation error: {e}", file=sys.stderr)
 
         # 2. Fallback extractive generator
         lines = [
@@ -153,7 +172,7 @@ class QwenGenerator:
         self,
         items: List[Tuple[str, str]],  # (question, evidence)
         max_new_tokens: int = 384,
-        batch_size: int = 8,
+        batch_size: int = 4,
     ) -> List[str]:
         """High-throughput batched generation on CUDA."""
         if not items:

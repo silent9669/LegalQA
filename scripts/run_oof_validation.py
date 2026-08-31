@@ -173,11 +173,10 @@ def run_oof_validation(
         else:
             val_subset = fold_records
 
-        val_qa_ids = set(val_subset["qa_id"].astype(str))
-        val_questions = set(val_subset["question_raw"].astype(str))
-
-        # Strict zero-leakage fold memory
-        isolated_mem = full_memory.filter_fold(val_qa_ids=val_qa_ids, val_questions=val_questions)
+        # Strict zero-leakage fold memory: exclude ALL records assigned to this validation fold
+        all_fold_qa_ids = set(fold_records["qa_id"].astype(str))
+        all_fold_questions = set(fold_records["question_raw"].astype(str))
+        isolated_mem = full_memory.filter_fold(val_qa_ids=all_fold_qa_ids, val_questions=all_fold_questions)
         pipeline = LegalQAPipeline(isolated_mem, bm25, dense, reranker, stitcher, generator)
 
         fold_preds = []

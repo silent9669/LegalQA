@@ -74,6 +74,7 @@ class CorpusLookupIndex:
         self.art_to_chunks: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
         self.parent_art_to_chunks: Dict[str, List[str]] = defaultdict(list)
         self.doc_name_to_chunks: Dict[str, List[str]] = defaultdict(list)
+        self.chunk_to_meta: Dict[str, Dict[str, Any]] = {}
         self.all_chunk_ids: List[str] = []
 
         if chunks_df.empty:
@@ -92,7 +93,8 @@ class CorpusLookupIndex:
             self.parent_art_to_chunks[p_art].append(cid)
             self.doc_name_to_chunks[doc].append(cid)
 
-            item = {"chunk_id": cid, "parent_article_id": p_art, "doc_name": doc}
+            item = {"chunk_id": cid, "parent_article_id": p_art, "doc_name": doc, "article": art, "clause": clause}
+            self.chunk_to_meta[cid] = item
             self.art_to_chunks[(doc, art)].append(item)
             if clause:
                 self.art_clause_to_chunks[(doc, art, clause)].append(item)
@@ -131,7 +133,6 @@ def resolve_citations_to_chunks(
     if not citations or chunks_df.empty:
         return []
 
-    # Use CorpusLookupIndex for fast O(1) resolution if passed
     if isinstance(doc_index, CorpusLookupIndex):
         lookup = doc_index
     else:
@@ -163,7 +164,6 @@ def resolve_citations_to_chunks(
         parent_art_id = None
 
         for doc_name in candidate_doc_names:
-            # 1. Try exact (doc_name, art, clause)
             if clause and (doc_name, art, clause) in lookup.art_clause_to_chunks:
                 items = lookup.art_clause_to_chunks[(doc_name, art, clause)]
                 if items:
@@ -171,7 +171,6 @@ def resolve_citations_to_chunks(
                     parent_art_id = items[0]["parent_article_id"]
                     break
 
-            # 2. Try (doc_name, art)
             if (doc_name, art) in lookup.art_to_chunks:
                 items = lookup.art_to_chunks[(doc_name, art)]
                 if items:
@@ -199,7 +198,7 @@ def mine_hard_negatives(
     query_info: Optional[Dict[str, Any]] = None,
     all_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, List[str]]:
-    """Mine guarded hard negatives across 3 categories with strict false-negative filtering."""
+    """Mine corpus-structural hard negatives across 3 categories with positive filtering."""
     if all_chunks is not None and chunks_df is None:
         chunks_df = all_chunks
     if query_info is not None and not positive_doc_name:
@@ -241,3 +240,52 @@ def mine_hard_negatives(
         "same_doc_wrong_article": type_b,
         "different_doc": type_c,
     }
+
+
+def mine_retrieval_hard_negatives(
+    qa_id: str,
+    question: str,
+    positive_chunk_ids: Set[str],
+    positive_article_ids: Set[str],
+    positive_doc_names: Set[str],
+    retrieved_candidates: List[Dict[str, Any]],
+    lookup: CorpusLookupIndex,
+    max_negatives: int = 15,
+) -> List[Dict[str, Any]]:
+    """Mine true hard negatives from actual retrieval candidates, strictly excluding all resolved positives."""
+    negatives: List[Dict[str, Any]] = []
+    seen_chunk_ids: Set[str] = set(positive_chunk_ids)
+
+    for cand in retrieved_candidates:
+        cid = str(cand.get("chunk_id", "")).strip()
+        if not cid or cid in seen_chunk_ids:
+            continue
+
+        p_art = str(cand.get("parent_article_id", "")).strip()
+        if p_art and p_art in positive_article_ids:
+            # Skip any chunk belonging to a positive article
+            continue
+
+        doc_name = str(cand.get("doc_name", "")).strip()
+
+        # Categorize negative difficulty
+        if doc_name and doc_name in positive_doc_names:
+            neg_type = "same_doc_wrong_article"
+        else:
+            neg_type = "cross_doc_false_positive"
+
+        seen_chunk_ids.add(cid)
+        negatives.append({
+            "qa_id": qa_id,
+            "negative_chunk_id": cid,
+            "negative_article_id": p_art,
+            "negative_doc_name": doc_name,
+            "negative_type": neg_type,
+            "retrieval_rank": cand.get("rank", 0),
+            "retrieval_score": cand.get("score", 0.0),
+        })
+
+        if len(negatives) >= max_negatives:
+            break
+
+    return negatives
