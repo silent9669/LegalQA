@@ -1,4 +1,6 @@
 import os
+import sys
+from typing import Any, Dict, List, Optional
 
 try:
     import torch
@@ -7,8 +9,9 @@ except ImportError:
     CrossEncoder = None
     torch = None
 
+
 class BGEReranker:
-    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3", device: str = None):
+    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3", device: Optional[str] = None):
         self.model_name = model_name
         if device is None and torch is not None:
             if torch.cuda.is_available():
@@ -26,7 +29,8 @@ class BGEReranker:
             print(f"Loading Cross-Encoder Reranker {self.model_name} on {self.device}...")
             self.model = CrossEncoder(self.model_name, device=self.device)
 
-    def rerank(self, query: str, candidates: list[dict], top_k: int = 8) -> list[dict]:
+    def rerank(self, query: str, candidates: List[Dict[str, Any]], top_k: int = 8) -> List[Dict[str, Any]]:
+        """Rerank candidates for a single query."""
         if not candidates:
             return []
 
@@ -45,7 +49,6 @@ class BGEReranker:
             return scored[:top_k]
 
         self._lazy_init()
-        # Clean candidates text and pass pairs
         pairs = [[query, c.get("text_raw", "")[:1800]] for c in candidates]
         scores = self.model.predict(pairs, batch_size=32, show_progress_bar=False)
 
@@ -59,3 +62,48 @@ class BGEReranker:
         for rank, item in enumerate(scored[:top_k], start=1):
             item["rank"] = rank
         return scored[:top_k]
+
+    def rerank_batch(
+        self,
+        queries: List[str],
+        candidate_lists: List[List[Dict[str, Any]]],
+        top_k: int = 8,
+        pair_batch_size: int = 32,
+    ) -> List[List[Dict[str, Any]]]:
+        """Batched cross-encoder reranking across multiple queries."""
+        if not queries or not candidate_lists:
+            return []
+
+        if self.model_name == "mock" or CrossEncoder is None:
+            return [self.rerank(q, cands, top_k=top_k) for q, cands in zip(queries, candidate_lists)]
+
+        self._lazy_init()
+
+        pairs = []
+        mapping = []  # (query_idx, cand_idx)
+
+        for q_idx, (query, candidates) in enumerate(zip(queries, candidate_lists)):
+            for c_idx, cand in enumerate(candidates):
+                txt = cand.get("text_raw", "")[:1800]
+                pairs.append([query, txt])
+                mapping.append((q_idx, c_idx))
+
+        if not pairs:
+            return [[] for _ in queries]
+
+        scores = self.model.predict(pairs, batch_size=pair_batch_size, show_progress_bar=False)
+
+        scored_by_query: List[List[Dict[str, Any]]] = [[] for _ in queries]
+        for (q_idx, c_idx), score_val in zip(mapping, scores):
+            entry = dict(candidate_lists[q_idx][c_idx])
+            entry["rerank_score"] = float(score_val)
+            scored_by_query[q_idx].append(entry)
+
+        results: List[List[Dict[str, Any]]] = []
+        for q_idx, c_list in enumerate(scored_by_query):
+            sorted_cands = sorted(c_list, key=lambda x: x["rerank_score"], reverse=True)
+            for rank, item in enumerate(sorted_cands[:top_k], start=1):
+                item["rank"] = rank
+            results.append(sorted_cands[:top_k])
+
+        return results

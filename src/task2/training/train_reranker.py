@@ -19,6 +19,7 @@ def prepare_reranker_dataset(
     pairs_path: Optional[str] = None,
     df_pairs: Optional[pd.DataFrame] = None,
     val_fold: Optional[int] = None,
+    max_train_pairs: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Prepare training and validation samples for cross-encoder reranker with strict fold isolation."""
     if df_pairs is None:
@@ -34,6 +35,9 @@ def prepare_reranker_dataset(
         train_df = df_pairs
         val_df = pd.DataFrame()
 
+    if max_train_pairs is not None and len(train_df) > max_train_pairs:
+        train_df = train_df.head(max_train_pairs)
+
     train_examples = train_df.to_dict("records")
     val_examples = val_df.to_dict("records") if not val_df.empty else []
 
@@ -48,9 +52,12 @@ def train_bge_reranker(
     batch_size: int = 2,
     grad_accum: int = 4,
     lr: float = 2e-5,
-    val_fold: Optional[int] = 0,
+    val_fold: Optional[int] = None,
     device: Optional[str] = None,
     max_length: int = 384,
+    max_steps: Optional[int] = None,
+    max_train_pairs: Optional[int] = None,
+    is_final_checkpoint: Optional[bool] = None,
     fail_on_error: bool = True,
 ) -> Dict[str, Any]:
     """Fine-tune Cross-Encoder Reranker using positive and hard-negative pairs with validation tracking."""
@@ -76,14 +83,19 @@ def train_bge_reranker(
     dev = device or ("cuda:1" if torch.cuda.device_count() > 1 else "cuda:0")
     print(f"Training Reranker on device: {dev}")
 
-    train_examples, val_examples = prepare_reranker_dataset(pairs_path=pairs_path, val_fold=val_fold)
+    train_examples, val_examples = prepare_reranker_dataset(
+        pairs_path=pairs_path,
+        val_fold=val_fold,
+        max_train_pairs=max_train_pairs,
+    )
     if not train_examples:
         msg = f"No training pairs found at {pairs_path}. Run scripts/mine_retrieval_negatives.py first."
         if fail_on_error:
             raise FileNotFoundError(f"FINAL_PIPELINE_ERROR: {msg}")
         return {"status": "skipped", "reason": "no_data"}
 
-    print(f"Loaded {len(train_examples)} train pairs, {len(val_examples)} val pairs (val_fold={val_fold}).")
+    num_unique_qa = len({ex.get("qa_id") for ex in train_examples if ex.get("qa_id")})
+    print(f"Loaded {len(train_examples)} train pairs ({num_unique_qa} unique QA), {len(val_examples)} val pairs (val_fold={val_fold}).")
 
     token = os.environ.get("HF_TOKEN")
     tokenizer = AutoTokenizer.from_pretrained(model_name, token=token)
@@ -118,15 +130,27 @@ def train_bge_reranker(
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False) if val_ds else None
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-    effective_steps = (len(train_loader) // grad_accum) * epochs
-    scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=int(effective_steps * 0.05), num_training_steps=effective_steps)
+    total_batch_steps = len(train_loader) * epochs
+    effective_steps = max(1, total_batch_steps // grad_accum)
+    if max_steps is not None:
+        effective_steps = max_steps
+
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=max(1, int(effective_steps * 0.05)),
+        num_training_steps=effective_steps,
+    )
     loss_fn = torch.nn.BCEWithLogitsLoss()
 
     best_val_loss = float("inf")
     best_accuracy = 0.0
     scaler = torch.amp.GradScaler('cuda') if dev.startswith("cuda") else None
+    global_step = 0
+    stop_early = False
 
     for epoch in range(epochs):
+        if stop_early:
+            break
         model.train()
         epoch_loss = 0.0
         optimizer.zero_grad()
@@ -154,6 +178,7 @@ def train_bge_reranker(
                     scaler.update()
                     optimizer.zero_grad()
                     scheduler.step()
+                    global_step += 1
             else:
                 outputs = model(**features)
                 logits = outputs.logits.squeeze(-1)
@@ -163,8 +188,14 @@ def train_bge_reranker(
                     optimizer.step()
                     optimizer.zero_grad()
                     scheduler.step()
+                    global_step += 1
 
             epoch_loss += loss.item() * grad_accum
+
+            if max_steps is not None and global_step >= max_steps:
+                print(f"Reached max_steps limit ({max_steps}). Ending training early.")
+                stop_early = True
+                break
 
         avg_train_loss = epoch_loss / max(1, len(train_loader))
 
@@ -200,12 +231,25 @@ def train_bge_reranker(
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 best_accuracy = accuracy
+                # Save best state
+                os.makedirs(output_dir, exist_ok=True)
+                model.save_pretrained(output_dir)
+                tokenizer.save_pretrained(output_dir)
         else:
             print(f"Epoch {epoch + 1}/{epochs} | Train Loss: {avg_train_loss:.4f}")
+            os.makedirs(output_dir, exist_ok=True)
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
 
-    os.makedirs(output_dir, exist_ok=True)
-    model.save_pretrained(output_dir)
-    tokenizer.save_pretrained(output_dir)
+    # Determine finality and scope
+    if is_final_checkpoint is None:
+        is_final = (val_fold is None and max_steps is None)
+    else:
+        is_final = is_final_checkpoint
+
+    training_scope = "all_allowed_task2_data" if val_fold is None else f"folds_excluding_{val_fold}"
+    if max_steps is not None:
+        training_scope = f"smoke_subset_{max_steps}_steps"
 
     manifest = {
         "base_model": model_name,
@@ -214,12 +258,16 @@ def train_bge_reranker(
         "grad_accum": grad_accum,
         "learning_rate": lr,
         "val_fold_excluded": val_fold,
+        "training_scope": training_scope,
+        "is_final_checkpoint": is_final,
+        "smoke_only": max_steps is not None,
+        "num_unique_qa": num_unique_qa,
         "num_training_pairs": len(train_examples),
-        "best_val_loss": round(float(best_val_loss), 4),
+        "best_val_loss": round(float(best_val_loss), 4) if best_val_loss != float("inf") else round(float(avg_train_loss), 4),
         "best_val_accuracy": round(float(best_accuracy), 4),
     }
     with open(os.path.join(output_dir, "reranker_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"Reranker fine-tuning complete. Model saved to {output_dir}")
+    print(f"Reranker fine-tuning complete (is_final={is_final}, scope={training_scope}). Model saved to {output_dir}")
     return {"status": "completed", "output_dir": output_dir, "manifest": manifest}

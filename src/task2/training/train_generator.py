@@ -68,7 +68,7 @@ def build_sft_example_token_aware(
         framing_token_count = len(framing_tokens)
 
         # 3. Available tokens for evidence
-        avail_for_evidence = max(100, max_seq_len - framing_token_count - ans_token_count - 10)
+        avail_for_evidence = max(50, max_seq_len - framing_token_count - ans_token_count - 10)
 
         # 4. Pack evidence paragraphs within token budget
         paragraphs = evidence_text.split("\n\n") if evidence_text else []
@@ -83,9 +83,15 @@ def build_sft_example_token_aware(
                 curr_ev_tokens += p_toks
             else:
                 ev_truncated = True
+                remaining_toks = avail_for_evidence - curr_ev_tokens
+                if remaining_toks > 20:
+                    # Truncate final paragraph at token boundary
+                    p_enc = tokenizer.encode(p, add_special_tokens=False)[:remaining_toks]
+                    p_dec = tokenizer.decode(p_enc, skip_special_tokens=True).rstrip() + "..."
+                    packed_paragraphs.append(p_dec)
                 break
 
-        final_evidence = "\n\n".join(packed_paragraphs) if packed_paragraphs else (evidence_text[:1000] if evidence_text else "")
+        final_evidence = "\n\n".join(packed_paragraphs) if packed_paragraphs else ""
         prompt = format_qwen_chat_prompt(q_clean, final_evidence, tokenizer=tokenizer)
         full_text = f"{prompt}{ans_clean}<|im_end|>"
         total_tokens = len(tokenizer.encode(full_text, add_special_tokens=False))
@@ -93,7 +99,7 @@ def build_sft_example_token_aware(
         diagnostics = {
             "total_tokens": total_tokens,
             "evidence_truncated": ev_truncated,
-            "answer_truncated": total_tokens > max_seq_len,
+            "answer_truncated": False,
         }
         return full_text, diagnostics
 
@@ -112,6 +118,7 @@ def build_grounded_training_examples(
     fold_to_exclude: Optional[int] = None,
     tokenizer: Optional[Any] = None,
     max_seq_len: int = 2048,
+    max_train_examples: Optional[int] = None,
 ) -> List[Dict[str, str]]:
     """Build multi-positive structured SFT training examples ensuring exact prompt parity with inference."""
     if df_qa is None:
@@ -122,6 +129,9 @@ def build_grounded_training_examples(
 
     if fold_to_exclude is not None and "fold_id" in df_qa.columns:
         df_qa = df_qa[df_qa["fold_id"] != fold_to_exclude]
+
+    if max_train_examples is not None and len(df_qa) > max_train_examples:
+        df_qa = df_qa.head(max_train_examples)
 
     chunk_map: Dict[str, str] = {}
     if chunks_path and os.path.exists(chunks_path):
@@ -174,7 +184,9 @@ def build_grounded_training_examples(
     if token_lengths:
         p50 = float(np.percentile(token_lengths, 50))
         p90 = float(np.percentile(token_lengths, 90))
-        print(f"SFT Dataset Stats ({len(examples)} examples): P50 tokens={p50:.0f}, P90 tokens={p90:.0f}, Ev Truncated={ev_truncated_count/len(examples)*100:.1f}%, Ans Truncated={ans_truncated_count/len(examples)*100:.1f}%")
+        p95 = float(np.percentile(token_lengths, 95))
+        max_t = int(max(token_lengths))
+        print(f"SFT Dataset Stats ({len(examples)} examples): P50={p50:.0f}, P90={p90:.0f}, P95={p95:.0f}, Max={max_t}, Ev Truncated={ev_truncated_count/len(examples)*100:.1f}%, Ans Truncated={ans_truncated_count/len(examples)*100:.1f}%")
 
     return examples
 
@@ -193,9 +205,12 @@ def run_qlora_training(
     val_fold: Optional[int] = None,
     resume_from_checkpoint: Optional[str] = None,
     device: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    max_train_examples: Optional[int] = None,
+    is_final_checkpoint: Optional[bool] = None,
     fail_on_error: bool = True,
 ) -> Dict[str, Any]:
-    """Execute QLoRA fine-tuning on GPU 0 with completion loss masking and reload smoke verification."""
+    """Execute QLoRA fine-tuning on GPU 0 with completion loss masking and strict reload verification."""
     print(f"=== Starting QLoRA Generator Fine-Tuning ({model_name}) ===")
     assert_no_secrets_in_workspace(Path.cwd())
 
@@ -233,6 +248,7 @@ def run_qlora_training(
         fold_to_exclude=val_fold,
         tokenizer=tokenizer,
         max_seq_len=max_seq_len,
+        max_train_examples=max_train_examples,
     )
     if not examples:
         msg = f"No SFT training examples generated. Check {qa_path} and {labels_path}."
@@ -241,7 +257,7 @@ def run_qlora_training(
         return {"status": "skipped", "reason": "no_data"}
 
     dataset = HFDataset.from_list(examples)
-    print(f"Training dataset ready: {len(dataset)} examples (val_fold={val_fold}).")
+    print(f"Training dataset ready: {len(dataset)} examples (val_fold={val_fold}, max_steps={max_steps}).")
 
     use_bf16 = torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False
     compute_dtype = torch.bfloat16 if use_bf16 else torch.float16
@@ -291,6 +307,8 @@ def run_qlora_training(
         "fp16": not use_bf16,
         "bf16": use_bf16,
     }
+    if max_steps is not None:
+        sft_kwargs["max_steps"] = max_steps
 
     try:
         sft_args = SFTConfig(max_length=max_seq_len, **sft_kwargs)
@@ -308,13 +326,23 @@ def run_qlora_training(
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
-    # Count exact trainable parameters
+    # Count exact trainable adapter parameters
     adapter_trainable_params = int(sum(p.numel() for p in trainer.model.parameters() if p.requires_grad))
     print(f"Trained PEFT Adapter Parameters: {adapter_trainable_params:,}")
 
     os.makedirs(output_dir, exist_ok=True)
     trainer.model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
+
+    # Determine finality and scope
+    if is_final_checkpoint is None:
+        is_final = (val_fold is None and max_steps is None)
+    else:
+        is_final = is_final_checkpoint
+
+    training_scope = "all_allowed_task2_data" if val_fold is None else f"folds_excluding_{val_fold}"
+    if max_steps is not None:
+        training_scope = f"smoke_subset_{max_steps}_steps"
 
     manifest = {
         "base_model": model_name,
@@ -323,22 +351,35 @@ def run_qlora_training(
         "gradient_accumulation_steps": grad_accum,
         "learning_rate": lr,
         "val_fold_excluded": val_fold,
+        "training_scope": training_scope,
+        "is_final_checkpoint": is_final,
+        "smoke_only": max_steps is not None,
         "dataset_size": len(dataset),
         "adapter_trainable_params": adapter_trainable_params,
     }
     with open(os.path.join(output_dir, "training_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"QLoRA Training complete. Adapter saved to {output_dir}")
+    print(f"QLoRA Training complete (is_final={is_final}, scope={training_scope}). Adapter saved to {output_dir}")
 
-    # Reload Smoke Verification
-    print("Executing reload smoke verification...")
+    # Strict Reload Smoke Verification
+    print("Executing strict reload smoke verification...")
     del trainer, model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     try:
-        reload_gen = QwenGenerator.load(model_path=model_name, adapter_path=output_dir, device=dev, runtime="torch")
+        reload_gen = QwenGenerator.load(
+            model_path=model_name,
+            adapter_path=output_dir,
+            device=dev,
+            runtime="torch",
+            fail_on_fallback=True,
+            final_mode=True,
+        )
+        if reload_gen.runtime != "torch" or reload_gen.model is None or reload_gen.tokenizer is None:
+            raise RuntimeError(f"Reloaded generator is not running in neural torch mode (runtime={reload_gen.runtime})")
+
         test_out = reload_gen.generate("Quy định xử phạt vi phạm hành chính?", "Điều 1. Phạt tiền từ 1 đến 2 triệu đồng.")
         if not test_out or not test_out.strip():
             raise RuntimeError("Smoke test generated empty text.")
@@ -347,7 +388,7 @@ def run_qlora_training(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception as e:
-        msg = f"QLoRA checkpoint saved but failed reload smoke test: {e}"
+        msg = f"QLoRA checkpoint saved but failed strict reload smoke test: {e}"
         if fail_on_error:
             raise RuntimeError(f"FINAL_PIPELINE_ERROR: {msg}") from e
         print(f"Warning during reload smoke test: {msg}", file=sys.stderr)

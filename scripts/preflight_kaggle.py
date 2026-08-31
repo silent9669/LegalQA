@@ -110,7 +110,7 @@ def run_preflight_checks(
             pub_len = len(pub_data)
             details["public_count"] = pub_len
             if pub_len != 1000:
-                warnings.append(f"Public test set has {pub_len} queries (expected exactly 1000).")
+                errors.append(f"Public test set has {pub_len} queries (expected exactly 1000).")
             else:
                 print(f" - Public dataset: 1000 queries verified from {public_path}")
         except Exception as e:
