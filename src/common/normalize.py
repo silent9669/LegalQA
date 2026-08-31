@@ -78,8 +78,10 @@ def prettify_doc_title(name: str) -> str:
         res = re.sub(re.escape(k), v, res, flags=re.I)
     res = res.replace("-", " ")
     res = re.sub(r'\bND CP\b', 'NĐ-CP', res, flags=re.I)
+    res = re.sub(r'\bNĐ CP\b', 'NĐ-CP', res, flags=re.I)
     res = re.sub(r'\bTT BTP\b', 'TT-BTP', res, flags=re.I)
     res = re.sub(r'\bQD TTg\b', 'QĐ-TTg', res, flags=re.I)
+    res = re.sub(r'\bQĐ TTg\b', 'QĐ-TTg', res, flags=re.I)
     return re.sub(r'\s+', ' ', res).strip()
 
 

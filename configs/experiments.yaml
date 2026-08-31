@@ -1,0 +1,80 @@
+# LegalQA Task 2 Staged Experiment Matrix (E0 - E10)
+schema_version: 2
+
+experiments:
+  E0:
+    name: "corrected_sparse_extractive_baseline"
+    description: "BM25S mmap + Exact QA Memory + Structured Extractive Baseline"
+    dense_enabled: false
+    reranker_enabled: false
+    generator_enabled: false
+    candidate_family: ["exact_memory", "focused_extract", "stitched_extract"]
+
+  E1:
+    name: "sparse_plus_dense_dek21"
+    description: "BM25S + DEk21 v2 dense retriever (FP16 exact GPU search)"
+    dense_enabled: true
+    dense_model: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    reranker_enabled: false
+    generator_enabled: false
+
+  E2:
+    name: "plus_pretrained_reranker"
+    description: "BM25S + DEk21 v2 + Pretrained BAAI/bge-reranker-v2-m3"
+    dense_enabled: true
+    reranker_enabled: true
+    reranker_checkpoint: "BAAI/bge-reranker-v2-m3"
+    generator_enabled: false
+
+  E3:
+    name: "plus_task_tuned_reranker"
+    description: "BM25S + DEk21 v2 + Task-Tuned BGE Reranker (mined hard negatives)"
+    dense_enabled: true
+    reranker_enabled: true
+    reranker_checkpoint: "artifacts/task2/checkpoints/reranker/best"
+    generator_enabled: false
+
+  E4:
+    name: "evidence_candidate_ablation"
+    description: "Ablation of structured evidence packs (clause, siblings, full art, relevance)"
+    evidence_types:
+      - "focused_clause"
+      - "primary_article_relevant_siblings"
+      - "primary_full_article"
+      - "relevance_selected_top2_articles"
+      - "multi_seed_2500_chars"
+
+  E5:
+    name: "stack_a_base_generator"
+    description: "Stack A with Base Qwen2.5-3B-Instruct candidate"
+    generator_model: "Qwen/Qwen2.5-3B-Instruct"
+    adapter_path: null
+
+  E6:
+    name: "stack_a_qlora_generator"
+    description: "Stack A with QLoRA fine-tuned Qwen2.5-3B-Instruct"
+    generator_model: "Qwen/Qwen2.5-3B-Instruct"
+    adapter_path: "artifacts/task2/checkpoints/generator/hf_adapter"
+
+  E7:
+    name: "stack_b_retrieval_and_qwen1_5b"
+    description: "Stack B with BGE-M3 dense + Qwen2.5-1.5B-Instruct"
+    dense_model: "BAAI/bge-m3"
+    generator_model: "Qwen/Qwen2.5-1.5B-Instruct"
+
+  E8:
+    name: "stack_b_qlora_generator"
+    description: "Stack B with QLoRA fine-tuned Qwen2.5-1.5B-Instruct"
+    dense_model: "BAAI/bge-m3"
+    generator_model: "Qwen/Qwen2.5-1.5B-Instruct"
+    adapter_path: "artifacts/task2/checkpoints/generator_1_5b/hf_adapter"
+
+  E9:
+    name: "meta_selector_cross_validation"
+    description: "Cross-fitted HistGradientBoostingRegressor candidate selector"
+    selector_type: "hist_gradient_boosting"
+    guardrail: "fallback_to_best_fixed_if_underperforming"
+
+  E10:
+    name: "final_chosen_stack_confirmation"
+    description: "Full 5-fold OOF verification of winning stack before final packaging"

@@ -48,12 +48,16 @@ class QAMemory:
         conflicts: Optional[Dict[str, List[str]]] = None,
         df: Optional[pd.DataFrame] = None,
         records: Optional[List[Dict[str, Any]]] = None,
+        id_to_record: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
         self.id_to_answer = id_to_answer
         self.question_to_answer = question_to_answer
         self.conflicts = conflicts or {}
         self.df = df if df is not None else pd.DataFrame()
         self.records = records or []
+        self.id_to_record = id_to_record or {
+            str(r.get("qa_id") or r.get("id", "")): r for r in self.records if str(r.get("qa_id") or r.get("id", ""))
+        }
         self._ngram_cache: List[Tuple[Dict[str, float], Dict[str, Any]]] = []
         self._build_index()
 
@@ -68,6 +72,7 @@ class QAMemory:
     @classmethod
     def from_records(cls, records: List[Dict[str, Any]]) -> QAMemory:
         id_map: Dict[str, str] = {}
+        id_to_rec: Dict[str, Dict[str, Any]] = {}
         grouped_by_q: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         rows: List[Dict[str, Any]] = []
 
@@ -83,9 +88,6 @@ class QAMemory:
             ans_clean = clean_legal_text(ans_raw)
             signals = extract_legal_signals(q_raw)
 
-            if qa_id:
-                id_map[qa_id] = ans_raw
-
             rec_info = {
                 "qa_id": qa_id,
                 "question_raw": q_raw,
@@ -98,6 +100,11 @@ class QAMemory:
                 "clauses": signals.get("clauses", []),
                 "source_split": r.get("source_split", "train"),
             }
+
+            if qa_id:
+                id_map[qa_id] = ans_raw
+                id_to_rec[qa_id] = rec_info
+
             grouped_by_q[q_norm].append(rec_info)
             rows.append(rec_info)
 
@@ -115,19 +122,35 @@ class QAMemory:
         if not df.empty:
             df["is_conflict"] = df["question_norm"].apply(lambda q: q in conflicts)
 
-        return cls(id_map, question_map, conflicts, df, records=rows)
+        return cls(id_map, question_map, conflicts, df, records=rows, id_to_record=id_to_rec)
 
     def lookup_exact(self, qa_id: Optional[str], question: Optional[str]) -> Optional[str]:
-        """Lookup answer by exact QA ID first, then by normalized question if no conflict."""
+        """Lookup answer by exact normalized question or consistent QA ID.
+
+        If question is provided:
+          - normalized question match takes priority;
+          - ID match is accepted ONLY when the stored question is consistent with the query.
+        If question is empty, ID lookup is permitted.
+        """
+        q_norm = normalize_question(question) if question else ""
+
+        # 1. Exact normalized question lookup (conflict-free)
+        if q_norm and q_norm in self.question_to_answer:
+            return self.question_to_answer[q_norm]
+
+        # 2. QA ID lookup with question consistency check
         if qa_id:
             qa_id_str = str(qa_id).strip()
-            if qa_id_str in self.id_to_answer:
+            if qa_id_str in self.id_to_record:
+                rec = self.id_to_record[qa_id_str]
+                stored_q_norm = rec.get("question_norm", "")
+                if not q_norm or stored_q_norm == q_norm:
+                    return rec.get("answer_raw", "")
+                else:
+                    # ID collision with conflicting question -> safe None
+                    return None
+            elif qa_id_str in self.id_to_answer:
                 return self.id_to_answer[qa_id_str]
-
-        if question:
-            q_norm = normalize_question(question)
-            if q_norm in self.question_to_answer:
-                return self.question_to_answer[q_norm]
 
         return None
 
@@ -137,7 +160,7 @@ class QAMemory:
         threshold: float = 0.90,
         require_entity_match: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        """Lookup similar QA record using n-gram similarity and entity consistency."""
+        """Lookup similar QA record with similarity and entity consistency features."""
         if not question or not self._ngram_cache:
             return None
 
@@ -159,50 +182,78 @@ class QAMemory:
                 best_rec = rec
 
         if best_rec is not None and best_score >= threshold:
-            # Check legal entity consistency if requested
             rec_docs = set(best_rec.get("doc_numbers", []))
             rec_arts = set(best_rec.get("articles", []))
 
+            same_doc = bool(q_docs & rec_docs) if (q_docs and rec_docs) else False
+            same_art = bool(q_arts & rec_arts) if (q_arts and rec_arts) else False
+            conflict_doc = bool(q_docs and rec_docs and not (q_docs & rec_docs))
+            conflict_art = bool(q_arts and rec_arts and not (q_arts & rec_arts))
+
             entity_ok = True
             if require_entity_match:
-                if q_docs and rec_docs and not (q_docs & rec_docs):
-                    entity_ok = False
-                if q_arts and rec_arts and not (q_arts & rec_arts):
+                if conflict_doc or conflict_art:
                     entity_ok = False
 
             if entity_ok:
+                q_len = len(question.split())
+                ans_len = best_rec.get("answer_len_words", 300)
                 return {
                     "matched_qa_id": best_rec.get("qa_id", ""),
                     "matched_question": best_rec.get("question_raw", ""),
                     "answer": best_rec.get("answer_raw", ""),
                     "similarity": float(best_score),
-                    "target_length": best_rec.get("answer_len_words", 300),
-                    "is_direct_reuse": best_score >= 0.96 and entity_ok,
+                    "target_length": ans_len,
+                    "same_doc_number": same_doc,
+                    "same_article": same_art,
+                    "conflicting_doc_number": conflict_doc,
+                    "conflicting_article": conflict_art,
+                    "question_length_ratio": float(q_len / max(1, len(str(best_rec.get("question_raw", "")).split()))),
+                    "is_direct_reuse": best_score >= 0.96 and not conflict_doc and not conflict_art,
                 }
 
         return None
 
     def get_similar_exemplar(self, question: str) -> Optional[Dict[str, Any]]:
-        """Retrieve top nearest QA pair as style/length exemplar even if below direct reuse threshold."""
-        return self.lookup_fuzzy(question, threshold=0.60, require_entity_match=False)
+        """Retrieve nearest QA pair as style/length exemplar without entity filtering."""
+        return self.lookup_fuzzy(question, threshold=0.50, require_entity_match=False)
 
     def filter_fold(self, val_qa_ids: Set[str], val_questions: Optional[Set[str]] = None) -> QAMemory:
-        """Return a new QAMemory instance strictly excluding validation QA IDs and questions to prevent leakage."""
-        filtered_id_map = {k: v for k, v in self.id_to_answer.items() if k not in val_qa_ids}
-
+        """Return a new QAMemory instance strictly excluding all validation records to guarantee zero leakage."""
+        val_qa_ids_str = {str(k).strip() for k in val_qa_ids}
         val_q_norm = {normalize_question(q) for q in val_questions} if val_questions else set()
-        filtered_q_map = {k: v for k, v in self.question_to_answer.items() if k not in val_q_norm}
 
         filtered_records = [
             r for r in self.records
-            if r.get("qa_id") not in val_qa_ids and r.get("question_norm") not in val_q_norm
+            if str(r.get("qa_id") or r.get("id", "")).strip() not in val_qa_ids_str
+            and r.get("question_norm") not in val_q_norm
         ]
 
+        filtered_id_map = {
+            k: v for k, v in self.id_to_answer.items()
+            if k not in val_qa_ids_str
+        }
+        filtered_id_to_rec = {
+            k: v for k, v in self.id_to_record.items()
+            if k not in val_qa_ids_str and v.get("question_norm") not in val_q_norm
+        }
+        filtered_q_map = {
+            k: v for k, v in self.question_to_answer.items()
+            if k not in val_q_norm
+        }
+
         filtered_df = self.df[
-            (~self.df["qa_id"].isin(val_qa_ids)) & (~self.df["question_norm"].isin(val_q_norm))
+            (~self.df["qa_id"].astype(str).isin(val_qa_ids_str)) & (~self.df["question_norm"].isin(val_q_norm))
         ] if not self.df.empty else self.df
 
-        return QAMemory(filtered_id_map, filtered_q_map, self.conflicts, filtered_df, records=filtered_records)
+        return QAMemory(
+            filtered_id_map,
+            filtered_q_map,
+            self.conflicts,
+            filtered_df,
+            records=filtered_records,
+            id_to_record=filtered_id_to_rec,
+        )
 
     def save(self, json_path: str, parquet_path: Optional[str] = None) -> None:
         os.makedirs(os.path.dirname(json_path), exist_ok=True)

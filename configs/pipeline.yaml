@@ -1,44 +1,50 @@
 seed: 42
 
-data:
-  train_path: "artifacts/raw/train.json"
-  warmup_path: "artifacts/raw/warmup.json"
-  public_path: "artifacts/raw/public-official.json"
-  contexts_dir: "artifacts/raw/selected-contexts"
-  canonical_qa: "artifacts/data/qa_unique.parquet"
-  known_qa_memory: "artifacts/data/known_qa.json"
-  legal_chunks: "artifacts/chunks/legal_chunks.parquet"
-  retrieval_labels: "artifacts/labels/retrieval_labels.parquet"
-
-chunking:
-  mode: hybrid
-  target_tokens: 600
-  overlap_tokens: 80
+paths:
+  data_dir: "artifacts/task2/data"
+  index_dir: "artifacts/task2/indexes"
+  checkpoint_dir: "artifacts/task2/checkpoints"
+  evaluation_dir: "artifacts/task2/evaluations"
+  submission_dir: "artifacts/task2/submissions"
+  raw_contexts_dir: "artifacts/raw/selected-contexts"
+  train_json: "artifacts/raw/train.json"
+  warmup_json: "artifacts/raw/warmup.json"
+  public_json: "artifacts/raw/public-official.json"
 
 retrieval:
-  lexical: bm25
-  dense_model: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
-  document_topk: 20
-  chunk_topk_before_rerank: 50
-  fusion: rrf
-  rrf_k: 60
+  sparse:
+    method: "bm25s"
+    top_k: 50
+    k1: 1.5
+    b: 0.75
+  dense:
+    stack_a_model: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    stack_b_model: "BAAI/bge-m3"
+    top_k: 50
+    dtype: "float16"
+    device: "cuda:1"
+  fusion:
+    method: "rrf"
+    rrf_k: 60
 
-reranking:
-  enabled: true
+reranker:
   model: "BAAI/bge-reranker-v2-m3"
-  evidence_topk: 8
+  candidate_k: 50
+  output_k: 8
+  device: "cuda:1"
 
 generation:
-  model: "Qwen/Qwen2.5-3B-Instruct"
+  stack_a_model: "Qwen/Qwen2.5-3B-Instruct"
+  stack_b_model: "Qwen/Qwen2.5-1.5B-Instruct"
+  device: "cuda:0"
+  do_sample: false
   max_new_tokens: 384
   temperature: 0.0
-  do_sample: false
-  use_provision_memory: true
 
-postprocess:
-  article_stitching: true
-  source_snap: true
-  extractive_candidate: true
+validation:
+  folds: 5
+  primary_metric: "meteor"
 
-selector:
-  type: rules
+final:
+  fail_on_missing_index: true
+  fail_on_model_fallback: true

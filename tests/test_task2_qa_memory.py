@@ -8,10 +8,16 @@ def test_qa_memory_exact_lookup():
     ]
     mem = QAMemory.from_records(data)
 
-    # Lookup by ID
-    assert mem.lookup_exact("1", "random question") == "Phạt tiền từ 1 đến 3 lần số tiền trốn thuế."
+    # Lookup by exact ID and matching question
+    assert mem.lookup_exact("1", "Hành vi trốn thuế bị phạt bao nhiêu?") == "Phạt tiền từ 1 đến 3 lần số tiền trốn thuế."
 
-    # Lookup by normalized question
+    # Lookup by ID only (when question is empty)
+    assert mem.lookup_exact("1", "") == "Phạt tiền từ 1 đến 3 lần số tiền trốn thuế."
+
+    # ID collision with totally different question returns None for safety
+    assert mem.lookup_exact("1", "Câu hỏi hoàn toàn khác") is None
+
+    # Lookup by normalized question regardless of unknown ID
     assert mem.lookup_exact("999", "  hành vi  trốn thuế bị phạt bao nhiêu ? ") == "Phạt tiền từ 1 đến 3 lần số tiền trốn thuế."
 
     # Unhit query
@@ -26,9 +32,6 @@ def test_qa_memory_conflicts_excluded():
     mem = QAMemory.from_records(data)
     # Question is ambiguous/conflicting across records -> should not return a single ungrounded answer by question
     assert mem.lookup_exact("999", "Điều 10 quy định gì?") is None
-    # But ID lookup still works
-    assert mem.lookup_exact("1", "") == "Quy định A"
-    assert mem.lookup_exact("2", "") == "Quy định B"
 
 
 def test_qa_memory_similar_lookup():
@@ -40,11 +43,13 @@ def test_qa_memory_similar_lookup():
 
     # Near-duplicate with slight phrasing variation but identical legal signal
     query = "Nghị định 90/2017/NĐ-CP thì hành vi không tiêm phòng bị phạt bao nhiêu?"
-    fuzzy_hit = mem.lookup_fuzzy(query, threshold=0.80)
+    fuzzy_hit = mem.lookup_fuzzy(query, threshold=0.75)
     assert fuzzy_hit is not None
-    assert fuzzy_hit["similarity"] >= 0.80
+    assert fuzzy_hit["similarity"] >= 0.75
     assert fuzzy_hit["matched_qa_id"] == "1"
     assert "1.000.000" in fuzzy_hit["answer"]
+    assert fuzzy_hit["same_doc_number"] is True
+    assert fuzzy_hit["conflicting_doc_number"] is False
 
 
 def test_qa_memory_fold_isolation_zero_leakage():

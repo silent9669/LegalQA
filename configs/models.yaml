@@ -1,40 +1,70 @@
-{
-  "schema_version": 2,
-  "parameter_budget": {
-    "maximum_exclusive": 4000000000,
-    "accounting": "Count every independently loaded checkpoint, adapter, and task head."
-  },
-  "recommended_stack": {
-    "name": "approved-task2-stack",
-    "implementation_status": "implemented",
-    "loaded_at_inference": true,
-    "model_ids": [
-      "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
-      "BAAI/bge-reranker-v2-m3",
-      "Qwen/Qwen2.5-3B-Instruct"
-    ]
-  },
-  "models": [
-    {
-      "model_id": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
-      "license": "apache-2.0",
-      "parameters": 100000000,
-      "role": "dense_retriever",
-      "loaded_at_inference": true
-    },
-    {
-      "model_id": "BAAI/bge-reranker-v2-m3",
-      "license": "mit",
-      "parameters": 568000000,
-      "role": "cross_encoder_reranker",
-      "loaded_at_inference": true
-    },
-    {
-      "model_id": "Qwen/Qwen2.5-3B-Instruct",
-      "license": "apache-2.0",
-      "parameters": 3090000000,
-      "role": "generator",
-      "loaded_at_inference": true
-    }
-  ]
-}
+schema_version: 2
+
+parameter_budget:
+  maximum_exclusive: 4000000000
+  accounting: "Count every independently loaded checkpoint, adapter, and task head."
+
+stacks:
+  stack_a:
+    name: "generator-capacity-stack"
+    description: "BM25 + DEk21 v2 (768d) + BGE-reranker-v2-m3 + Qwen2.5-3B-Instruct"
+    dense_model: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    reranker_model: "BAAI/bge-reranker-v2-m3"
+    generator_model: "Qwen/Qwen2.5-3B-Instruct"
+    model_ids:
+      - "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+      - "BAAI/bge-reranker-v2-m3"
+      - "Qwen/Qwen2.5-3B-Instruct"
+    total_learned_parameters: 3758000000
+
+  stack_b:
+    name: "retrieval-capacity-stack"
+    description: "BM25 + BGE-M3 (1024d) + BGE-reranker-v2-m3 + Qwen2.5-1.5B-Instruct"
+    dense_model: "BAAI/bge-m3"
+    reranker_model: "BAAI/bge-reranker-v2-m3"
+    generator_model: "Qwen/Qwen2.5-1.5B-Instruct"
+    model_ids:
+      - "BAAI/bge-m3"
+      - "BAAI/bge-reranker-v2-m3"
+      - "Qwen/Qwen2.5-1.5B-Instruct"
+    total_learned_parameters: 2676000000
+
+recommended_stack:
+  name: "approved-task2-stack"
+  implementation_status: "implemented"
+  loaded_at_inference: true
+  model_ids:
+    - "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    - "BAAI/bge-reranker-v2-m3"
+    - "Qwen/Qwen2.5-3B-Instruct"
+
+models:
+  - model_id: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    license: "apache-2.0"
+    parameters: 100000000
+    role: "dense_retriever"
+    loaded_in: ["stack_a"]
+
+  - model_id: "BAAI/bge-m3"
+    license: "mit"
+    parameters: 568000000
+    role: "dense_retriever"
+    loaded_in: ["stack_b"]
+
+  - model_id: "BAAI/bge-reranker-v2-m3"
+    license: "mit"
+    parameters: 568000000
+    role: "cross_encoder_reranker"
+    loaded_in: ["stack_a", "stack_b"]
+
+  - model_id: "Qwen/Qwen2.5-3B-Instruct"
+    license: "apache-2.0"
+    parameters: 3090000000
+    role: "generator"
+    loaded_in: ["stack_a"]
+
+  - model_id: "Qwen/Qwen2.5-1.5B-Instruct"
+    license: "apache-2.0"
+    parameters: 1540000000
+    role: "generator"
+    loaded_in: ["stack_b"]
