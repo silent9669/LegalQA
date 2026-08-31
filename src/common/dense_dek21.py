@@ -20,7 +20,7 @@ except ImportError:
 
 
 class DEk21Retriever:
-    """DEk21 v2 Dense Retriever with batched embedding, persistent storage, and FP16 support."""
+    """DEk21 v2 Dense Retriever with batched embedding, persistent storage, row alignment, and FP16 support."""
 
     def __init__(
         self,
@@ -40,6 +40,7 @@ class DEk21Retriever:
 
         self.model = None
         self.corpus: List[Dict[str, Any]] = []
+        self.doc_ids: List[str] = []
         self.corpus_embeddings: Optional[np.ndarray] = None
 
     def _lazy_init(self) -> None:
@@ -48,7 +49,7 @@ class DEk21Retriever:
             if self.revision:
                 kwargs["revision"] = self.revision
             self.model = SentenceTransformer(self.model_name, **kwargs)
-            if self.device == "cuda" and torch is not None and hasattr(self.model, "half"):
+            if self.device.startswith("cuda") and torch is not None and hasattr(self.model, "half"):
                 self.model.half()
 
     def encode_texts(self, texts: List[str], batch_size: int = 64, show_progress: bool = False) -> np.ndarray:
@@ -75,12 +76,14 @@ class DEk21Retriever:
     def fit_mock(self, corpus: List[Dict[str, Any]]) -> None:
         """Fit with mock embeddings for fast local tests."""
         self.corpus = corpus
+        self.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
         raw_texts = [c.get("text_raw", "") for c in corpus]
         self.corpus_embeddings = self.encode_texts(raw_texts)
 
     def fit(self, corpus: List[Dict[str, Any]], batch_size: int = 64, show_progress: bool = True) -> None:
         """Encode entire corpus and store L2-normalized embeddings in memory."""
         self.corpus = corpus
+        self.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
         raw_texts = [c.get("text_raw", "") for c in corpus]
         self.corpus_embeddings = self.encode_texts(raw_texts, batch_size=batch_size, show_progress=show_progress)
 
@@ -96,10 +99,32 @@ class DEk21Retriever:
         results: List[Dict[str, Any]] = []
         for rank, idx in enumerate(top_indices, start=1):
             item = dict(self.corpus[idx])
+            item["score"] = float(sims[idx])
             item["dense_score"] = float(sims[idx])
             item["rank"] = rank
             results.append(item)
         return results
+
+    def search_batch(self, queries: List[str], top_k: int = 60, batch_size: int = 64) -> List[List[Dict[str, Any]]]:
+        """Batched dense retrieval for all queries in high throughput."""
+        if self.corpus_embeddings is None or len(self.corpus) == 0 or not queries:
+            return [[] for _ in queries]
+
+        q_embs = self.encode_texts(queries, batch_size=batch_size, show_progress=False)
+        sim_matrix = np.dot(q_embs, self.corpus_embeddings.T)
+
+        all_results = []
+        for row_sims in sim_matrix:
+            top_indices = np.argsort(row_sims)[::-1][:top_k]
+            res = []
+            for rank, idx in enumerate(top_indices, start=1):
+                item = dict(self.corpus[idx])
+                item["score"] = float(row_sims[idx])
+                item["dense_score"] = float(row_sims[idx])
+                item["rank"] = rank
+                res.append(item)
+            all_results.append(res)
+        return all_results
 
     def save_index(self, index_dir: str) -> None:
         """Save precomputed corpus embeddings and metadata."""
@@ -112,21 +137,30 @@ class DEk21Retriever:
             "model_name": self.model_name,
             "revision": self.revision,
             "corpus_size": len(self.corpus),
+            "doc_ids": self.doc_ids,
             "dim": self.corpus_embeddings.shape[1] if self.corpus_embeddings is not None else 768,
         }
         with open(os.path.join(index_dir, "dek21_manifest.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
 
     @classmethod
-    def load_index(cls, index_dir: str, corpus_path: Optional[str] = None, model_name: str = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2", device: Optional[str] = None) -> DEk21Retriever:
-        """Load precomputed embeddings from disk."""
+    def load_index(
+        cls,
+        index_dir: str,
+        corpus_path: Optional[str] = None,
+        model_name: str = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        device: Optional[str] = None,
+    ) -> DEk21Retriever:
+        """Load precomputed embeddings from disk and verify row alignment."""
         meta_path = os.path.join(index_dir, "dek21_manifest.json")
         revision = None
+        saved_doc_ids = []
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
                 model_name = meta.get("model_name", model_name)
                 revision = meta.get("revision")
+                saved_doc_ids = meta.get("doc_ids", [])
 
         retriever = cls(model_name=model_name, revision=revision, device=device)
 
@@ -137,5 +171,15 @@ class DEk21Retriever:
         if corpus_path and os.path.exists(corpus_path):
             df = pd.read_parquet(corpus_path)
             retriever.corpus = df.to_dict("records")
+            retriever.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(retriever.corpus)]
+
+            if retriever.corpus_embeddings is not None:
+                if len(retriever.corpus) != len(retriever.corpus_embeddings):
+                    raise ValueError(
+                        f"Dense index row count mismatch! Corpus has {len(retriever.corpus)} rows, "
+                        f"but embeddings.npy has {len(retriever.corpus_embeddings)} rows."
+                    )
+                if saved_doc_ids and saved_doc_ids != retriever.doc_ids:
+                    print("Warning: chunk_id alignment differs from manifest. Verify corpus integrity.")
 
         return retriever

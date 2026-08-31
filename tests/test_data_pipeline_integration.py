@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 import pytest
 from src.common.legal_parser import parse_legal_document
@@ -149,3 +150,40 @@ def test_qa_memory_conflict_handling_and_fold_isolation():
     assert filtered_mem.lookup_exact("q1", "học sinh vay vốn được bao nhiêu?") is None
     assert filtered_mem.lookup_exact(None, "học sinh vay vốn được bao nhiêu?") is None
     assert filtered_mem.lookup_exact("q5", "đất không thu tiền sử dụng đất?") == "Theo Điều 54 Luật Đất đai 2013."
+
+
+def test_package_kaggle_dataset_with_indexes(tmp_path: Path):
+    from scripts.package_kaggle_dataset import package_kaggle_dataset
+
+    # Setup dummy source structure
+    src_dir = tmp_path / "src_artifacts"
+    data_dir = src_dir / "data"
+    data_dir.mkdir(parents=True)
+
+    for name in ["legal_chunks.parquet", "qa_unique.parquet", "known_qa.json", "qa_citations.parquet", "retrieval_labels.parquet", "fold_assignments.parquet"]:
+        (data_dir / name).write_text("test_content", encoding="utf-8")
+
+    # Create dummy indexes
+    bm25_dir = src_dir / "indexes" / "bm25"
+    bm25_dir.mkdir(parents=True)
+    (bm25_dir / "bm25_manifest.json").write_text("{}", encoding="utf-8")
+
+    dek21_dir = src_dir / "indexes" / "dek21"
+    dek21_dir.mkdir(parents=True)
+    (dek21_dir / "dek21_manifest.json").write_text("{}", encoding="utf-8")
+
+    stage_dir = tmp_path / "staged"
+
+    package_kaggle_dataset(
+        source_dir=str(src_dir),
+        staging_dir=str(stage_dir),
+        dataset_title="TestLegalQA",
+        dry_run=False,
+    )
+
+    # Check staged files
+    assert (stage_dir / "legal_chunks.parquet").exists()
+    assert (stage_dir / "dataset_manifest.json").exists()
+    assert (stage_dir / "indexes" / "bm25" / "bm25_manifest.json").exists()
+    assert (stage_dir / "indexes" / "dek21" / "dek21_manifest.json").exists()
+
