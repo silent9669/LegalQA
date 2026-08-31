@@ -18,6 +18,13 @@ CANDIDATE_ORDER = [
     "fuzzy_memory",
     "focused_extract",
     "stitched_extract",
+    "focused_complete_clause",
+    "top2_relevance_complete_units",
+    "primary_article_budgeted_units",
+    "pack_focused",
+    "pack_full_article",
+    "pack_top2_relevance",
+    "pack_multi",
     "primary_article_extract",
     "relevance_extract",
     "multi_seed_extract",
@@ -55,7 +62,7 @@ def extract_candidate_features(
     is_deadline = 1.0 if any(k in q_lower for k in ["thời hạn", "thời hiệu", "bao lâu", "ngày", "tháng", "năm", "khi nào"]) else 0.0
     is_condition = 1.0 if any(k in q_lower for k in ["điều kiện", "thủ tục", "hồ sơ", "trình tự", "yêu cầu"]) else 0.0
 
-    cand_idx = CANDIDATE_ORDER.index(candidate_name) if candidate_name in CANDIDATE_ORDER else 99
+    cand_idx = CANDIDATE_ORDER.index(candidate_name) if candidate_name in CANDIDATE_ORDER else len(CANDIDATE_ORDER)
 
     return {
         "cand_type_idx": float(cand_idx),
@@ -204,7 +211,7 @@ class CandidateSelector:
         if self.policy == "fixed_baseline":
             if self.best_fixed_candidate in candidates:
                 return candidates[self.best_fixed_candidate].strip()
-            for fallback_key in ["stitched_extract", "focused_extract", "strategy_f_1000", "generated", "snapped"]:
+            for fallback_key in ["stitched_extract", "focused_extract", "focused_complete_clause", "strategy_f_1000", "generated", "snapped"]:
                 if fallback_key in candidates and candidates[fallback_key].strip():
                     return candidates[fallback_key].strip()
 
@@ -227,7 +234,7 @@ class CandidateSelector:
             return candidates[cand_keys[best_idx]].strip()
 
         # Default fallback
-        for k in ["stitched_extract", "focused_extract", "strategy_f_1000", "generated"]:
+        for k in ["stitched_extract", "focused_extract", "focused_complete_clause", "strategy_f_1000", "generated"]:
             if k in candidates and candidates[k].strip():
                 return candidates[k].strip()
 

@@ -1,5 +1,7 @@
 from pathlib import Path
+import pytest
 from src.task2.generator import QwenGenerator, SYSTEM_PROMPT
+from src.task2.predict import LegalQAPipeline
 
 
 def test_qwen_generator_fallback():
@@ -24,11 +26,26 @@ def test_qwen_generator_load_fallback_explicit():
     assert gen.runtime == "fallback"
 
 
-def test_qwen_generator_adapter_path_property(tmp_path: Path):
-    adapter_dir = tmp_path / "dummy_adapter"
-    adapter_dir.mkdir()
-    (adapter_dir / "adapter_config.json").write_text('{"peft_type": "LORA"}', encoding="utf-8")
+def test_qwen_generator_require_adapter_missing():
+    # require_adapter=True with missing adapter path should raise RuntimeError
+    with pytest.raises(RuntimeError, match="adapter_path was not provided"):
+        QwenGenerator.load(model_path="nonexistent", require_adapter=True)
 
-    gen = QwenGenerator.load(model_path="nonexistent", adapter_path=str(adapter_dir), runtime="fallback")
-    assert gen.adapter_path == str(adapter_dir)
-    assert gen.runtime == "fallback"
+    # require_adapter=True with non-existent path should raise FileNotFoundError
+    with pytest.raises(FileNotFoundError, match="adapter_path does not exist"):
+        QwenGenerator.load(model_path="nonexistent", adapter_path="/nonexistent/path", require_adapter=True)
+
+
+def test_pipeline_generator_optional():
+    """Verify LegalQAPipeline works seamlessly with generator=None."""
+    pipe = LegalQAPipeline.build_mock()
+    pipe.generator = None  # Remove generator
+
+    # Single prediction should work cleanly via extractive fallback
+    ans = pipe.predict_single("q1", "Phạt bao nhiêu?")
+    assert len(ans) > 0
+
+    # Batch prediction should work cleanly without generator
+    batch_res = pipe.predict_batch([{"qa_id": "q1", "question": "Phạt bao nhiêu?"}])
+    assert "q1" in batch_res
+    assert len(batch_res["q1"]["answer"]) > 0

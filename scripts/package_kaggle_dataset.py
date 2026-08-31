@@ -10,11 +10,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.common.security import assert_no_secrets_in_workspace
+from src.task2.production_config import load_production_selection
 
 REQUIRED_FILES = [
     "data/legal_chunks.parquet",
@@ -57,10 +58,12 @@ def package_kaggle_dataset(
     dataset_title: str = "LegalQA",
     dataset_slug: str = "legalqa-task2-clean-data",
     user_handle: str = "phucdangg",
+    profile: str = "default",  # "default" or "final_training"
+    production_config_path: str = "configs/production_selection.yaml",
     include_code: bool = True,
     dry_run: bool = False,
 ) -> None:
-    print(f"=== Packaging Self-Contained Kaggle Dataset '{dataset_title}' ===")
+    print(f"=== Packaging Self-Contained Kaggle Dataset '{dataset_title}' (Profile: {profile.upper()}) ===")
     src = Path(source_dir)
     stage = Path(staging_dir)
 
@@ -73,8 +76,36 @@ def package_kaggle_dataset(
         if not (src / rel_path).exists():
             missing.append(rel_path)
 
+    if profile == "final_training":
+        # Strict checks for final_training profile
+        public_official = Path("artifacts/raw/public-official.json")
+        if not public_official.exists():
+            missing.append("artifacts/raw/public-official.json")
+
+        bm25_idx = src / "indexes" / "bm25"
+        if not bm25_idx.exists() or not any(bm25_idx.iterdir()):
+            missing.append("indexes/bm25")
+
+        dek21_idx = src / "indexes" / "dek21"
+        if not dek21_idx.exists() or not any(dek21_idx.iterdir()):
+            missing.append("indexes/dek21")
+
+        if not os.path.exists(production_config_path):
+            missing.append(production_config_path)
+        else:
+            try:
+                prod_cfg = load_production_selection(production_config_path)
+                if prod_cfg.use_task_tuned_reranker:
+                    rerank_pairs = src / "data" / "reranker_training_pairs.parquet"
+                    if not rerank_pairs.exists():
+                        missing.append("data/reranker_training_pairs.parquet (required by production_selection tuned reranker)")
+            except Exception as e:
+                missing.append(f"Invalid {production_config_path}: {e}")
+
     if missing:
-        raise FileNotFoundError(f"Missing required artifact(s) in {source_dir}: {missing}. Run scripts/prepare_data.py first.")
+        raise FileNotFoundError(
+            f"Missing required artifact(s) for profile '{profile}' in {source_dir}: {missing}."
+        )
 
     if not dry_run:
         if stage.exists():
@@ -85,6 +116,7 @@ def package_kaggle_dataset(
         "title": dataset_title,
         "slug": dataset_slug,
         "owner": user_handle,
+        "profile": profile,
         "git_sha": get_git_sha(),
         "files": {},
         "indexes": {},
@@ -244,6 +276,7 @@ def main():
     parser.add_argument("--source", default="artifacts/task2", help="Source artifact directory")
     parser.add_argument("--staging", default="kaggle_dataset/staged", help="Staging output directory")
     parser.add_argument("--title", default="LegalQA", help="Kaggle dataset display title")
+    parser.add_argument("--profile", default="default", choices=["default", "final_training"])
     parser.add_argument("--dry_run", action="store_true", help="Simulate staging without copying files")
     parser.add_argument("--no_code", action="store_true", help="Omit code runtime from dataset")
     args = parser.parse_args()
@@ -252,6 +285,7 @@ def main():
         source_dir=args.source,
         staging_dir=args.staging,
         dataset_title=args.title,
+        profile=args.profile,
         include_code=not args.no_code,
         dry_run=args.dry_run,
     )

@@ -14,6 +14,7 @@ from src.common.rrf import reciprocal_rank_fusion
 from src.task2.candidates import generate_candidate_ensemble
 from src.task2.evidence_packer import EvidencePacker
 from src.task2.generator import QwenGenerator
+from src.task2.production_config import policy_requires_generator
 from src.task2.qa_memory import QAMemory
 from src.task2.selector import CandidateSelector
 
@@ -28,7 +29,7 @@ class LegalQAPipeline:
         dense: Optional[DenseRetriever],
         reranker: Optional[BGEReranker],
         packer: EvidencePacker,
-        generator: QwenGenerator,
+        generator: Optional[QwenGenerator] = None,
         selector: Optional[CandidateSelector] = None,
     ):
         self.memory = memory
@@ -39,6 +40,15 @@ class LegalQAPipeline:
         self.stitcher = packer  # Alias for backward compatibility
         self.generator = generator
         self.selector = selector or CandidateSelector(policy="fixed_baseline", best_fixed_candidate="stitched_extract")
+
+    @property
+    def policy_needs_generator(self) -> bool:
+        """Check if current selector configuration requires neural generation."""
+        if self.selector is None:
+            return False
+        policy = getattr(self.selector, "policy", "fixed_baseline")
+        best_fixed = getattr(self.selector, "best_fixed_candidate", "stitched_extract")
+        return policy_requires_generator(policy, best_fixed)
 
     @classmethod
     def build_mock(cls) -> LegalQAPipeline:
@@ -71,7 +81,7 @@ class LegalQAPipeline:
         data_dir: str = "artifacts/task2/data",
         bm25_dir: str = "artifacts/task2/indexes/bm25",
         dense_dir: str = "artifacts/task2/indexes/dek21",
-        model_path: str = "Qwen/Qwen2.5-3B-Instruct",
+        model_path: Optional[str] = "Qwen/Qwen2.5-3B-Instruct",
         adapter_path: Optional[str] = None,
         generator_runtime: str = "auto",
         device: Optional[str] = None,
@@ -82,6 +92,8 @@ class LegalQAPipeline:
         selector_model_path: Optional[str] = None,
         fail_on_missing_index: bool = False,
         fail_on_model_fallback: bool = False,
+        require_adapter: bool = False,
+        load_generator: bool = True,
     ) -> LegalQAPipeline:
         """Load full pipeline from disk artifacts with explicit Dual-T4 GPU placement."""
         if index_dir is not None:
@@ -98,7 +110,7 @@ class LegalQAPipeline:
 
         # 2. Sparse BM25 Retriever on CPU
         if os.path.exists(bm25_dir):
-            bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path)
+            bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path, fail_on_missing_index=fail_on_missing_index)
         else:
             if fail_on_missing_index:
                 raise FileNotFoundError(f"FINAL_PIPELINE_ERROR: BM25 index missing at {bm25_dir}")
@@ -111,7 +123,13 @@ class LegalQAPipeline:
             if bm25.corpus:
                 dense.fit_mock(bm25.corpus)
         elif os.path.exists(dense_dir) and os.path.exists(os.path.join(dense_dir, "embeddings.npy")):
-            dense = DenseRetriever.load_index(dense_dir, corpus_path=chunks_path, device=r_dev)
+            dense = DenseRetriever.load_index(
+                dense_dir,
+                corpus_path=chunks_path,
+                device=r_dev,
+                expected_dtype="float16",
+                final_mode=fail_on_model_fallback,
+            )
         else:
             if fail_on_missing_index:
                 raise FileNotFoundError(f"FINAL_PIPELINE_ERROR: Dense corpus index missing at {dense_dir}")
@@ -129,21 +147,25 @@ class LegalQAPipeline:
         else:
             packer = EvidencePacker([])
 
-        # 6. Qwen Generator on gen_device (e.g. cuda:0)
-        g_dev = gen_device or device or "cuda:0"
-        generator = QwenGenerator.load(
-            model_path=model_path,
-            adapter_path=adapter_path,
-            device=g_dev,
-            runtime=generator_runtime,
-            fail_on_fallback=fail_on_model_fallback,
-        )
-
-        # 7. Candidate Selector
+        # 6. Candidate Selector
         if selector_model_path and os.path.exists(selector_model_path):
             selector = CandidateSelector.load(selector_model_path)
         else:
             selector = CandidateSelector(policy="fixed_baseline", best_fixed_candidate="stitched_extract")
+
+        # 7. Qwen Generator on gen_device (e.g. cuda:0) - Optional if extractive policy
+        generator: Optional[QwenGenerator] = None
+        if load_generator and model_path:
+            g_dev = gen_device or device or "cuda:0"
+            generator = QwenGenerator.load(
+                model_path=model_path,
+                adapter_path=adapter_path,
+                device=g_dev,
+                runtime=generator_runtime,
+                fail_on_fallback=fail_on_model_fallback,
+                final_mode=fail_on_model_fallback,
+                require_adapter=require_adapter,
+            )
 
         return cls(memory, bm25, dense, reranker, packer, generator, selector)
 
@@ -185,8 +207,10 @@ class LegalQAPipeline:
 
         primary_evidence = pack_multi.get("text") or (top_seeds[0]["text_raw"] if top_seeds else "")
 
-        # 6. Generator Candidate
-        gen_ans = self.generator.generate(question, primary_evidence, max_new_tokens=max_new_tokens)
+        # 6. Generator Candidate (Optional if generator loaded & needed)
+        gen_ans = ""
+        if self.generator is not None and (self.policy_needs_generator or return_candidates):
+            gen_ans = self.generator.generate(question, primary_evidence, max_new_tokens=max_new_tokens)
 
         # 7. Candidate Ensemble
         top_doc = pack_multi.get("top_doc_name", "")
@@ -239,9 +263,10 @@ class LegalQAPipeline:
         items: List[Dict[str, Any]],
         max_new_tokens: int = 384,
         retrieval_batch_size: int = 32,
+        reranker_batch_size: int = 32,
         generation_batch_size: int = 4,
     ) -> Dict[str, Dict[str, str]]:
-        """High-throughput batch prediction orchestrating BM25, batched dense GPU search, and batched generation."""
+        """High-throughput batch prediction orchestrating BM25, batched dense GPU search, batched reranking, and batched generation."""
         results: Dict[str, Dict[str, str]] = {}
         unseen_items: List[Tuple[str, str]] = []
 
@@ -267,22 +292,50 @@ class LegalQAPipeline:
         else:
             dense_results = [[] for _ in unseen_queries]
 
-        # 3. BM25, Fusion, Reranking & Evidence Packing
-        evidence_records: List[Dict[str, Any]] = []
+        # 3. Collect BM25 and fused candidates for all queries
+        fused_candidate_lists: List[List[Dict[str, Any]]] = []
+        bm25_scores: List[float] = []
+        dense_scores: List[float] = []
+        fuzzy_hits: List[Optional[Dict[str, Any]]] = []
 
         for idx, (qa_id, question) in enumerate(unseen_items):
-            fuzzy_hit = self.memory.lookup_fuzzy(question, threshold=0.90)
-            fuzzy_ans = fuzzy_hit["answer"] if fuzzy_hit else ""
+            f_hit = self.memory.lookup_fuzzy(question, threshold=0.90)
+            fuzzy_hits.append(f_hit)
 
             bm25_res = self.bm25.search(question, top_k=50) if self.bm25 else []
             dense_res = dense_results[idx] if idx < len(dense_results) else []
 
-            if bm25_res and dense_res:
-                fused_res = reciprocal_rank_fusion([bm25_res, dense_res], k=60, weights=[0.5, 0.5])
-            else:
-                fused_res = bm25_res or dense_res
+            bm25_scores.append(float(bm25_res[0].get("score", 0.0)) if bm25_res else 0.0)
+            dense_scores.append(float(dense_res[0].get("score", 0.0)) if dense_res else 0.0)
 
-            top_seeds = self.reranker.rerank(question, fused_res, top_k=8) if (self.reranker and fused_res) else fused_res[:8]
+            if bm25_res and dense_res:
+                fused = reciprocal_rank_fusion([bm25_res, dense_res], k=60, weights=[0.5, 0.5])
+            else:
+                fused = bm25_res or dense_res
+            fused_candidate_lists.append(fused)
+
+        # 4. Batch Rerank across all queries (Section 8: use rerank_batch!)
+        if self.reranker and hasattr(self.reranker, "rerank_batch"):
+            all_top_seeds = self.reranker.rerank_batch(
+                unseen_queries,
+                fused_candidate_lists,
+                top_k=8,
+                batch_size=reranker_batch_size,
+            )
+        elif self.reranker:
+            all_top_seeds = [
+                self.reranker.rerank(q, cands, top_k=8)
+                for q, cands in zip(unseen_queries, fused_candidate_lists)
+            ]
+        else:
+            all_top_seeds = [cands[:8] for cands in fused_candidate_lists]
+
+        # 5. Build Evidence Packs
+        evidence_records: List[Dict[str, Any]] = []
+        for idx, (qa_id, question) in enumerate(unseen_items):
+            top_seeds = all_top_seeds[idx]
+            fuzzy_hit = fuzzy_hits[idx]
+            fuzzy_ans = fuzzy_hit["answer"] if fuzzy_hit else ""
 
             pack_multi = self.packer.pack_evidence(top_seeds, pack_type="multi_seed_2500_chars", max_chars=3500)
             pack_focused = self.packer.pack_evidence(top_seeds, pack_type="focused_clause")
@@ -297,8 +350,8 @@ class LegalQAPipeline:
             retrieval_meta = {
                 "rerank_top1": r1,
                 "rerank_margin": r1 - r2,
-                "bm25_top1": float(bm25_res[0].get("score", 0.0)) if bm25_res else 0.0,
-                "dense_top1": float(dense_res[0].get("score", 0.0)) if dense_res else 0.0,
+                "bm25_top1": bm25_scores[idx],
+                "dense_top1": dense_scores[idx],
                 "fuzzy_sim": float(fuzzy_hit["similarity"]) if fuzzy_hit else 0.0,
             }
 
@@ -319,11 +372,14 @@ class LegalQAPipeline:
                 "retrieval_meta": retrieval_meta,
             })
 
-        # 4. Batched Qwen Generation
-        pairs = [(rec["question"], rec["primary_evidence"]) for rec in evidence_records]
-        gen_answers = self.generator.generate_batch(pairs, max_new_tokens=max_new_tokens, batch_size=generation_batch_size)
+        # 6. Batched Qwen Generation (Only if generator loaded and needed!)
+        if self.generator is not None and self.policy_needs_generator:
+            pairs = [(rec["question"], rec["primary_evidence"]) for rec in evidence_records]
+            gen_answers = self.generator.generate_batch(pairs, max_new_tokens=max_new_tokens, batch_size=generation_batch_size)
+        else:
+            gen_answers = ["" for _ in evidence_records]
 
-        # 5. Candidate Ensembles & Selection
+        # 7. Candidate Ensembles & Selection
         for rec, gen_ans in zip(evidence_records, gen_answers):
             candidates = generate_candidate_ensemble(
                 gen_ans=gen_ans,

@@ -8,10 +8,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
+from src.common.reranker import BGEReranker
 from src.common.security import assert_no_secrets_in_workspace
 
 
@@ -20,6 +22,8 @@ def prepare_reranker_dataset(
     df_pairs: Optional[pd.DataFrame] = None,
     val_fold: Optional[int] = None,
     max_train_pairs: Optional[int] = None,
+    max_val_pairs: Optional[int] = None,
+    seed: int = 42,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Prepare training and validation samples for cross-encoder reranker with strict fold isolation."""
     if df_pairs is None:
@@ -35,8 +39,16 @@ def prepare_reranker_dataset(
         train_df = df_pairs
         val_df = pd.DataFrame()
 
+    # Deterministic sampling for bounded smoke runs
     if max_train_pairs is not None and len(train_df) > max_train_pairs:
-        train_df = train_df.head(max_train_pairs)
+        train_df = train_df.sample(n=max_train_pairs, random_state=seed).reset_index(drop=True)
+    else:
+        train_df = train_df.reset_index(drop=True)
+
+    if max_val_pairs is not None and len(val_df) > max_val_pairs:
+        val_df = val_df.sample(n=max_val_pairs, random_state=seed).reset_index(drop=True)
+    elif not val_df.empty:
+        val_df = val_df.reset_index(drop=True)
 
     train_examples = train_df.to_dict("records")
     val_examples = val_df.to_dict("records") if not val_df.empty else []
@@ -57,8 +69,11 @@ def train_bge_reranker(
     max_length: int = 384,
     max_steps: Optional[int] = None,
     max_train_pairs: Optional[int] = None,
+    max_val_pairs: Optional[int] = None,
     is_final_checkpoint: Optional[bool] = None,
+    loss_type: str = "bce",  # "bce" or "pairwise"
     fail_on_error: bool = True,
+    seed: int = 42,
 ) -> Dict[str, Any]:
     """Fine-tune Cross-Encoder Reranker using positive and hard-negative pairs with validation tracking."""
     print(f"=== Starting Cross-Encoder Reranker Fine-Tuning ({model_name}) ===")
@@ -66,6 +81,7 @@ def train_bge_reranker(
 
     try:
         import torch
+        import torch.nn.functional as F
         from torch.utils.data import DataLoader, Dataset
         from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_cosine_schedule_with_warmup
     except ImportError as e:
@@ -87,6 +103,8 @@ def train_bge_reranker(
         pairs_path=pairs_path,
         val_fold=val_fold,
         max_train_pairs=max_train_pairs,
+        max_val_pairs=max_val_pairs,
+        seed=seed,
     )
     if not train_examples:
         msg = f"No training pairs found at {pairs_path}. Run scripts/mine_retrieval_negatives.py first."
@@ -270,4 +288,35 @@ def train_bge_reranker(
         json.dump(manifest, f, indent=2)
 
     print(f"Reranker fine-tuning complete (is_final={is_final}, scope={training_scope}). Model saved to {output_dir}")
+
+    # Section 10: Strict Reranker Checkpoint Reload Smoke Test
+    print("Executing strict reranker reload verification...")
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    try:
+        smoke_reranker = BGEReranker(model_name=output_dir, device=dev)
+        scored = smoke_reranker.rerank(
+            "Mức phạt là bao nhiêu?",
+            [
+                {"text_raw": "Phạt tiền từ 5.000.000 đồng đến 10.000.000 đồng."},
+                {"text_raw": "Quy định khác không liên quan."},
+            ],
+            top_k=2,
+        )
+        if len(scored) != 2:
+            raise RuntimeError(f"Reranker reload smoke check failed: expected 2 scored items, got {len(scored)}")
+        if not all(np.isfinite(item.get("rerank_score", float("nan"))) for item in scored):
+            raise RuntimeError("Reranker reload smoke check failed: non-finite rerank_score returned.")
+        print("Reranker checkpoint reload verification PASS.")
+        del smoke_reranker
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        msg = f"Reranker checkpoint saved but failed reload smoke verification: {e}"
+        if fail_on_error:
+            raise RuntimeError(f"FINAL_PIPELINE_ERROR: {msg}") from e
+        print(f"Warning during reranker reload verification: {msg}", file=sys.stderr)
+
     return {"status": "completed", "output_dir": output_dir, "manifest": manifest}

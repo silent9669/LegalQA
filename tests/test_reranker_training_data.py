@@ -24,3 +24,22 @@ def test_prepare_reranker_dataset_isolation():
         val_qids = {ex["qa_id"] for ex in val_ds}
         assert "q1" in val_qids
         assert "q2" not in val_qids
+
+
+def test_prepare_reranker_dataset_subset_limits():
+    records = [
+        {"qa_id": f"q{i}", "fold_id": i % 2, "question": f"Q{i}", "positive_text": f"Pos {i}", "negative_text": f"Neg {i}"}
+        for i in range(20)
+    ]
+    df = pd.DataFrame(records)
+
+    train_ds, val_ds = prepare_reranker_dataset(
+        df_pairs=df,
+        val_fold=0,
+        max_train_pairs=4,
+        max_val_pairs=3,
+        seed=42,
+    )
+
+    assert len(train_ds) == 4
+    assert len(val_ds) == 3

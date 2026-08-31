@@ -68,11 +68,14 @@ class BGEReranker:
         queries: List[str],
         candidate_lists: List[List[Dict[str, Any]]],
         top_k: int = 8,
-        pair_batch_size: int = 32,
+        batch_size: int = 32,
+        pair_batch_size: Optional[int] = None,
     ) -> List[List[Dict[str, Any]]]:
         """Batched cross-encoder reranking across multiple queries."""
         if not queries or not candidate_lists:
             return []
+
+        effective_batch_size = pair_batch_size or batch_size
 
         if self.model_name == "mock" or CrossEncoder is None:
             return [self.rerank(q, cands, top_k=top_k) for q, cands in zip(queries, candidate_lists)]
@@ -91,7 +94,7 @@ class BGEReranker:
         if not pairs:
             return [[] for _ in queries]
 
-        scores = self.model.predict(pairs, batch_size=pair_batch_size, show_progress_bar=False)
+        scores = self.model.predict(pairs, batch_size=effective_batch_size, show_progress_bar=False)
 
         scored_by_query: List[List[Dict[str, Any]]] = [[] for _ in queries]
         for (q_idx, c_idx), score_val in zip(mapping, scores):
