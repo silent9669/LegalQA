@@ -10,33 +10,38 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 def find_runtime_roots(base_path: str = "/kaggle/input") -> List[str]:
-    """Find dataset roots that match LegalQA dataset contents."""
+    """Find dataset roots that match LegalQA dataset contents across arbitrary nesting depth.
+
+    Recursively discovers candidate directories, validates each candidate with _is_legalqa_root(),
+    deduplicates matching paths, and returns sorted absolute paths.
+    """
     if not os.path.exists(base_path):
         return []
 
-    matching_roots = []
-    # Check top-level directory itself
-    if _is_legalqa_root(base_path):
-        matching_roots.append(base_path)
+    matching_roots: set[str] = set()
 
-    # Check direct children subdirectories
-    try:
-        for entry in os.scandir(base_path):
-            if entry.is_dir():
-                if _is_legalqa_root(entry.path):
-                    matching_roots.append(entry.path)
-                else:
-                    # Check 1 level deeper (e.g. /kaggle/input/dataset-name/LegalQA)
-                    try:
-                        for sub in os.scandir(entry.path):
-                            if sub.is_dir() and _is_legalqa_root(sub.path):
-                                matching_roots.append(sub.path)
-                    except (PermissionError, OSError):
-                        pass
-    except (PermissionError, OSError):
-        pass
+    # 1. Check top-level directory itself
+    abs_base = os.path.abspath(base_path)
+    if _is_legalqa_root(abs_base):
+        matching_roots.add(abs_base)
 
-    return sorted(list(set(matching_roots)))
+    # 2. Recursive traversal across arbitrary nesting depth
+    for root, dirs, files in os.walk(base_path, followlinks=True):
+        abs_root = os.path.abspath(root)
+
+        # Skip subdirectories inside code/ to prevent finding packaged code subtrees
+        if os.path.basename(abs_root) in ("code", "src", "scripts", "configs", "indexes", "bm25", "dek21"):
+            continue
+
+        if _is_legalqa_root(abs_root):
+            matching_roots.add(abs_root)
+        else:
+            # Also check if root's parent is the root (e.g. when visiting data/)
+            parent = os.path.dirname(abs_root)
+            if parent and _is_legalqa_root(parent):
+                matching_roots.add(parent)
+
+    return sorted(list(matching_roots))
 
 
 def _is_legalqa_root(path: str) -> bool:
