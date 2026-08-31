@@ -1,4 +1,4 @@
-"""5-Fold Out-Of-Fold (OOF) cross-validation and official whitespace-tokenized METEOR evaluation (V8)."""
+"""5-Fold Out-Of-Fold (OOF) cross-validation and official whitespace-tokenized METEOR evaluation (V9)."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def assert_fold_reranker_checkpoint(
     fold_id: int,
     expected_base_model: str = "BAAI/bge-reranker-v2-m3",
 ) -> Dict[str, Any]:
-    """Validate fold-specific reranker checkpoint provenance (Task 9)."""
+    """Validate fold-specific reranker checkpoint provenance (Task 6)."""
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Reranker checkpoint directory missing: {checkpoint_path}")
     manifest = load_reranker_manifest(checkpoint_path)
@@ -56,12 +56,12 @@ def assert_fold_reranker_checkpoint(
             f"Fold {fold_id} reranker checkpoint at {checkpoint_path} has val_fold_excluded={exc} != {fold_id}."
         )
     scope = manifest.get("training_scope")
-    if scope and scope != f"folds_excluding_{fold_id}":
+    if scope != f"folds_excluding_{fold_id}":
         raise ValueError(
             f"Fold {fold_id} reranker training_scope '{scope}' != 'folds_excluding_{fold_id}'."
         )
     base_m = manifest.get("base_model_id") or manifest.get("base_model") or manifest.get("base_model_name_or_path")
-    if base_m and expected_base_model and base_m != expected_base_model:
+    if not base_m or (expected_base_model and base_m != expected_base_model):
         raise ValueError(
             f"Fold {fold_id} reranker base model mismatch: expected '{expected_base_model}', found '{base_m}'."
         )
@@ -73,7 +73,7 @@ def assert_fold_generator_checkpoint(
     fold_id: int,
     expected_base_model: str = "Qwen/Qwen2.5-3B-Instruct",
 ) -> Dict[str, Any]:
-    """Validate fold-specific generator adapter provenance (Task 9)."""
+    """Validate fold-specific generator adapter provenance (Task 6)."""
     if not os.path.exists(adapter_path):
         raise FileNotFoundError(f"Generator adapter checkpoint directory missing: {adapter_path}")
     manifest = load_generator_manifest(adapter_path)
@@ -85,16 +85,80 @@ def assert_fold_generator_checkpoint(
             f"Fold {fold_id} generator adapter at {adapter_path} has val_fold_excluded={exc} != {fold_id}."
         )
     scope = manifest.get("training_scope")
-    if scope and scope != f"folds_excluding_{fold_id}":
+    if scope != f"folds_excluding_{fold_id}":
         raise ValueError(
             f"Fold {fold_id} generator training_scope '{scope}' != 'folds_excluding_{fold_id}'."
         )
     base_m = manifest.get("base_model_id") or manifest.get("base_model") or manifest.get("base_model_name_or_path")
-    if base_m and expected_base_model and base_m != expected_base_model:
+    if not base_m or (expected_base_model and base_m != expected_base_model):
         raise ValueError(
             f"Fold {fold_id} generator base model mismatch: expected '{expected_base_model}', found '{base_m}'."
         )
     return manifest
+
+
+def validate_full_mode_contract(
+    *,
+    bm25_dir: str,
+    dek21_dir: str,
+    held_out_fold: Optional[int],
+    fold_checkpoint_map: Optional[Dict[int, Dict[str, str]]],
+    n_splits: int,
+    reranker_checkpoint: str,
+    adapter_path: Optional[str],
+    retrieval_device: Optional[str],
+    gen_device: Optional[str],
+) -> None:
+    """Strictly validate prerequisites for mode='full' (Task 4)."""
+    if held_out_fold is None and not fold_checkpoint_map:
+        raise RuntimeError(
+            "True full neural OOF requires one checkpoint per fold via fold_checkpoint_map "
+            "or an explicit single held_out_fold. Reusing one fold checkpoint across all folds is invalid."
+        )
+
+    if not os.path.isdir(bm25_dir):
+        raise RuntimeError(f"Full mode requires BM25 index directory at: {bm25_dir}")
+
+    if not os.path.isdir(dek21_dir):
+        raise RuntimeError(f"Full mode requires DEk21 dense index directory at: {dek21_dir}")
+
+    emb_file = os.path.join(dek21_dir, "embeddings.npy")
+    if not os.path.isfile(emb_file):
+        raise RuntimeError(f"Full mode requires real DEk21 embeddings.npy at: {emb_file}")
+
+    dense_man = os.path.join(dek21_dir, "dense_manifest.json")
+    if not os.path.isfile(dense_man):
+        dense_man = os.path.join(dek21_dir, "dek21_manifest.json")
+    if not os.path.isfile(dense_man):
+        raise RuntimeError(f"Full mode requires DEk21 dense manifest under: {dek21_dir}")
+
+    r_dev = str(retrieval_device or "")
+    if not r_dev.startswith("cuda"):
+        raise RuntimeError(f"Full mode requires retrieval_device to be a CUDA device, found: '{retrieval_device}'.")
+
+    g_dev = str(gen_device or "")
+    if not g_dev.startswith("cuda"):
+        raise RuntimeError(f"Full mode requires gen_device to be a CUDA device, found: '{gen_device}'.")
+
+
+def validate_fold_checkpoint_map(
+    fold_checkpoint_map: Dict[int, Dict[str, str]],
+    *,
+    target_folds: List[int],
+    require_reranker: bool = False,
+    require_adapter: bool = False,
+) -> None:
+    """Strictly validate that fold_checkpoint_map covers all target folds upfront (Task 5)."""
+    missing = sorted(set(target_folds) - set(fold_checkpoint_map.keys()))
+    if missing:
+        raise RuntimeError(f"fold_checkpoint_map missing folds: {missing}. Expected all folds in {target_folds}.")
+
+    for f_id in target_folds:
+        f_info = fold_checkpoint_map[f_id]
+        if require_reranker and "reranker" not in f_info:
+            raise RuntimeError(f"fold_checkpoint_map missing 'reranker' checkpoint for fold {f_id}.")
+        if require_adapter and "adapter" not in f_info:
+            raise RuntimeError(f"fold_checkpoint_map missing 'adapter' checkpoint for fold {f_id}.")
 
 
 def run_oof_validation(
@@ -119,16 +183,26 @@ def run_oof_validation(
 ) -> Dict[str, Any]:
     ensure_meteor_resources()
     print(f"=== Starting LegalQA Task 2 OOF Validation (Mode: {mode.upper()}) ===")
+
+    r_dev = retrieval_device or device or "cuda:1"
+    g_dev = gen_device or device or "cuda:0"
+
     if mode == "fast":
         print("*******************************************************************************")
         print("  DIAGNOSTIC ONLY — NOT VALID FOR MODEL QUALITY, CHECKPOINT VERIFICATION OR PROMOTION")
         print("*******************************************************************************")
     elif mode == "full":
-        if held_out_fold is None and not fold_checkpoint_map:
-            raise RuntimeError(
-                "True full neural OOF requires one checkpoint per fold via fold_checkpoint_map "
-                "or an explicit single held_out_fold. Reusing one fold checkpoint across all folds is invalid."
-            )
+        validate_full_mode_contract(
+            bm25_dir=bm25_dir,
+            dek21_dir=dek21_dir,
+            held_out_fold=held_out_fold,
+            fold_checkpoint_map=fold_checkpoint_map,
+            n_splits=n_splits,
+            reranker_checkpoint=reranker_checkpoint,
+            adapter_path=adapter_path,
+            retrieval_device=r_dev,
+            gen_device=g_dev,
+        )
         if held_out_fold is not None:
             if reranker_checkpoint and reranker_checkpoint != "BAAI/bge-reranker-v2-m3" and os.path.exists(reranker_checkpoint):
                 assert_fold_reranker_checkpoint(reranker_checkpoint, held_out_fold, "BAAI/bge-reranker-v2-m3")
@@ -161,8 +235,7 @@ def run_oof_validation(
             bm25.fit(df_c.to_dict("records"))
 
     # 2. Dense DEk21
-    r_dev = retrieval_device or device
-    if mode == "full" and os.path.exists(dek21_dir) and os.path.exists(os.path.join(dek21_dir, "embeddings.npy")):
+    if mode == "full":
         print(f"Loading real DEk21 embeddings on {r_dev}...")
         dense = DEk21Retriever.load_index(
             dek21_dir,
@@ -179,7 +252,7 @@ def run_oof_validation(
             dense.fit_mock(bm25.corpus)
 
     # 3. Reranker
-    if mode == "full" and device != "cpu":
+    if mode == "full":
         print(f"Loading Neural Cross-Encoder Reranker ({reranker_checkpoint}) on {r_dev}...")
         reranker = BGEReranker(model_name=reranker_checkpoint, device=r_dev)
     else:
@@ -190,8 +263,7 @@ def run_oof_validation(
     stitcher = ArticleStitcher(bm25.corpus if bm25.corpus else [])
 
     # 5. Generator
-    g_dev = gen_device or device
-    if mode == "full" and g_dev != "cpu":
+    if mode == "full":
         print(f"Loading Qwen2.5-3B Generator on {g_dev}...")
         generator = QwenGenerator.load(
             model_path=model_path,
@@ -233,6 +305,15 @@ def run_oof_validation(
     else:
         target_folds = list(range(n_splits))
 
+    # Upfront validation of fold checkpoint map if provided (Task 5)
+    if mode == "full" and fold_checkpoint_map:
+        validate_fold_checkpoint_map(
+            fold_checkpoint_map,
+            target_folds=target_folds,
+            require_reranker=bool(reranker_checkpoint and reranker_checkpoint != "BAAI/bge-reranker-v2-m3"),
+            require_adapter=bool(adapter_path),
+        )
+
     samples_per_fold = (num_eval_samples // len(target_folds)) if num_eval_samples else None
     print(f"\nEvaluating {'all' if not samples_per_fold else samples_per_fold} samples per fold across {len(target_folds)} folds: {target_folds}...")
 
@@ -251,19 +332,21 @@ def run_oof_validation(
         all_fold_questions = set(fold_records["question_raw"].astype(str))
         isolated_mem = full_memory.filter_fold(val_qa_ids=all_fold_qa_ids, val_questions=all_fold_questions)
 
-        # If per-fold checkpoints are provided, validate provenance and reload fold-specific models (Task 9)
+        # If per-fold checkpoints are provided, reload fold-specific models
         current_reranker = reranker
         current_generator = generator
         if fold_checkpoint_map and fold_id in fold_checkpoint_map:
             ckpt_info = fold_checkpoint_map[fold_id]
             if "reranker" in ckpt_info:
                 r_path = ckpt_info["reranker"]
-                assert_fold_reranker_checkpoint(r_path, fold_id, "BAAI/bge-reranker-v2-m3")
+                if mode == "full":
+                    assert_fold_reranker_checkpoint(r_path, fold_id, "BAAI/bge-reranker-v2-m3")
                 current_reranker = BGEReranker(model_name=r_path, device=r_dev)
 
             if "adapter" in ckpt_info:
                 a_path = ckpt_info["adapter"]
-                assert_fold_generator_checkpoint(a_path, fold_id, model_path)
+                if mode == "full":
+                    assert_fold_generator_checkpoint(a_path, fold_id, model_path)
                 current_generator = QwenGenerator.load(
                     model_path=model_path,
                     adapter_path=a_path,

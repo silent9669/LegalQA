@@ -317,20 +317,27 @@ def test_production_config_rejects_candidate_name_as_policy_type(tmp_path):
 def test_promote_production_selection_script(tmp_path):
     """P1-6: Verify promote_production_selection updates config with report SHA256 and PROMOTED status."""
     report_file = tmp_path / "promotion_report.json"
+    sys_template = {
+        "sample_ids_sha256": "abcdef123456",
+        "sample_size": 250,
+        "candidate_family_meteors": {"stitched_extract": 0.310},
+        "retrieval_metrics": {"chunk_mrr": 0.45},
+        "reranker_checkpoint": "checkpoints/reranker/best",
+        "generator_model": "Qwen/Qwen2.5-3B-Instruct",
+        "adapter_path": None,
+        "dense_model": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        "no_mocks": True,
+        "no_fallbacks": True,
+    }
     report_data = {
         "screen_protocol_version": 8,
         "held_out_fold": 0,
         "sample_ids_sha256": "abcdef123456",
         "sample_size": 250,
         "evaluated_systems": {
-            "R0G0": {"sample_ids_sha256": "abcdef123456", "sample_size": 250},
-            "R1G0": {
-                "sample_ids_sha256": "abcdef123456",
-                "sample_size": 250,
-                "reranker_checkpoint": "checkpoints/reranker/best",
-                "candidate_family_meteors": {"stitched_extract": 0.310},
-            },
-            "R_SELECTED_G1": {"sample_ids_sha256": "abcdef123456", "sample_size": 250},
+            "R0G0": dict(sys_template, reranker_checkpoint="BAAI/bge-reranker-v2-m3"),
+            "R1G0": dict(sys_template, reranker_checkpoint="checkpoints/reranker/best"),
+            "R_SELECTED_G1": dict(sys_template, reranker_checkpoint="checkpoints/reranker/best"),
         },
         "selected_reranker": {
             "use_task_tuned": True,

@@ -1,4 +1,4 @@
-"""Tests for LegalQA V8 fail-loud integration, packaged runtime identity, and strict environment."""
+"""Tests for LegalQA V8/V9 fail-loud integration, packaged runtime identity, and strict environment."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ from src.task2.runtime_integrity import (
     validate_runtime_manifests,
 )
 
+VALID_SHA_A = "a" * 40
+VALID_SHA_B = "b" * 40
+
 
 def test_missing_code_manifest_is_fatal(tmp_path):
     """Task 1: Verify missing code_manifest.json raises RuntimeError."""
@@ -26,10 +29,10 @@ def test_missing_code_manifest_is_fatal(tmp_path):
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 8, "git_sha": "abc"})
+        json.dumps({"runtime_api_version": 9, "git_sha": VALID_SHA_A})
     )
     with pytest.raises(RuntimeError, match="code_manifest.json"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=8)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=9)
 
 
 def test_missing_dataset_manifest_is_fatal(tmp_path):
@@ -38,41 +41,57 @@ def test_missing_dataset_manifest_is_fatal(tmp_path):
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 8, "git_sha": "abc"})
+        json.dumps({"runtime_api_version": 9, "git_sha": VALID_SHA_A})
     )
     with pytest.raises(RuntimeError, match="dataset_manifest.json"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=8)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=9)
 
 
-@pytest.mark.parametrize("version", [7, 9])
-def test_runtime_api_must_equal_8(tmp_path, version):
-    """Task 1: Verify runtime API mismatch between expected and actual is fatal."""
+@pytest.mark.parametrize("version", [7, 8, 10])
+def test_runtime_api_must_equal_expected(tmp_path, version):
+    """Task 1 & 2: Verify runtime API mismatch between expected and actual is fatal."""
     runtime = tmp_path / "runtime"
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": version, "git_sha": "abc"})
+        json.dumps({"runtime_api_version": version, "git_sha": VALID_SHA_A})
     )
     (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": version, "git_sha": "abc"})
+        json.dumps({"runtime_api_version": version, "git_sha": VALID_SHA_A})
     )
     with pytest.raises(RuntimeError, match="runtime_api_version mismatch"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=8)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=9)
 
 
 def test_dataset_code_git_sha_must_match(tmp_path):
-    """Task 1: Verify git_sha mismatch between dataset and code is fatal."""
+    """Task 1 & 2: Verify git_sha mismatch between dataset and code is fatal."""
     runtime = tmp_path / "runtime"
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 8, "git_sha": "sha_dataset_123"})
+        json.dumps({"runtime_api_version": 9, "git_sha": VALID_SHA_A})
     )
     (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 8, "git_sha": "sha_code_456"})
+        json.dumps({"runtime_api_version": 9, "git_sha": VALID_SHA_B})
     )
     with pytest.raises(RuntimeError, match="Git SHA divergence"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=8)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=9)
+
+
+@pytest.mark.parametrize("bad_sha", [None, "", "unknown", "abc", "g" * 40])
+def test_runtime_manifest_requires_real_git_sha(tmp_path, bad_sha):
+    """Task 2: Verify non-40-character or non-hex Git SHA is rejected."""
+    runtime = tmp_path / "runtime"
+    code = runtime / "code" / "LegalQA"
+    code.mkdir(parents=True)
+    (runtime / "dataset_manifest.json").write_text(
+        json.dumps({"runtime_api_version": 9, "git_sha": bad_sha})
+    )
+    (code / "code_manifest.json").write_text(
+        json.dumps({"runtime_api_version": 9, "git_sha": bad_sha})
+    )
+    with pytest.raises(RuntimeError, match="40-character"):
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=9)
 
 
 def test_ambiguous_packaged_code_roots_fail(tmp_path):
@@ -154,5 +173,5 @@ def test_notebook_uses_strict_runtime_resolution():
     assert "validate_runtime_manifests" in src
     assert "resolve_runtime_paths(" in src
     assert "allow_remote_model_download=False" in src
-    assert "EXPECTED_RUNTIME_API_VERSION = 8" in src
+    assert "EXPECTED_RUNTIME_API_VERSION = 9" in src
     assert 'resolve_runtime_paths("/kaggle/input", strict=False' not in src

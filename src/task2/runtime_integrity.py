@@ -1,14 +1,26 @@
-"""Strict packaged runtime identity and manifest provenance verification for Kaggle."""
+"""Strict packaged runtime identity and manifest provenance verification for Kaggle (V9)."""
 
 from __future__ import annotations
 
 import glob
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-EXPECTED_RUNTIME_API_VERSION: int = 8
+EXPECTED_RUNTIME_API_VERSION: int = 9
+GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _require_git_sha(value: object, field: str) -> str:
+    """Validate that a field contains a real 40-character lowercase hexadecimal Git commit SHA."""
+    text = str(value or "").strip().lower()
+    if not GIT_SHA_RE.fullmatch(text):
+        raise RuntimeError(
+            f"{field} must contain a real 40-character lowercase Git commit SHA; found {value!r}."
+        )
+    return text
 
 
 def find_packaged_code_roots(base_input_dir: str = "/kaggle/input") -> List[str]:
@@ -64,7 +76,7 @@ def validate_runtime_manifests(
     Rules:
     - Missing dataset_manifest.json or code_manifest.json is fatal.
     - runtime_api_version must match expected_api_version in both manifests.
-    - git_sha must match between dataset_manifest and code_manifest.
+    - git_sha must be a valid 40-character SHA and match between dataset_manifest and code_manifest.
     - expected_git_sha must match if provided.
     """
     # 1. Dataset Manifest
@@ -109,10 +121,11 @@ def validate_runtime_manifests(
             f"code_manifest.json runtime_api_version mismatch: found {code_api}, expected {expected_api_version}."
         )
 
-    # 4. Validate Git SHA parity
-    ds_sha = ds_man.get("git_sha")
-    code_sha = code_man.get("git_sha")
-    if ds_sha and code_sha and ds_sha != code_sha:
+    # 4. Validate real 40-character Git SHAs (Task 2)
+    ds_sha = _require_git_sha(ds_man.get("git_sha"), "dataset_manifest.json 'git_sha'")
+    code_sha = _require_git_sha(code_man.get("git_sha"), "code_manifest.json 'git_sha'")
+
+    if ds_sha != code_sha:
         raise RuntimeError(
             f"Git SHA divergence between dataset ({ds_sha}) and code ({code_sha}) manifests! "
             f"Dataset and code must be staged together in a single package."
@@ -120,14 +133,15 @@ def validate_runtime_manifests(
 
     # 5. Validate expected git sha if specified
     if expected_git_sha:
-        if code_sha != expected_git_sha:
+        expected_norm = _require_git_sha(expected_git_sha, "expected_git_sha")
+        if code_sha != expected_norm:
             raise RuntimeError(
-                f"Code git_sha mismatch: expected '{expected_git_sha}', found '{code_sha}' in code_manifest.json."
+                f"Code git_sha mismatch: expected '{expected_norm}', found '{code_sha}' in code_manifest.json."
             )
 
     print(
         f"Verified Runtime Integrity: API v{expected_api_version} | "
-        f"Git SHA: {code_sha[:10] if code_sha else 'unknown'}"
+        f"Git SHA: {code_sha[:10]}"
     )
 
     return {

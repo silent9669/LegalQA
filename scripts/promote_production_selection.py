@@ -1,4 +1,4 @@
-"""Deterministic production selection promoter from screen_fold0 evaluation report (V8)."""
+"""Deterministic production selection promoter from screen_fold0 evaluation report (V9)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 import yaml
 
@@ -16,6 +16,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.common.hashing import sha256_file
 from src.common.security import assert_no_secrets_in_workspace
 from src.task2.evaluation import GENERATOR_DEPENDENT_FAMILIES
+
+REQUIRED_EVALUATED_SYSTEM_KEYS: Set[str] = {
+    "sample_ids_sha256",
+    "sample_size",
+    "candidate_family_meteors",
+    "retrieval_metrics",
+    "reranker_checkpoint",
+    "generator_model",
+    "adapter_path",
+    "dense_model",
+    "no_mocks",
+    "no_fallbacks",
+}
 
 
 def promote_production_selection(
@@ -61,22 +74,39 @@ def promote_production_selection(
             raise ValueError(f"Promotion report at {report_path} is missing required key: '{k}'")
 
     eval_systems = report["evaluated_systems"]
+    if not isinstance(eval_systems, dict):
+        raise ValueError("evaluated_systems must be a dictionary of system summaries.")
+
+    for req_sys in ("R0G0", "R1G0", "R_SELECTED_G1"):
+        if req_sys not in eval_systems:
+            raise ValueError(f"Missing required evaluated system in promotion report: '{req_sys}'")
+
     expected_sample_sha = report["sample_ids_sha256"]
     expected_sample_size = report["sample_size"]
 
-    # 2. Step 8.2: Require identical evaluation set across all systems
+    # 2. Step 8.2: Unconditionally validate schema and sample hash of every evaluated system (Task 3)
     for sys_key, sys_summary in eval_systems.items():
-        if isinstance(sys_summary, dict) and "sample_ids_sha256" in sys_summary:
-            if sys_summary["sample_ids_sha256"] != expected_sample_sha:
-                raise ValueError(
-                    f"Sample IDs hash mismatch in evaluated system '{sys_key}': "
-                    f"found {sys_summary['sample_ids_sha256']} != expected {expected_sample_sha}."
-                )
-            if sys_summary.get("sample_size") != expected_sample_size:
-                raise ValueError(
-                    f"Sample size mismatch in evaluated system '{sys_key}': "
-                    f"found {sys_summary.get('sample_size')} != expected {expected_sample_size}."
-                )
+        if not isinstance(sys_summary, dict):
+            raise ValueError(f"Evaluated system '{sys_key}' must be a dictionary.")
+        missing_keys = REQUIRED_EVALUATED_SYSTEM_KEYS - set(sys_summary.keys())
+        if missing_keys:
+            raise ValueError(
+                f"Evaluated system '{sys_key}' is missing required fields: {sorted(list(missing_keys))}"
+            )
+        if sys_summary.get("no_mocks") is not True:
+            raise ValueError(f"Evaluated system '{sys_key}' must have 'no_mocks'=True.")
+        if sys_summary.get("no_fallbacks") is not True:
+            raise ValueError(f"Evaluated system '{sys_key}' must have 'no_fallbacks'=True.")
+        if sys_summary["sample_ids_sha256"] != expected_sample_sha:
+            raise ValueError(
+                f"Sample IDs hash mismatch in evaluated system '{sys_key}': "
+                f"found '{sys_summary['sample_ids_sha256']}' != expected '{expected_sample_sha}'."
+            )
+        if sys_summary["sample_size"] != expected_sample_size:
+            raise ValueError(
+                f"Sample size mismatch in evaluated system '{sys_key}': "
+                f"found {sys_summary['sample_size']} != expected {expected_sample_size}."
+            )
 
     selected_reranker = report["selected_reranker"]
     selected_generator = report["selected_generator"]
@@ -89,7 +119,7 @@ def promote_production_selection(
 
     final_summary = eval_systems[final_measured_key]
 
-    # 3. Step 8.3 & 8.4: Cross-check component consistency
+    # 3. Cross-check component consistency and winner equality
     use_tuned_rerank = bool(selected_reranker.get("use_task_tuned", False))
     use_qlora = bool(selected_generator.get("use_qlora", False))
 
@@ -105,36 +135,41 @@ def promote_production_selection(
             "but final_measured_system_key is 'R1G0'."
         )
 
+    # Verify overall winner name equality
+    if report.get("overall_deployable_winner") != best_fixed:
+        raise ValueError(
+            f"overall_deployable_winner '{report.get('overall_deployable_winner')}' does not match "
+            f"candidate_policy.best_fixed_candidate '{best_fixed}'."
+        )
+
     # Verify reranker checkpoint identity
-    if isinstance(final_summary, dict) and "reranker_checkpoint" in final_summary:
-        if final_summary["reranker_checkpoint"] != selected_reranker.get("checkpoint"):
-            raise ValueError(
-                f"Reranker checkpoint mismatch in final measured system '{final_measured_key}': "
-                f"found '{final_summary['reranker_checkpoint']}' != selected '{selected_reranker.get('checkpoint')}'."
-            )
+    if final_summary["reranker_checkpoint"] != selected_reranker.get("checkpoint"):
+        raise ValueError(
+            f"Reranker checkpoint mismatch in final measured system '{final_measured_key}': "
+            f"found '{final_summary['reranker_checkpoint']}' != selected '{selected_reranker.get('checkpoint')}'."
+        )
 
     # Verify generator adapter identity
-    if use_qlora and isinstance(final_summary, dict) and "adapter_path" in final_summary:
+    if use_qlora:
         if final_summary["adapter_path"] != selected_generator.get("adapter"):
             raise ValueError(
                 f"Generator adapter mismatch in final measured system '{final_measured_key}': "
                 f"found '{final_summary['adapter_path']}' != selected '{selected_generator.get('adapter')}'."
             )
 
-    # 4. Step 8.5: Verify winning candidate exists in final summary and scores match
-    if isinstance(final_summary, dict) and "candidate_family_meteors" in final_summary:
-        cand_scores = final_summary["candidate_family_meteors"]
-        if best_fixed not in cand_scores:
-            raise ValueError(
-                f"Winning candidate '{best_fixed}' is not present in candidate_family_meteors of {final_measured_key}."
-            )
-        measured_score = float(cand_scores[best_fixed])
-        expected_score = float(report["overall_deployable_meteor"])
-        if abs(measured_score - expected_score) > 1e-4:
-            raise ValueError(
-                f"Candidate score mismatch for '{best_fixed}': "
-                f"measured={measured_score:.4f} != overall_deployable_meteor={expected_score:.4f}."
-            )
+    # Verify candidate score matches overall_deployable_meteor
+    cand_scores = final_summary["candidate_family_meteors"]
+    if best_fixed not in cand_scores:
+        raise ValueError(
+            f"Winning candidate '{best_fixed}' is not present in candidate_family_meteors of {final_measured_key}."
+        )
+    measured_score = float(cand_scores[best_fixed])
+    expected_score = float(report["overall_deployable_meteor"])
+    if abs(measured_score - expected_score) > 1e-4:
+        raise ValueError(
+            f"Candidate score mismatch for '{best_fixed}': "
+            f"measured={measured_score:.4f} != overall_deployable_meteor={expected_score:.4f}."
+        )
 
     # Read base config for retrieval/evidence infrastructure settings
     base_config: Dict[str, Any] = {}
