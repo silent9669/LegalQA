@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 import shutil
 from pathlib import Path
 import pandas as pd
@@ -10,7 +12,7 @@ def test_kaggle_packaging_self_contained(tmp_path: Path):
     data_dir = source_dir / "data"
     data_dir.mkdir(parents=True)
 
-    # Create dummy artifacts
+    # Create dummy data artifacts
     pd.DataFrame([{"chunk_id": "c1", "text_raw": "t1"}]).to_parquet(data_dir / "legal_chunks.parquet")
     pd.DataFrame([{"qa_id": "q1", "question_raw": "q1", "answer_raw": "a1"}]).to_parquet(data_dir / "qa_unique.parquet")
     with open(data_dir / "known_qa.json", "w") as f:
@@ -18,6 +20,7 @@ def test_kaggle_packaging_self_contained(tmp_path: Path):
     pd.DataFrame([{"qa_id": "q1", "article": "1"}]).to_parquet(data_dir / "qa_citations.parquet")
     pd.DataFrame([{"qa_id": "q1", "positive_chunk_id": "c1"}]).to_parquet(data_dir / "retrieval_labels.parquet")
     pd.DataFrame([{"qa_id": "q1", "fold_id": 0}]).to_parquet(data_dir / "fold_assignments.parquet")
+    pd.DataFrame([{"qa_id": "q1", "positive_chunk_id": "c1", "negative_chunk_id": "c2"}]).to_parquet(data_dir / "reranker_training_pairs.parquet")
 
     staging_dir = tmp_path / "kaggle_dataset" / "staged"
 
@@ -32,13 +35,27 @@ def test_kaggle_packaging_self_contained(tmp_path: Path):
     assert (staging_dir / "legal_chunks.parquet").exists()
     assert (staging_dir / "qa_unique.parquet").exists()
     assert (staging_dir / "known_qa.json").exists()
+    assert (staging_dir / "reranker_training_pairs.parquet").exists()
 
-    # Verify code artifacts staged
-    assert (staging_dir / "code" / "LegalQA" / "src").exists()
-    assert (staging_dir / "code" / "LegalQA" / "configs").exists()
-    assert (staging_dir / "code" / "LegalQA" / "requirements-kaggle.txt").exists()
+    # Verify code artifacts staged (src, scripts, configs, requirements)
+    staged_code = staging_dir / "code" / "LegalQA"
+    assert (staged_code / "src").exists()
+    assert (staged_code / "scripts").exists()
+    assert (staged_code / "configs").exists()
+    assert (staged_code / "requirements-kaggle.txt").exists()
+    assert (staged_code / "code_manifest.json").exists()
 
-    # Verify manifests
+    # Verify manifest contents
     assert (staging_dir / "code_manifest.json").exists()
     assert (staging_dir / "dataset_manifest.json").exists()
     assert (staging_dir / "dataset-metadata.json").exists()
+
+    # Verify that modules can be imported from the staged runtime root
+    staged_str = str(staged_code)
+    if staged_str not in sys.path:
+        sys.path.insert(0, staged_str)
+
+    from src.task2.predict import LegalQAPipeline
+    from scripts.preflight_kaggle import run_preflight_checks
+    assert LegalQAPipeline is not None
+    assert run_preflight_checks is not None

@@ -25,10 +25,13 @@ REQUIRED_FILES = [
     "data/fold_assignments.parquet",
 ]
 
+OPTIONAL_DATA_FILES = [
+    "data/reranker_training_pairs.parquet",
+]
+
 OPTIONAL_DIRS = [
     "indexes/bm25",
     "indexes/dek21",
-    "indexes/bge_m3",
 ]
 
 
@@ -105,6 +108,24 @@ def package_kaggle_dataset(
         if not dry_run:
             shutil.copy2(src_file, dest_file)
 
+    # Stage optional training files (e.g. reranker_training_pairs.parquet)
+    for opt_rel in OPTIONAL_DATA_FILES:
+        src_opt = src / opt_rel
+        if src_opt.exists():
+            dest_file = stage / Path(opt_rel).name
+            file_sha = compute_file_sha256(src_opt)
+            file_size_mb = src_opt.stat().st_size / (1024 * 1024)
+            manifest["files"][Path(opt_rel).name] = {
+                "source": str(opt_rel),
+                "sha256": file_sha,
+                "size_mb": round(file_size_mb, 2),
+            }
+            print(f"  + {Path(opt_rel).name} ({file_size_mb:.1f} MB) -> sha256: {file_sha[:12]}...")
+            if not dry_run:
+                shutil.copy2(src_opt, dest_file)
+        else:
+            print(f"  - {opt_rel} (not found, run scripts/mine_retrieval_negatives.py to generate)")
+
     # Stage public-official.json if present
     public_official = Path("artifacts/raw/public-official.json")
     if public_official.exists():
@@ -138,7 +159,7 @@ def package_kaggle_dataset(
         else:
             print(f"  - {opt_dir}/ (not found or empty, skipped)")
 
-    # Staging Code Runtime
+    # Staging Code Runtime (src/, scripts/, configs/, requirements-kaggle.txt)
     if include_code:
         print("Staging code runtime into code/LegalQA/ :")
         code_root = stage / "code" / "LegalQA"
@@ -147,23 +168,40 @@ def package_kaggle_dataset(
             "files": {},
         }
 
+        ignore_patterns = shutil.ignore_patterns(
+            "__pycache__",
+            "*.pyc",
+            ".DS_Store",
+            "artifacts",
+            "kaggle_dataset",
+            ".pytest_cache",
+            "logs",
+        )
+
         # 1. src/
         src_dir = Path("src")
         if src_dir.exists() and not dry_run:
-            shutil.copytree(src_dir, code_root / "src", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copytree(src_dir, code_root / "src", dirs_exist_ok=True, ignore=ignore_patterns)
         for py_file in src_dir.rglob("*.py"):
-            rel_p = str(py_file)
-            code_manifest["files"][rel_p] = compute_file_sha256(py_file)
+            if "__pycache__" not in str(py_file):
+                code_manifest["files"][str(py_file)] = compute_file_sha256(py_file)
 
-        # 2. configs/
+        # 2. scripts/
+        scripts_dir = Path("scripts")
+        if scripts_dir.exists() and not dry_run:
+            shutil.copytree(scripts_dir, code_root / "scripts", dirs_exist_ok=True, ignore=ignore_patterns)
+        for py_file in scripts_dir.rglob("*.py"):
+            if "__pycache__" not in str(py_file):
+                code_manifest["files"][str(py_file)] = compute_file_sha256(py_file)
+
+        # 3. configs/
         cfg_dir = Path("configs")
         if cfg_dir.exists() and not dry_run:
-            shutil.copytree(cfg_dir, code_root / "configs", dirs_exist_ok=True)
+            shutil.copytree(cfg_dir, code_root / "configs", dirs_exist_ok=True, ignore=ignore_patterns)
         for yaml_file in cfg_dir.rglob("*.yaml"):
-            rel_p = str(yaml_file)
-            code_manifest["files"][rel_p] = compute_file_sha256(yaml_file)
+            code_manifest["files"][str(yaml_file)] = compute_file_sha256(yaml_file)
 
-        # 3. requirements-kaggle.txt
+        # 4. requirements-kaggle.txt
         req_file = Path("requirements-kaggle.txt")
         if req_file.exists() and not dry_run:
             shutil.copy2(req_file, code_root / "requirements-kaggle.txt")
@@ -179,7 +217,7 @@ def package_kaggle_dataset(
                 json.dump(code_manifest, f, indent=2)
             with open(code_root / "code_manifest.json", "w", encoding="utf-8") as f:
                 json.dump(code_manifest, f, indent=2)
-        print(f"  + Staged {len(code_manifest['files'])} code files and code_manifest.json.")
+        print(f"  + Staged {len(code_manifest['files'])} code files (src, scripts, configs) and code_manifest.json.")
 
     # Staging metadata.json for Kaggle CLI
     kaggle_meta = {

@@ -105,11 +105,19 @@ class CandidateSelector:
         # Build feature matrix
         feature_rows = []
         for _, row in df_candidates.iterrows():
+            retrieval_meta = {
+                "rerank_top1": float(row.get("rerank_top1", 0.0)),
+                "rerank_margin": float(row.get("rerank_margin", 0.0)),
+                "bm25_top1": float(row.get("bm25_top1", 0.0)),
+                "dense_top1": float(row.get("dense_top1", 0.0)),
+                "fuzzy_sim": float(row.get("fuzzy_sim", 0.0)),
+            }
             feats = extract_candidate_features(
                 question=str(row.get("question", "")),
                 candidate_name=str(row.get("cand_name", "")),
                 candidate_text=str(row.get("cand_text", "")),
                 evidence=str(row.get("evidence", "")),
+                retrieval_meta=retrieval_meta,
             )
             feature_rows.append(feats)
 
@@ -118,8 +126,16 @@ class CandidateSelector:
         X = df_feats.values
         y = df_candidates["meteor"].values
 
-        # Meta-OOF Cross Validation grouped by qa_id / fold_id
-        folds = df_candidates["fold_id"].values if "fold_id" in df_candidates.columns else np.random.randint(0, n_splits, len(df_candidates))
+        # Meta-OOF Cross Validation grouped deterministically by qa_id / fold_id
+        if "fold_id" in df_candidates.columns:
+            folds = df_candidates["fold_id"].values
+        else:
+            import hashlib
+            qa_to_fold = {}
+            for q in df_candidates["qa_id"].unique():
+                h = int(hashlib.md5(f"42_{q}".encode("utf-8")).hexdigest(), 16)
+                qa_to_fold[q] = h % n_splits
+            folds = df_candidates["qa_id"].map(qa_to_fold).values
         unique_folds = np.unique(folds)
 
         oof_preds = np.zeros(len(df_candidates))

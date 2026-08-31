@@ -21,8 +21,13 @@ except ImportError:
     torch = None
 
 
-def compute_sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def compute_chunk_ids_hash(doc_ids: List[str]) -> str:
+    """Compute deterministic SHA256 hash across chunk IDs."""
+    h = hashlib.sha256()
+    for cid in doc_ids:
+        h.update(str(cid).encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
 
 
 class DenseRetriever:
@@ -34,10 +39,12 @@ class DenseRetriever:
         revision: Optional[str] = None,
         device: Optional[str] = None,
         dtype: str = "float16",
+        final_mode: bool = False,
     ):
         self.model_name = model_name
         self.revision = revision
         self.dtype_str = dtype
+        self.final_mode = final_mode
         if device is None:
             if torch is not None and torch.cuda.is_available():
                 self.device = "cuda"
@@ -79,9 +86,14 @@ class DenseRetriever:
             return emb / np.maximum(norms, 1e-12)
 
         self._lazy_init()
-        segmented = [tokenize_vietnamese(t) for t in texts]
+        # DEk21 uses Vietnamese word tokenization; BGE-M3 handles raw text
+        if "dek21" in self.model_name.lower():
+            processed_texts = [tokenize_vietnamese(t) for t in texts]
+        else:
+            processed_texts = texts
+
         embeddings = self.model.encode(
-            segmented,
+            processed_texts,
             batch_size=batch_size,
             normalize_embeddings=True,
             show_progress_bar=show_progress,
@@ -112,9 +124,12 @@ class DenseRetriever:
         if self.device.startswith("cuda") and torch.cuda.is_available():
             target_dtype = torch.float16 if self.dtype_str == "float16" else torch.float32
             try:
-                t = torch.from_numpy(self.corpus_embeddings).to(device=self.device, dtype=target_dtype)
+                # Direct conversion from numpy maintaining FP16 without extra FP32 allocation
+                t = torch.as_tensor(self.corpus_embeddings, dtype=target_dtype, device=self.device)
                 self.gpu_tensor = t
             except Exception as e:
+                if self.final_mode:
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: Failed to allocate GPU corpus tensor on {self.device}: {e}")
                 print(f"Warning: Could not allocate GPU corpus tensor ({e}), using CPU inner product.", file=sys.stderr)
                 self.gpu_tensor = None
 
@@ -130,10 +145,9 @@ class DenseRetriever:
             try:
                 q_emb = self.encode_texts([query], show_progress=False)
                 target_dtype = self.gpu_tensor.dtype
-                q_tensor = torch.from_numpy(q_emb).to(device=self.device, dtype=target_dtype)
+                q_tensor = torch.as_tensor(q_emb, dtype=target_dtype, device=self.device)
 
                 with torch.inference_mode():
-                    # (1, N) = (1, D) @ (D, N)
                     sims = torch.matmul(q_tensor, self.gpu_tensor.T).squeeze(0)
                     scores, top_indices = torch.topk(sims, k=top_k)
 
@@ -149,14 +163,19 @@ class DenseRetriever:
                     results.append(item)
                 return results
             except Exception as e:
+                if self.final_mode:
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: GPU dense search failed on {self.device}: {e}")
                 print(f"GPU search fallback to CPU: {e}", file=sys.stderr)
 
+        if self.final_mode and self.device.startswith("cuda"):
+            raise RuntimeError("FINAL_PIPELINE_ERROR: GPU tensor not initialized in final mode.")
+
         # 2. CPU / NumPy Exact Search
-        q_emb = self.encode_texts([query], show_progress=False)[0]
-        sims = np.dot(self.corpus_embeddings, q_emb)
+        q_emb = self.encode_texts([query], show_progress=False)[0].astype(np.float32)
+        emb_matrix = np.asarray(self.corpus_embeddings, dtype=np.float32)
+        sims = np.dot(emb_matrix, q_emb)
 
         if len(sims) > top_k * 4:
-            # Fast partial partition
             part_idx = np.argpartition(sims, -top_k)[-top_k:]
             sorted_part = part_idx[np.argsort(-sims[part_idx])]
             top_indices = sorted_part
@@ -186,10 +205,10 @@ class DenseRetriever:
                 for b_start in range(0, len(queries), batch_size):
                     b_queries = queries[b_start:b_start + batch_size]
                     q_embs = self.encode_texts(b_queries, batch_size=batch_size, show_progress=False)
-                    q_tensor = torch.from_numpy(q_embs).to(device=self.device, dtype=self.gpu_tensor.dtype)
+                    q_tensor = torch.as_tensor(q_embs, dtype=self.gpu_tensor.dtype, device=self.device)
 
                     with torch.inference_mode():
-                        sim_matrix = torch.matmul(q_tensor, self.gpu_tensor.T)  # (B, N)
+                        sim_matrix = torch.matmul(q_tensor, self.gpu_tensor.T)
                         scores_batch, indices_batch = torch.topk(sim_matrix, k=top_k, dim=1)
 
                     scores_np = scores_batch.cpu().float().numpy()
@@ -206,6 +225,8 @@ class DenseRetriever:
                         all_results.append(row_res)
                 return all_results
             except Exception as e:
+                if self.final_mode:
+                    raise RuntimeError(f"FINAL_PIPELINE_ERROR: GPU batched dense search failed: {e}")
                 print(f"GPU batch search fallback to CPU: {e}", file=sys.stderr)
 
         # 2. CPU Batched Fallback
@@ -220,14 +241,13 @@ class DenseRetriever:
         emb_sha = ""
         if self.corpus_embeddings is not None:
             target_np_dtype = np.float16 if dtype == "float16" else np.float32
-            emb_to_save = self.corpus_embeddings.astype(target_np_dtype)
+            emb_to_save = np.asarray(self.corpus_embeddings, dtype=target_np_dtype)
             emb_path = os.path.join(index_dir, "embeddings.npy")
             np.save(emb_path, emb_to_save)
             with open(emb_path, "rb") as f:
                 emb_sha = hashlib.sha256(f.read()).hexdigest()
 
-        doc_ids_bytes = json.dumps(self.doc_ids).encode("utf-8")
-        doc_ids_sha = hashlib.sha256(doc_ids_bytes).hexdigest()
+        doc_ids_sha = compute_chunk_ids_hash(self.doc_ids)
 
         meta = {
             "model_id": self.model_name,
@@ -242,10 +262,8 @@ class DenseRetriever:
             "embeddings_sha256": emb_sha,
         }
 
-        # Save canonical manifest
         with open(os.path.join(index_dir, "dense_manifest.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
-        # Also save legacy dek21_manifest.json for compatibility
         with open(os.path.join(index_dir, "dek21_manifest.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
 
@@ -257,27 +275,47 @@ class DenseRetriever:
         model_name: str = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
         device: Optional[str] = None,
         dtype: str = "float16",
+        final_mode: bool = False,
     ) -> DenseRetriever:
-        """Load precomputed embeddings from disk and verify row alignment and hash integrity."""
+        """Load precomputed embeddings from disk using mmap and verify row alignment and hash integrity."""
         meta_path = os.path.join(index_dir, "dense_manifest.json")
         if not os.path.exists(meta_path):
             meta_path = os.path.join(index_dir, "dek21_manifest.json")
 
         revision = None
         saved_doc_ids = []
+        saved_chunk_sha = ""
+        expected_rows = None
+        expected_dim = None
+
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
                 model_name = meta.get("model_id") or meta.get("model_name", model_name)
                 revision = meta.get("revision")
                 saved_doc_ids = meta.get("doc_ids", [])
+                saved_chunk_sha = meta.get("chunk_ids_sha256", "")
                 dtype = meta.get("dtype", dtype)
+                expected_rows = meta.get("corpus_rows")
+                expected_dim = meta.get("dim")
 
-        retriever = cls(model_name=model_name, revision=revision, device=device, dtype=dtype)
+        retriever = cls(model_name=model_name, revision=revision, device=device, dtype=dtype, final_mode=final_mode)
 
         emb_path = os.path.join(index_dir, "embeddings.npy")
-        if os.path.exists(emb_path):
-            retriever.corpus_embeddings = np.load(emb_path).astype(np.float32)
+        if not os.path.exists(emb_path):
+            if final_mode:
+                raise FileNotFoundError(f"FINAL_PIPELINE_ERROR: Dense embeddings missing at {emb_path}")
+        else:
+            # Load with mmap preserving FP16 dtype without expanding to FP32 in RAM
+            retriever.corpus_embeddings = np.load(emb_path, mmap_mode="r")
+            if expected_rows is not None and retriever.corpus_embeddings.shape[0] != expected_rows:
+                raise ValueError(
+                    f"FINAL_PIPELINE_ERROR: Embedding rows ({retriever.corpus_embeddings.shape[0]}) != manifest rows ({expected_rows})"
+                )
+            if expected_dim is not None and retriever.corpus_embeddings.shape[1] != expected_dim:
+                raise ValueError(
+                    f"FINAL_PIPELINE_ERROR: Embedding dim ({retriever.corpus_embeddings.shape[1]}) != manifest dim ({expected_dim})"
+                )
 
         if corpus_path and os.path.exists(corpus_path):
             df = pd.read_parquet(corpus_path)
@@ -287,11 +325,15 @@ class DenseRetriever:
             if retriever.corpus_embeddings is not None:
                 if len(retriever.corpus) != len(retriever.corpus_embeddings):
                     raise ValueError(
-                        f"Dense index row count mismatch! Corpus has {len(retriever.corpus)} rows, "
+                        f"FINAL_PIPELINE_ERROR: Dense index row count mismatch! Corpus has {len(retriever.corpus)} rows, "
                         f"but embeddings.npy has {len(retriever.corpus_embeddings)} rows."
                     )
-                if saved_doc_ids and saved_doc_ids != retriever.doc_ids:
-                    print("Warning: chunk_id alignment differs from manifest. Verify corpus integrity.", file=sys.stderr)
+                if saved_chunk_sha:
+                    curr_sha = compute_chunk_ids_hash(retriever.doc_ids)
+                    if curr_sha != saved_chunk_sha:
+                        if final_mode:
+                            raise ValueError("FINAL_PIPELINE_ERROR: Dense chunk_ids_sha256 mismatch against manifest.")
+                        print("Warning: chunk_id alignment differs from manifest. Verify corpus integrity.", file=sys.stderr)
 
         retriever._sync_gpu_tensor()
         return retriever
