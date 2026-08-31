@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,7 +21,7 @@ except ImportError:
 
 
 class BM25Retriever:
-    """Fast lexical retriever supporting bm25s C-bindings and inverted index Python fallback."""
+    """Fast lexical retriever supporting bm25s C-bindings and exact inverted index Python fallback."""
 
     def __init__(self, k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
@@ -30,19 +31,19 @@ class BM25Retriever:
         self.doc_len: List[int] = []
         self.avg_doc_len: float = 0.0
         self.df: Counter = Counter()
-        self.inverted_index: Dict[str, List[int]] = defaultdict(list)
+        # Inverted index stores (doc_idx, tf) for zero-truncation exact BM25
+        self.postings: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
         self.corpus_size: int = 0
         self.bm25s_index: Any = None
 
     def fit(self, corpus: List[Dict[str, Any]]) -> None:
-        """Fit BM25 index on a collection of chunk dictionaries."""
-        # Reset mutable state
+        """Fit BM25 index on a collection of chunk dictionaries without any posting truncation."""
         self.corpus = corpus
-        self.doc_ids = [c.get("chunk_id", str(i)) for i, c in enumerate(corpus)]
+        self.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
         self.corpus_size = len(corpus)
         self.doc_len = []
         self.df = Counter()
-        self.inverted_index = defaultdict(list)
+        self.postings = defaultdict(list)
         self.bm25s_index = None
 
         if self.corpus_size == 0:
@@ -51,16 +52,19 @@ class BM25Retriever:
 
         tokenized_corpus = []
         for idx, c in enumerate(corpus):
-            tokens = c.get("text_norm", "").split()
-            if not tokens:
-                tokens = tokenize_vietnamese(c.get("text_raw", "")).split()
+            raw_tokens = c.get("text_norm", "")
+            if not raw_tokens:
+                raw_tokens = tokenize_vietnamese(c.get("text_raw", ""))
+            tokens = raw_tokens.split() if isinstance(raw_tokens, str) else list(raw_tokens)
             tokenized_corpus.append(tokens)
+
             doc_l = len(tokens)
             self.doc_len.append(doc_l)
-            unique_tokens = set(tokens)
-            for t in unique_tokens:
+
+            counts = Counter(tokens)
+            for t, tf in counts.items():
                 self.df[t] += 1
-                self.inverted_index[t].append(idx)
+                self.postings[t].append((idx, tf))
 
         self.avg_doc_len = sum(self.doc_len) / max(1, self.corpus_size)
 
@@ -80,14 +84,12 @@ class BM25Retriever:
         seg_query = tokenize_vietnamese(query.lower())
         q_tokens = seg_query.split()
 
-        scores = [0.0] * self.corpus_size
-        candidate_indices = set()
+        scores: Dict[int, float] = defaultdict(float)
 
-        if self.bm25s_index is not None and seg_query:
+        if self.bm25s_index is not None and q_tokens:
             try:
-                tokens = bm25s.tokenize(seg_query, stopwords=None, show_progress=False)
                 bm25_res = self.bm25s_index.retrieve(
-                    tokens,
+                    [q_tokens],
                     k=min(max(top_k * 4, 300), self.corpus_size),
                     show_progress=False,
                 )
@@ -95,55 +97,57 @@ class BM25Retriever:
                 bm25_scores = bm25_res.scores[0]
                 for idx, sc in zip(doc_indices, bm25_scores):
                     if isinstance(idx, (int, np.integer)) and 0 <= idx < self.corpus_size:
-                        scores[idx] = float(sc)
-                        candidate_indices.add(int(idx))
+                        scores[int(idx)] = float(sc)
             except Exception:
                 pass
 
-        if not candidate_indices:
-            # Fast inverted index fallback
-            matched_scores: Dict[int, float] = defaultdict(float)
+        if not scores:
+            # Exact Python Inverted Index BM25 fallback
             for t in q_tokens:
-                if t in self.df:
+                if t in self.postings:
                     df_val = self.df[t]
+                    # Standard Robertson-Spärck Jones IDF
                     idf = math.log((self.corpus_size - df_val + 0.5) / (df_val + 0.5) + 1.0)
-                    for doc_idx in self.inverted_index[t]:
-                        text_tokens = self.corpus[doc_idx].get("text_norm", "").split()
-                        tf = text_tokens.count(t)
-                        if tf > 0:
-                            doc_l = self.doc_len[doc_idx]
-                            denom = tf + self.k1 * (1.0 - self.b + self.b * (doc_l / self.avg_doc_len))
-                            score = idf * (tf * (self.k1 + 1.0)) / max(1e-6, denom)
-                            matched_scores[doc_idx] += score
+                    if idf <= 0:
+                        idf = 1e-4
 
-            for idx, sc in matched_scores.items():
-                scores[idx] = sc
-                candidate_indices.add(idx)
+                    for doc_idx, tf in self.postings[t]:
+                        doc_l = self.doc_len[doc_idx]
+                        denom = tf + self.k1 * (1.0 - self.b + self.b * (doc_l / max(1e-6, self.avg_doc_len)))
+                        score = idf * (tf * (self.k1 + 1.0)) / max(1e-6, denom)
+                        scores[doc_idx] += score
+
+        if not scores:
+            return []
+
+        # Candidate pool for entity boost (top candidates by lexical BM25)
+        top_candidates = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:max(top_k * 4, 200)]
 
         # Apply Legal Entity Booster on candidate pool
-        eval_indices = candidate_indices if candidate_indices else range(min(500, self.corpus_size))
-        for i in eval_indices:
+        for i in top_candidates:
             raw = self.corpus[i].get("text_raw", "")
+            raw_upper = raw.upper()
             # Boost exact document number matches
             for d in signals.get("doc_numbers", []):
-                if d in raw:
+                if d.upper() in raw_upper:
                     scores[i] += 25.0
             # Boost exact article number matches
             for a in signals.get("articles", []):
-                if f"Điều {a}." in raw or f"Điều {a} " in raw:
+                if re.search(rf'\b[Đđ]iều\s+{re.escape(a)}\b', raw, re.IGNORECASE):
                     scores[i] += 12.0
             # Boost exact clause matches
             for cl in signals.get("clauses", []):
-                if f"Khoản {cl}." in raw or f"\n{cl}. " in raw:
+                if re.search(rf'\b(?:[Kk]hoản\s+{re.escape(cl)}|\n{re.escape(cl)}\.)\b', raw, re.IGNORECASE):
                     scores[i] += 6.0
 
-        ranked_indices = sorted(candidate_indices, key=lambda i: scores[i], reverse=True)[:top_k]
+        ranked_indices = sorted(top_candidates, key=lambda i: scores[i], reverse=True)[:top_k]
         results: List[Dict[str, Any]] = []
         for rank, idx in enumerate(ranked_indices, start=1):
             if scores[idx] <= 0:
                 continue
             item = dict(self.corpus[idx])
             item["score"] = float(scores[idx])
+            item["bm25_score"] = float(scores[idx])
             item["rank"] = rank
             results.append(item)
 
@@ -158,6 +162,7 @@ class BM25Retriever:
             "k1": self.k1,
             "b": self.b,
             "has_bm25s": self.bm25s_index is not None,
+            "doc_ids": self.doc_ids,
         }
         with open(os.path.join(index_dir, "bm25_manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
@@ -191,6 +196,21 @@ class BM25Retriever:
             retriever.corpus_size = len(corpus)
             try:
                 retriever.bm25s_index = bm25s.BM25.load(bm25s_dir, mmap=True)
+                # Also fit postings for python fallback compatibility
+                tokenized_corpus = []
+                for idx, c in enumerate(corpus):
+                    raw_tokens = c.get("text_norm", "")
+                    if not raw_tokens:
+                        raw_tokens = tokenize_vietnamese(c.get("text_raw", ""))
+                    tokens = raw_tokens.split() if isinstance(raw_tokens, str) else list(raw_tokens)
+                    tokenized_corpus.append(tokens)
+                    doc_l = len(tokens)
+                    retriever.doc_len.append(doc_l)
+                    counts = Counter(tokens)
+                    for t, tf in counts.items():
+                        retriever.df[t] += 1
+                        retriever.postings[t].append((idx, tf))
+                retriever.avg_doc_len = sum(retriever.doc_len) / max(1, retriever.corpus_size)
             except Exception:
                 retriever.fit(corpus)
         else:

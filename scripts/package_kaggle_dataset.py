@@ -11,8 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-import pandas as pd
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.common.security import assert_no_secrets_in_workspace
@@ -75,9 +73,10 @@ def package_kaggle_dataset(
         "slug": dataset_slug,
         "owner": user_handle,
         "files": {},
+        "indexes": {},
     }
 
-    print("Staging clean canonical artifacts:")
+    print("Staging clean canonical data artifacts:")
     for rel_path in REQUIRED_FILES:
         src_file = src / rel_path
         dest_file = stage / Path(rel_path).name
@@ -103,9 +102,29 @@ def package_kaggle_dataset(
             "sha256": file_sha,
             "size_mb": round(public_official.stat().st_size / (1024 * 1024), 2),
         }
-        print(f"  + public-official.json ({public_official.stat().st_size/1024:.1f} KB)")
+        print(f"  + public-official.json ({public_official.stat().st_size / 1024:.1f} KB)")
         if not dry_run:
             shutil.copy2(public_official, stage / "public-official.json")
+
+    # Staging optional precomputed indexes (BM25, DEk21)
+    print("Staging optional precomputed retrieval indexes:")
+    for opt_dir in OPTIONAL_DIRS:
+        src_opt = src / opt_dir
+        if src_opt.exists() and any(src_opt.iterdir()):
+            dest_opt = stage / opt_dir
+            if not dry_run:
+                dest_opt.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(src_opt, dest_opt, dirs_exist_ok=True)
+
+            idx_files = [str(f.relative_to(src_opt)) for f in src_opt.rglob("*") if f.is_file()]
+            manifest["indexes"][opt_dir] = {
+                "source": str(opt_dir),
+                "files_count": len(idx_files),
+                "files": idx_files[:10],
+            }
+            print(f"  + {opt_dir}/ ({len(idx_files)} index files staged)")
+        else:
+            print(f"  - {opt_dir}/ (not found or empty, skipped)")
 
     # Staging metadata.json for Kaggle CLI
     kaggle_meta = {
@@ -124,7 +143,7 @@ def package_kaggle_dataset(
         with open(Path("kaggle_dataset/dataset-metadata.json"), "w", encoding="utf-8") as f:
             json.dump(kaggle_meta, f, indent=2)
 
-    print(f"\nSuccessfully staged {len(manifest['files'])} clean files to {stage}.")
+    print(f"\nSuccessfully staged {len(manifest['files'])} clean files and {len(manifest['indexes'])} indexes to {stage}.")
     print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}'")
 
 

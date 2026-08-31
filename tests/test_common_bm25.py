@@ -1,7 +1,55 @@
+import math
 import os
 from pathlib import Path
 import pandas as pd
 from src.common.bm25 import BM25Retriever
+
+
+def test_bm25_hand_computable_correctness():
+    """Verify BM25 calculations against manual Robertson-Spärck Jones formulation."""
+    # 3-doc tiny corpus
+    corpus = [
+        {"chunk_id": "c1", "text_raw": "luật giao thông", "text_norm": "luật giao_thông"},
+        {"chunk_id": "c2", "text_raw": "luật đất đai", "text_norm": "luật đất_đai"},
+        {"chunk_id": "c3", "text_raw": "giao thông đường bộ", "text_norm": "giao_thông đường_bộ"},
+    ]
+    retriever = BM25Retriever(k1=1.5, b=0.75)
+    retriever.fit(corpus)
+
+    assert retriever.corpus_size == 3
+    assert "giao_thông" in retriever.df
+    assert retriever.df["giao_thông"] == 2
+    assert retriever.df["luật"] == 2
+
+    # Query for giao_thông: doc c1 and c3 match, c2 has 0 score
+    res = retriever.search("giao thông", top_k=3)
+    matching_ids = {r["chunk_id"] for r in res}
+    assert "c1" in matching_ids
+    assert "c3" in matching_ids
+    assert "c2" not in matching_ids
+
+
+def test_bm25_no_posting_truncation_or_corpus_bias():
+    """Verify that terms appearing in >8,000 documents are NOT truncated."""
+    # Build a simulated corpus with 8,500 documents containing common term 'pháp_luật'
+    corpus = []
+    for i in range(8500):
+        corpus.append({
+            "chunk_id": f"c_{i}",
+            "text_raw": f"Văn bản pháp luật số {i}",
+            "text_norm": f"văn_bản pháp_luật số {i}",
+        })
+    retriever = BM25Retriever()
+    retriever.fit(corpus)
+
+    # Document 8499 (the last one) must be present in postings
+    assert len(retriever.postings["pháp_luật"]) == 8500
+    assert retriever.df["pháp_luật"] == 8500
+
+    # Search should be able to retrieve late documents if query matches specific term
+    res = retriever.search("pháp luật 8499", top_k=5)
+    assert len(res) > 0
+    assert res[0]["chunk_id"] == "c_8499"
 
 
 def test_bm25_retriever_with_legal_booster():

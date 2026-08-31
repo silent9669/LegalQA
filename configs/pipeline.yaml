@@ -17,7 +17,7 @@ chunking:
 
 retrieval:
   lexical: bm25
-  dense_model: "BAAI/bge-m3"
+  dense_model: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
   document_topk: 20
   chunk_topk_before_rerank: 50
   fusion: rrf
@@ -29,8 +29,8 @@ reranking:
   evidence_topk: 8
 
 generation:
-  model: "Qwen/Qwen2.5-1.5B-Instruct"
-  max_new_tokens: 512
+  model: "Qwen/Qwen2.5-3B-Instruct"
+  max_new_tokens: 384
   temperature: 0.0
   do_sample: false
   use_provision_memory: true

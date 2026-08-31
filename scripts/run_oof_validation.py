@@ -8,7 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import nltk
 import numpy as np
@@ -31,6 +31,11 @@ from src.task2.article_stitcher import ArticleStitcher
 from src.task2.generator import QwenGenerator
 from src.task2.predict import LegalQAPipeline
 from src.task2.qa_memory import QAMemory
+from src.task2.source_snap import (
+    generate_candidate_ensemble,
+    select_best_answer_candidate,
+    snap_facts_to_evidence,
+)
 
 try:
     nltk.data.find("corpora/wordnet.zip")
@@ -70,9 +75,15 @@ def run_oof_validation(
     eval_output_dir: str = "artifacts/task2/evaluations",
     num_eval_samples: Optional[int] = 100,
     n_splits: int = 5,
+    mode: str = "fast",  # "fast" or "full"
+    model_path: str = "Qwen/Qwen2.5-3B-Instruct",
     adapter_path: Optional[str] = None,
     device: Optional[str] = None,
+    gen_device: Optional[str] = None,
+    retrieval_device: Optional[str] = None,
+    max_new_tokens: int = 384,
 ) -> Dict[str, Any]:
+    print(f"=== Starting LegalQA Task 2 5-Fold OOF Validation (Mode: {mode.upper()}) ===")
     print(f"Loading QA dataset from {qa_path}...")
     df_qa = pd.read_parquet(qa_path)
 
@@ -88,27 +99,72 @@ def run_oof_validation(
             return int(hashlib.md5(f"42_{norm}".encode("utf-8")).hexdigest(), 16) % n_splits
         df_qa["fold_id"] = df_qa["question_norm"].apply(_hash_q)
 
-    print(f"Loading retrieval indexes from {bm25_dir} and {chunks_path}...")
+    # 1. Sparse BM25
+    print(f"Loading BM25 index from {bm25_dir}...")
     bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path) if os.path.exists(bm25_dir) else BM25Retriever()
+    if not bm25.corpus and os.path.exists(chunks_path):
+        df_c = pd.read_parquet(chunks_path)
+        bm25.fit(df_c.to_dict("records"))
 
-    dense = None
-    if os.path.exists(dek21_dir) and os.path.exists(os.path.join(dek21_dir, "embeddings.npy")):
-        dense = DEk21Retriever.load_index(dek21_dir, corpus_path=chunks_path, device=device)
+    # 2. Dense DEk21
+    r_dev = retrieval_device or device
+    if mode == "full" and os.path.exists(dek21_dir) and os.path.exists(os.path.join(dek21_dir, "embeddings.npy")):
+        print(f"Loading real DEk21 embeddings on {r_dev}...")
+        dense = DEk21Retriever.load_index(dek21_dir, corpus_path=chunks_path, device=r_dev)
     else:
-        dense = DEk21Retriever(model_name="mock", device=device)
+        print("Using mock DEk21 dense retriever for fast validation...")
+        dense = DEk21Retriever(model_name="mock", device=r_dev)
         if bm25.corpus:
             dense.fit_mock(bm25.corpus)
 
-    reranker = BGEReranker(model_name="mock" if device == "cpu" else "BAAI/bge-reranker-v2-m3", device=device)
+    # 3. Reranker
+    if mode == "full" and device != "cpu":
+        print(f"Loading Neural Cross-Encoder Reranker on {r_dev}...")
+        reranker = BGEReranker(model_name="BAAI/bge-reranker-v2-m3", device=r_dev)
+    else:
+        print("Using fast lexical reranker for validation...")
+        reranker = BGEReranker(model_name="mock", device="cpu")
+
+    # 4. Article Stitcher
     stitcher = ArticleStitcher(bm25.corpus if bm25.corpus else [])
-    generator = QwenGenerator(runtime="fallback")
+
+    # 5. Generator
+    g_dev = gen_device or device
+    if mode == "full" and g_dev != "cpu":
+        print(f"Loading Qwen2.5-3B Generator on {g_dev}...")
+        generator = QwenGenerator.load(
+            model_path=model_path,
+            adapter_path=adapter_path,
+            device=g_dev,
+            runtime="torch",
+        )
+    else:
+        print("Using extractive fallback generator for fast validation...")
+        generator = QwenGenerator(runtime="fallback")
+
+    all_records = df_qa.to_dict("records")
+    full_memory = QAMemory.from_records(all_records)
 
     all_oof_results = []
     fold_meteors = []
     fold_rouges = []
 
+    candidate_families = [
+        "focused_extract",
+        "stitched_extract",
+        "generated",
+        "snapped",
+        "strategy_f_300",
+        "strategy_f_600",
+        "strategy_f_1000",
+        "strategy_f_1500",
+        "selected",
+        "oracle_best",
+    ]
+    family_scores: Dict[str, List[float]] = {f: [] for f in candidate_families}
+
     samples_per_fold = (num_eval_samples // n_splits) if num_eval_samples else None
-    print(f"Evaluating {'all' if not samples_per_fold else samples_per_fold} samples per fold across {n_splits} folds...")
+    print(f"\nEvaluating {'all' if not samples_per_fold else samples_per_fold} samples per fold across {n_splits} folds...")
 
     for fold_id in range(n_splits):
         fold_records = df_qa[df_qa["fold_id"] == fold_id]
@@ -117,11 +173,12 @@ def run_oof_validation(
         else:
             val_subset = fold_records
 
-        train_subset = df_qa[df_qa["fold_id"] != fold_id]
+        val_qa_ids = set(val_subset["qa_id"].astype(str))
+        val_questions = set(val_subset["question_raw"].astype(str))
 
-        # Zero-leakage fold memory: val queries cannot lookup themselves
-        fold_mem = QAMemory.from_records(train_subset.to_dict("records"))
-        pipeline = LegalQAPipeline(fold_mem, bm25, dense, reranker, stitcher, generator)
+        # Strict zero-leakage fold memory
+        isolated_mem = full_memory.filter_fold(val_qa_ids=val_qa_ids, val_questions=val_questions)
+        pipeline = LegalQAPipeline(isolated_mem, bm25, dense, reranker, stitcher, generator)
 
         fold_preds = []
         fold_refs = []
@@ -130,19 +187,43 @@ def run_oof_validation(
             qid = str(row["qa_id"])
             q = str(row["question_raw"])
             ref_ans = str(row["answer_raw"])
+            ref_tokens = ref_ans.split()
 
-            pred = pipeline.predict_single(qid, q)
-            fold_preds.append(pred)
+            selected, cands, ev = pipeline.predict_single(
+                qid, q, max_new_tokens=max_new_tokens, return_candidates=True
+            )
+            cands["selected"] = selected
+
+            # Score each candidate against reference
+            cand_meteors = {}
+            best_cand_score = 0.0
+            best_cand_name = "selected"
+
+            for name, cand_text in cands.items():
+                sc = meteor_score([ref_tokens], str(cand_text).split())
+                cand_meteors[name] = sc
+                if name in family_scores:
+                    family_scores[name].append(sc)
+                if sc > best_cand_score:
+                    best_cand_score = sc
+                    best_cand_name = name
+
+            family_scores["oracle_best"].append(best_cand_score)
+
+            fold_preds.append(selected)
             fold_refs.append(ref_ans)
 
-            sc_meteor = meteor_score([ref_ans.split()], pred.split())
+            sc_selected = cand_meteors.get("selected", 0.0)
             all_oof_results.append({
                 "qa_id": qid,
                 "fold_id": fold_id,
                 "question": q,
                 "reference": ref_ans,
-                "prediction": pred,
-                "meteor": sc_meteor,
+                "prediction": selected,
+                "meteor": sc_selected,
+                "oracle_best_candidate": best_cand_name,
+                "oracle_best_meteor": best_cand_score,
+                "candidate_scores": cand_meteors,
             })
 
         fold_m = calculate_official_meteor(fold_refs, fold_preds)
@@ -158,6 +239,14 @@ def run_oof_validation(
     print("\n=======================================================")
     print(f"5-Fold OOF METEOR:  {mean_meteor:.4f} ± {std_meteor:.4f}")
     print(f"5-Fold OOF ROUGE-L: {mean_rouge:.4f}")
+    print("-------------------------------------------------------")
+    print("Candidate Family Breakdown (Mean METEOR across all OOF):")
+    cand_summary = {}
+    for f_name in candidate_families:
+        scores = family_scores.get(f_name, [])
+        avg = float(np.mean(scores)) if scores else 0.0
+        cand_summary[f_name] = round(avg, 4)
+        print(f" - {f_name:18s}: {avg:.4f}")
     print("=======================================================")
 
     os.makedirs(eval_output_dir, exist_ok=True)
@@ -166,6 +255,7 @@ def run_oof_validation(
     df_oof.to_parquet(oof_out, index=False)
 
     summary = {
+        "mode": mode,
         "num_folds": n_splits,
         "total_evaluated": len(df_oof),
         "mean_meteor": mean_meteor,
@@ -173,6 +263,7 @@ def run_oof_validation(
         "mean_rouge_l": mean_rouge,
         "fold_meteors": fold_meteors,
         "fold_rouges": fold_rouges,
+        "candidate_family_meteors": cand_summary,
     }
     with open(os.path.join(eval_output_dir, "oof_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
@@ -189,8 +280,13 @@ def main():
     parser.add_argument("--bm25_dir", default="artifacts/task2/indexes/bm25")
     parser.add_argument("--dek21_dir", default="artifacts/task2/indexes/dek21")
     parser.add_argument("--eval_output_dir", default="artifacts/task2/evaluations")
-    parser.add_argument("--samples", type=int, default=100, help="Total sample count across folds (or 0 for all)")
+    parser.add_argument("--samples", type=int, default=50, help="Total sample count across folds (or 0 for all)")
     parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument("--mode", default="fast", choices=["fast", "full"])
+    parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
+    parser.add_argument("--adapter", default=None)
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--max_new_tokens", type=int, default=384)
     args = parser.parse_args()
 
     num_samples = args.samples if args.samples > 0 else None
@@ -203,6 +299,11 @@ def main():
         eval_output_dir=args.eval_output_dir,
         num_eval_samples=num_samples,
         n_splits=args.folds,
+        mode=args.mode,
+        model_path=args.model,
+        adapter_path=args.adapter,
+        device=args.device,
+        max_new_tokens=args.max_new_tokens,
     )
 
 
