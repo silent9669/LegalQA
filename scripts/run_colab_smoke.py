@@ -13,6 +13,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Ensure project root is in sys.path
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="LegalQA Colab Single-T4 Smoke Test Runner")
