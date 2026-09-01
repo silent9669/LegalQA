@@ -1,0 +1,15 @@
+transformers==5.0.0
+accelerate==1.13.0
+datasets==5.0.0
+peft==0.19.1
+trl==1.12.0
+bitsandbytes==0.50.2
+sentence-transformers==5.4.1
+bm25s==0.3.11
+scikit-learn==1.6.1
+nltk==3.9.1
+pyvi==0.1.1
+pyyaml==6.0.3
+pyarrow==24.0.0
+fastparquet>=2024.2.0
+tqdm>=4.67.0
