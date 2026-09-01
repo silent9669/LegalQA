@@ -348,6 +348,42 @@ def run_seq_len_diagnostic(
     return results
 
 
+def enforce_single_gpu_trainer_args(args: Any, device: str) -> None:
+    """Force HF Trainer to keep LegalQA QLoRA on its dedicated generator GPU.
+
+    Kaggle exposes two T4s in one process. Transformers Trainer otherwise uses
+    args.n_gpu > 1 to activate nn.DataParallel, which violates LegalQA's
+    generator=cuda:0 / retrieval-reranker=cuda:1 hardware split.
+    """
+    dev = str(device)
+
+    if not dev.startswith("cuda"):
+        return
+
+    if dev != "cuda:0":
+        raise RuntimeError(
+            f"LegalQA QLoRA generator must target cuda:0, got {dev!r}."
+        )
+
+    # Force TrainingArguments._setup_devices to run first. On Kaggle this
+    # normally records _n_gpu=2 because both T4s are intentionally visible.
+    _ = args.device
+
+    if not hasattr(args, "_n_gpu"):
+        raise RuntimeError(
+            "Transformers TrainingArguments no longer exposes internal "
+            "_n_gpu after device setup; refusing to risk DataParallel."
+        )
+
+    args._n_gpu = 1
+
+    if int(args.n_gpu) != 1:
+        raise RuntimeError(
+            f"Failed to force single-GPU QLoRA Trainer policy; "
+            f"Trainer reports n_gpu={args.n_gpu}."
+        )
+
+
 def build_sft_config(max_seq_len: int, **kwargs) -> Any:
     """Build SFTConfig requiring modern completion_only_loss support, failing loud if unavailable (Step 1.6)."""
     from trl import SFTConfig
@@ -498,6 +534,15 @@ def run_qlora_training(
 
     sft_args = build_sft_config(max_seq_len=max_seq_len, **sft_kwargs)
 
+    enforce_single_gpu_trainer_args(sft_args, dev)
+
+    visible_cuda = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    print(
+        "QLoRA Trainer GPU Policy: "
+        f"target={dev} | visible_cuda={visible_cuda} | "
+        f"trainer_n_gpu={sft_args.n_gpu}"
+    )
+
     # Modern SFTTrainer automatically handles prompt/completion columns
     trainer = SFTTrainer(
         model=model,
@@ -506,6 +551,12 @@ def run_qlora_training(
         processing_class=tokenizer,
         peft_config=peft_config,
     )
+
+    if int(trainer.args.n_gpu) != 1 and dev.startswith("cuda"):
+        raise RuntimeError(
+            "FINAL_PIPELINE_ERROR: SFTTrainer changed the generator GPU policy; "
+            f"expected n_gpu=1, got {trainer.args.n_gpu} (would enable DataParallel)."
+        )
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
