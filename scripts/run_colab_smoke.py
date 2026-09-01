@@ -187,11 +187,19 @@ def main():
 
     report["status"] = "PASS"
 
-    report_path = out / "colab_smoke_report.json"
-    with open(report_path, "w", encoding="utf-8") as f:
+    # Always write and overwrite report in logs/ directory
+    logs_dir = Path(PROJECT_ROOT) / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    logs_report_path = logs_dir / "colab_smoke_report.json"
+    with open(logs_report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
-    print(f"\nColab Smoke Test Completed Successfully! Report written to {report_path}")
+    report_path = out / "colab_smoke_report.json"
+    if report_path != logs_report_path:
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+
+    print(f"\nColab Smoke Test Completed Successfully! Report written to {logs_report_path}")
     print(json.dumps(report, indent=2))
 
 

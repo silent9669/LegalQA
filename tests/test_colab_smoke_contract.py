@@ -40,6 +40,8 @@ def test_colab_smoke_runner_source_contract():
     assert "grad_accum=8" in src
     assert "fail_on_error=True" in src
     assert "Tesla T4" in src or "T4" in src
+    assert "logs" in src
+    assert "colab_smoke_report.json" in src
 
     # Forbidden anti-patterns
     forbidden_terms = [
@@ -51,6 +53,21 @@ def test_colab_smoke_runner_source_contract():
     ]
     for term in forbidden_terms:
         assert term not in src, f"Forbidden anti-pattern found in Colab runner: {term!r}"
+
+
+def test_colab_smoke_report_structure():
+    """Verify logs/colab_smoke_report.json schema and verified execution keys."""
+    report_path = Path("logs/colab_smoke_report.json")
+    if not report_path.exists():
+        return
+    import json
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    assert data.get("status") == "PASS"
+    assert "Tesla T4" in data.get("gpu", "")
+    assert data.get("cuda_device_count") == 1
+    assert data.get("generator_status") == "completed"
+    assert data.get("adapter_reload") == "pass"
+    assert data.get("peak_vram_mb", 0) > 0
 
 
 def test_colab_smoke_runner_cli_help():
