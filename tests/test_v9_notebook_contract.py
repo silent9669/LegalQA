@@ -9,15 +9,39 @@ from pathlib import Path
 import pytest
 
 
-def notebook_source() -> str:
+def notebook_cells() -> list[dict]:
     nb = json.loads(Path("kaggle_kernel/legalqa_gpu_pipeline.ipynb").read_text())
+    return nb["cells"]
+
+
+def notebook_source() -> str:
     parts = []
-    for cell in nb["cells"]:
+    for cell in notebook_cells():
         if cell.get("cell_type") != "code":
             continue
         src = cell.get("source", "")
         parts.append("".join(src) if isinstance(src, list) else str(src))
     return "\n".join(parts)
+
+
+def test_notebook_disables_transformers_v5_async_model_loading():
+    """Verify Cell 1 explicitly deactivates Transformers 5 async loading to prevent T4 4-bit OOM spikes."""
+    cells = notebook_cells()
+    code_cells = [c for c in cells if c.get("cell_type") == "code"]
+
+    cell1_src = "".join(code_cells[0].get("source", ""))
+    cell2_src = "".join(code_cells[1].get("source", ""))
+
+    expected = 'os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"'
+    assert expected in cell1_src
+    assert 'os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "0"' not in notebook_source()
+    assert 'HF_DEACTIVATE_ASYNC_LOAD"] = "0"' not in notebook_source()
+
+    # Assert committed profile and release binding API 12 remain untouched
+    src = notebook_source()
+    assert 'EXECUTION_PROFILE = "smoke_only"' in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 12" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 13" not in src
 
 
 def test_notebook_calls_strict_packaged_code_resolver():
