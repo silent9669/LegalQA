@@ -113,11 +113,47 @@ def assert_protected_versions_unchanged(before: Dict[str, str], after: Dict[str,
             )
 
 
+def collect_pip_check_conflicts() -> List[str]:
+    """Return normalized pip-check conflicts without deciding policy."""
+    res = subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        capture_output=True,
+        text=True,
+    )
+    text = "\n".join(x for x in [res.stdout, res.stderr] if x)
+    return sorted({
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    })
+
+
+def assert_no_new_pip_conflicts(
+    before: List[str],
+    after: List[str],
+) -> List[str]:
+    """Strictly assert that LegalQA bootstrap introduced no new pip conflicts."""
+    baseline = set(before)
+    post = set(after)
+    new_conflicts = sorted(post - baseline)
+
+    if new_conflicts:
+        raise RuntimeError(
+            "LegalQA bootstrap introduced new dependency conflict(s):\n"
+            + "\n".join(f" - {line}" for line in new_conflicts)
+        )
+
+    return new_conflicts
+
+
 def run_pip_check() -> None:
     """Run python -m pip check to ensure dependency tree has no broken requirements (fails loud)."""
-    res = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
-    if res.returncode != 0:
-        raise RuntimeError(f"pip check reported broken dependencies:\n{res.stdout}\n{res.stderr}")
+    conflicts = collect_pip_check_conflicts()
+    if conflicts:
+        raise RuntimeError(
+            "pip check reported broken dependencies:\n"
+            + "\n".join(conflicts)
+        )
     print("pip check: PASS (dependency tree consistent)")
 
 
@@ -158,14 +194,56 @@ def print_preinstalled_environment() -> Dict[str, Any]:
     return env_info
 
 
+def verify_target_package_versions() -> Dict[str, str]:
+    """Verify that all LegalQA required user-space packages satisfy their version floors."""
+    verified: Dict[str, str] = {}
+    failures: List[str] = []
+
+    for item in TARGET_USER_PACKAGES:
+        import_name = item[0]
+        specifier = item[1]
+        pip_name = item[2]
+
+        version = (
+            get_installed_distribution_version(pip_name)
+            or get_installed_distribution_version(import_name)
+        )
+        if not satisfies_spec(version, specifier):
+            failures.append(
+                f"{pip_name}: installed={version!r}, required={specifier}"
+            )
+        else:
+            verified[pip_name] = str(version)
+
+    if failures:
+        raise RuntimeError(
+            "LegalQA dependency floor verification failed:\n"
+            + "\n".join(f" - {x}" for x in failures)
+        )
+
+    return verified
+
+
 def bootstrap_dependencies(
     constraints_path: str = "/tmp/legalqa_protected_constraints.txt",
     allow_unprotected_drift: bool = False,
 ) -> Dict[str, Any]:
-    """Safely install missing or outdated user-space dependencies using protected constraints (Task 4)."""
+    """Safely install missing or outdated user-space dependencies using protected constraints (V12 baseline-aware)."""
     print("\n=======================================================")
     print("         BOOTSTRAPPING USER-SPACE DEPENDENCIES         ")
     print("=======================================================")
+
+    # Baseline pip conflict capture before any installation (Task 1 & 2)
+    pip_conflicts_before = collect_pip_check_conflicts()
+    if pip_conflicts_before:
+        print(
+            f"Pre-existing Kaggle pip conflicts detected: "
+            f"{len(pip_conflicts_before)}"
+        )
+        for line in pip_conflicts_before:
+            print(f"  [BASELINE] {line}")
+    else:
+        print("Pre-bootstrap pip check: clean")
 
     protected_before = snapshot_protected_versions()
     if protected_before:
@@ -206,8 +284,24 @@ def bootstrap_dependencies(
     else:
         print("All required user-space packages already satisfy version constraints.")
 
-    # Validate dependency consistency (Task 4: fail loud)
-    run_pip_check()
+    # Validate dependency consistency with baseline-aware regression guard (Task 2)
+    pip_conflicts_after = collect_pip_check_conflicts()
+    new_pip_conflicts = assert_no_new_pip_conflicts(
+        pip_conflicts_before,
+        pip_conflicts_after,
+    )
+
+    if pip_conflicts_after:
+        print(
+            "pip check regression guard: PASS "
+            f"({len(pip_conflicts_after)} total conflict(s), "
+            "0 newly introduced by LegalQA)"
+        )
+    else:
+        print("pip check regression guard: PASS (environment clean)")
+
+    # Verify dependency floors (Task 3)
+    verified_target_versions = verify_target_package_versions()
 
     protected_after = snapshot_protected_versions()
     if not allow_unprotected_drift:
@@ -218,7 +312,11 @@ def bootstrap_dependencies(
         "protected_before": protected_before,
         "protected_after": protected_after,
         "installed_or_updated": to_install_or_update,
-        "pip_check_passed": True,
+        "pip_check_baseline_conflicts": pip_conflicts_before,
+        "pip_check_post_conflicts": pip_conflicts_after,
+        "pip_check_new_conflicts": new_pip_conflicts,
+        "pip_check_regression_passed": True,
+        "verified_target_versions": verified_target_versions,
     }
 
 
@@ -311,8 +409,11 @@ def verify_runtime_imports(strict: bool = True) -> Dict[str, Any]:
     return import_results
 
 
-def save_bootstrap_manifest(output_path: str = "/kaggle/working/kaggle_environment.json") -> None:
-    """Save environment and package tuple manifest to disk."""
+def save_bootstrap_manifest(
+    output_path: str = "/kaggle/working/kaggle_environment.json",
+    bootstrap_result: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Save environment and package tuple manifest to disk with truthful conflict provenance."""
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
     except Exception:
@@ -326,12 +427,24 @@ def save_bootstrap_manifest(output_path: str = "/kaggle/working/kaggle_environme
     ]:
         pkg_dict[pkg] = get_installed_distribution_version(pkg) or "not installed"
 
-    manifest = {
+    manifest: Dict[str, Any] = {
         "python": sys.version,
         "packages": pkg_dict,
-        "pip_check_passed": True,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
     }
+
+    if bootstrap_result:
+        manifest["pip_check_regression_passed"] = bool(bootstrap_result.get("pip_check_regression_passed", True))
+        manifest["pip_check_baseline_conflicts"] = bootstrap_result.get("pip_check_baseline_conflicts", [])
+        manifest["pip_check_post_conflicts"] = bootstrap_result.get("pip_check_post_conflicts", [])
+        manifest["pip_check_new_conflicts"] = bootstrap_result.get("pip_check_new_conflicts", [])
+        manifest["protected_runtime_unchanged"] = (
+            bootstrap_result.get("protected_before", {}) == bootstrap_result.get("protected_after", {})
+        )
+        manifest["pip_check_clean"] = len(manifest["pip_check_post_conflicts"]) == 0
+    else:
+        manifest["pip_check_clean"] = False
+
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
@@ -342,9 +455,9 @@ def save_bootstrap_manifest(output_path: str = "/kaggle/working/kaggle_environme
 
 def main():
     print_preinstalled_environment()
-    bootstrap_dependencies()
+    bstrap_res = bootstrap_dependencies()
     verify_runtime_imports(strict=True)
-    save_bootstrap_manifest()
+    save_bootstrap_manifest(bootstrap_result=bstrap_res)
 
 
 if __name__ == "__main__":
