@@ -1,0 +1,12 @@
+{
+  "git_sha": "757620ce8ccd41753ff217d4fe6593627a196899",
+  "gpu": "Tesla T4",
+  "cuda_device_count": 1,
+  "component": "generator",
+  "mode": "full",
+  "status": "PASS",
+  "generator_steps": 30,
+  "generator_status": "completed",
+  "peak_vram_mb": 4304.69,
+  "adapter_reload": "pass"
+}
