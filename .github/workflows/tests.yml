@@ -77,30 +77,48 @@ jobs:
           pytest tests/test_v7_runtime_integrity.py tests/test_v8_fail_loud_integration.py -v
 
   training-api-compat:
-    name: SFT Training API & Module Compatibility
+    name: SFT Training API & Module Compatibility (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install dependencies and TRL/PEFT stack
+      - name: Install minimum supported TRL contract
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyyaml pytest packaging
-          pip install transformers peft trl bitsandbytes accelerate
+          pip install "trl==0.17.0" transformers peft bitsandbytes accelerate
 
-      - name: Verify SFT completion_only_loss API and imports
+      - name: Verify SFT completion_only_loss and processing_class API
         run: |
-          python -c "import inspect; from trl import SFTConfig; assert 'completion_only_loss' in inspect.signature(SFTConfig).parameters"
+          python - <<'PY'
+          import inspect
+          from trl import SFTConfig, SFTTrainer
+
+          sc = inspect.signature(SFTConfig)
+          st = inspect.signature(SFTTrainer)
+          assert "completion_only_loss" in sc.parameters, "SFTConfig missing completion_only_loss"
+          assert "max_length" in sc.parameters or "max_seq_length" in sc.parameters, "SFTConfig missing max_length/max_seq_length"
+          assert "processing_class" in st.parameters, "SFTTrainer missing processing_class"
+          print("MINIMUM TRL API CONTRACT PASS")
+          PY
           python -c "import src.task2.training.train_generator as tg; assert not hasattr(tg, 'DataCollatorForCompletionOnlyLM')"
           python -c "from src.task2.training.train_generator import build_sft_config, build_grounded_training_examples"
 
-      - name: Run promotion consistency and training tests
+      - name: Run promotion consistency, training, and dependency contract tests
         run: |
-          pytest tests/test_v7_promotion_consistency.py tests/test_v8_promotion_provenance.py tests/test_generator_training_data.py -v
+          pytest \
+            tests/test_v7_promotion_consistency.py \
+            tests/test_v8_promotion_provenance.py \
+            tests/test_generator_training_data.py \
+            tests/test_v11_dependency_contract.py \
+            -v

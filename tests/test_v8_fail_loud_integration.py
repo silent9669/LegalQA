@@ -29,10 +29,10 @@ def test_missing_code_manifest_is_fatal(tmp_path):
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 10, "git_sha": VALID_SHA_A})
+        json.dumps({"runtime_api_version": 11, "git_sha": VALID_SHA_A})
     )
     with pytest.raises(RuntimeError, match="code_manifest.json"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=10)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=11)
 
 
 def test_missing_dataset_manifest_is_fatal(tmp_path):
@@ -41,13 +41,13 @@ def test_missing_dataset_manifest_is_fatal(tmp_path):
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 10, "git_sha": VALID_SHA_A})
+        json.dumps({"runtime_api_version": 11, "git_sha": VALID_SHA_A})
     )
     with pytest.raises(RuntimeError, match="dataset_manifest.json"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=10)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=11)
 
 
-@pytest.mark.parametrize("version", [7, 8, 9, 11])
+@pytest.mark.parametrize("version", [7, 8, 9, 10, 12])
 def test_runtime_api_must_equal_expected(tmp_path, version):
     """Task 1 & 2: Verify runtime API mismatch between expected and actual is fatal."""
     runtime = tmp_path / "runtime"
@@ -60,7 +60,7 @@ def test_runtime_api_must_equal_expected(tmp_path, version):
         json.dumps({"runtime_api_version": version, "git_sha": VALID_SHA_A})
     )
     with pytest.raises(RuntimeError, match="runtime_api_version mismatch"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=10)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=11)
 
 
 def test_dataset_code_git_sha_must_match(tmp_path):
@@ -69,13 +69,13 @@ def test_dataset_code_git_sha_must_match(tmp_path):
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 10, "git_sha": VALID_SHA_A})
+        json.dumps({"runtime_api_version": 11, "git_sha": VALID_SHA_A})
     )
     (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 10, "git_sha": VALID_SHA_B})
+        json.dumps({"runtime_api_version": 11, "git_sha": VALID_SHA_B})
     )
     with pytest.raises(RuntimeError, match="Git SHA divergence"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=10)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=11)
 
 
 @pytest.mark.parametrize("bad_sha", [None, "", "unknown", "abc", "g" * 40])
@@ -85,13 +85,13 @@ def test_runtime_manifest_requires_real_git_sha(tmp_path, bad_sha):
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 10, "git_sha": bad_sha})
+        json.dumps({"runtime_api_version": 11, "git_sha": bad_sha})
     )
     (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 10, "git_sha": bad_sha})
+        json.dumps({"runtime_api_version": 11, "git_sha": bad_sha})
     )
     with pytest.raises(RuntimeError, match="40-character"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=10)
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=11)
 
 
 def test_ambiguous_packaged_code_roots_fail(tmp_path):
@@ -147,9 +147,9 @@ def test_required_import_failure_is_fatal(monkeypatch):
 
 
 def test_requirements_kaggle_aligned():
-    """Task 5: Verify requirements-kaggle.txt has trl>=0.11.0 and does not specify torch."""
+    """Task 5: Verify requirements-kaggle.txt has trl>=0.17.0 and does not specify torch."""
     req_text = Path("requirements-kaggle.txt").read_text()
-    assert "trl>=0.11.0" in req_text
+    assert "trl>=0.17.0" in req_text
     # Torch should not be an unconstrained requirement
     for line in req_text.splitlines():
         line = line.strip()
@@ -173,5 +173,5 @@ def test_notebook_uses_strict_runtime_resolution():
     assert "validate_runtime_manifests" in src
     assert "resolve_runtime_paths(" in src
     assert "allow_remote_model_download=False" in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 10" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 11" in src
     assert 'resolve_runtime_paths("/kaggle/input", strict=False' not in src

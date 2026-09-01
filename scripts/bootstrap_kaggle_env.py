@@ -30,7 +30,7 @@ TARGET_USER_PACKAGES: List[Tuple[str, str, str]] = [
     ("accelerate", ">=0.34.0", "accelerate"),
     ("datasets", ">=2.20.0", "datasets"),
     ("peft", ">=0.10.0", "peft"),
-    ("trl", ">=0.11.0", "trl"),
+    ("trl", ">=0.17.0", "trl"),
     ("bitsandbytes", ">=0.43.0", "bitsandbytes"),
     ("sentence_transformers", ">=3.0.0", "sentence-transformers"),
     ("bm25s", ">=0.2.5", "bm25s"),
@@ -222,6 +222,33 @@ def bootstrap_dependencies(
     }
 
 
+def check_trl_api_signatures(sft_config_cls: Any, sft_trainer_cls: Any) -> List[str]:
+    """Check whether SFTConfig and SFTTrainer expose all required LegalQA APIs.
+
+    Required APIs:
+    - SFTConfig.completion_only_loss
+    - SFTConfig.max_length OR SFTConfig.max_seq_length
+    - SFTTrainer.processing_class
+
+    Returns a list of missing API descriptions, empty if all required APIs are present.
+    """
+    missing: List[str] = []
+    config_sig = inspect.signature(sft_config_cls)
+    trainer_sig = inspect.signature(sft_trainer_cls)
+
+    if "completion_only_loss" not in config_sig.parameters:
+        missing.append("SFTConfig.completion_only_loss")
+    if not (
+        "max_length" in config_sig.parameters
+        or "max_seq_length" in config_sig.parameters
+    ):
+        missing.append("SFTConfig.max_length/max_seq_length")
+    if "processing_class" not in trainer_sig.parameters:
+        missing.append("SFTTrainer.processing_class")
+
+    return missing
+
+
 def verify_runtime_imports(strict: bool = True) -> Dict[str, Any]:
     """Test and verify all critical neural and retrieval modules and modern TRL SFT API (Task 4: fail loud)."""
     print("\n=======================================================")
@@ -257,22 +284,23 @@ def verify_runtime_imports(strict: bool = True) -> Dict[str, Any]:
             failures.append(f"{desc} ({mod_name}): {e}")
             print(f"  ! {desc:32s} ({mod_name}): FAIL ({e})", file=sys.stderr)
 
-    # Check TRL completion_only_loss support explicitly (P0-1)
+    # Check TRL SFT API contract explicitly (completion_only_loss, max_length, processing_class)
     try:
         from trl import SFTConfig, SFTTrainer
-        sig = inspect.signature(SFTConfig)
-        if "completion_only_loss" not in sig.parameters:
+        missing_apis = check_trl_api_signatures(SFTConfig, SFTTrainer)
+        if missing_apis:
             msg = (
-                "Installed TRL SFTConfig does not support completion_only_loss parameter. "
-                "Update TRL to >=0.11.0 to preserve exact completion-only loss semantics."
+                "Installed TRL lacks LegalQA-required SFT APIs: "
+                + ", ".join(missing_apis)
+                + ". Require trl>=0.17.0."
             )
             failures.append(msg)
-            print(f"  ! TRL SFTConfig check: {msg}", file=sys.stderr)
+            print(f"  ! TRL SFT API check: {msg}", file=sys.stderr)
         else:
-            print("  + TRL SFTConfig.completion_only_loss: AVAILABLE")
+            print("  + TRL SFT API (completion_only_loss, max_length, processing_class): PASS")
     except Exception as e:
         failures.append(f"TRL SFTConfig/SFTTrainer import: {e}")
-        print(f"  ! TRL SFTConfig check: {e}", file=sys.stderr)
+        print(f"  ! TRL SFT check: {e}", file=sys.stderr)
 
     if failures and strict:
         raise RuntimeError(
