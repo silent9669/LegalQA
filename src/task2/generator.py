@@ -8,11 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 except ImportError:
     torch = None
     AutoModelForCausalLM = None
     AutoTokenizer = None
+    BitsAndBytesConfig = None
 
 try:
     from peft import PeftModel
@@ -136,11 +137,26 @@ class QwenGenerator:
                     gen.tokenizer.pad_token = gen.tokenizer.eos_token
                 gen.tokenizer.padding_side = "left"
 
+                load_kwargs: Dict[str, Any] = {
+                    "token": token,
+                }
+                if dev.startswith("cuda"):
+                    load_kwargs["device_map"] = {"": dev}
+                    if BitsAndBytesConfig is not None:
+                        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_quant_type="nf4",
+                            bnb_4bit_compute_dtype=compute_dtype,
+                            bnb_4bit_use_double_quant=True,
+                        )
+                    else:
+                        load_kwargs["torch_dtype"] = compute_dtype
+                else:
+                    load_kwargs["torch_dtype"] = compute_dtype
+
                 model = AutoModelForCausalLM.from_pretrained(
                     model_path,
-                    torch_dtype=compute_dtype,
-                    device_map={"": dev} if dev.startswith("cuda") else None,
-                    token=token,
+                    **load_kwargs,
                 )
 
                 if adapter_path and os.path.exists(adapter_path) and PeftModel is not None:
