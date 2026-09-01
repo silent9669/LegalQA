@@ -1,4 +1,4 @@
-"""Tests for LegalQA V10/V11/V12 runtime release binding, literal API 12, and pre-resolution validation."""
+"""Tests for LegalQA V10/V11/V12/V13 runtime release binding, literal API 13, and pre-resolution validation."""
 
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ def notebook_cell_3_source() -> str:
     raise ValueError("Cell 3 not found in notebook")
 
 
-def test_notebook_owns_literal_required_runtime_api_version_12():
-    """Item 1: Verify notebook owns literal REQUIRED_RUNTIME_API_VERSION = 12 and does not import it."""
+def test_notebook_owns_literal_required_runtime_api_version_13():
+    """Item 1: Verify notebook owns literal REQUIRED_RUNTIME_API_VERSION = 13 and does not import it."""
     src = notebook_cell_3_source()
-    assert re.search(r"REQUIRED_RUNTIME_API_VERSION\s*=\s*12\b", src), "Notebook must define REQUIRED_RUNTIME_API_VERSION = 12"
+    assert re.search(r"REQUIRED_RUNTIME_API_VERSION\s*=\s*13\b", src), "Notebook must define REQUIRED_RUNTIME_API_VERSION = 13"
     assert "EXPECTED_RUNTIME_API_VERSION" not in src, "Notebook must not import or derive EXPECTED_RUNTIME_API_VERSION from packaged code"
 
 
@@ -53,9 +53,9 @@ def test_notebook_validates_manifests_before_resolve_runtime_paths():
     assert "assert os.path.realpath(paths[\"runtime_root\"]) == os.path.realpath(runtime_root_from_code)" in src
 
 
-@pytest.mark.parametrize("stale_version", [9, 10, 11])
-def test_stale_package_rejected_by_v12_contract(tmp_path: Path, stale_version: int):
-    """Item 7: Verify stale API 9/10/11 packages with matching SHA are rejected by REQUIRED_RUNTIME_API_VERSION = 12."""
+@pytest.mark.parametrize("stale_version", [9, 10, 11, 12])
+def test_stale_package_rejected_by_v13_contract(tmp_path: Path, stale_version: int):
+    """Item 7: Verify stale API 9/10/11/12 packages with matching SHA are rejected by REQUIRED_RUNTIME_API_VERSION = 13."""
     runtime = tmp_path / "runtime"
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
@@ -66,29 +66,29 @@ def test_stale_package_rejected_by_v12_contract(tmp_path: Path, stale_version: i
         json.dumps({"runtime_api_version": stale_version, "git_sha": VALID_SHA})
     )
 
-    with pytest.raises(RuntimeError, match=f"runtime_api_version mismatch: found {stale_version}, expected 12"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=12)
+    with pytest.raises(RuntimeError, match=f"runtime_api_version mismatch: found {stale_version}, expected 13"):
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=13)
 
 
-def test_fresh_v12_package_passes_v12_contract(tmp_path: Path):
-    """Item 7: Verify fresh API 12 package passes validation."""
+def test_fresh_v13_package_passes_v13_contract(tmp_path: Path):
+    """Item 7: Verify fresh API 13 package passes validation."""
     runtime = tmp_path / "runtime"
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
     (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 12, "git_sha": VALID_SHA})
+        json.dumps({"runtime_api_version": 13, "git_sha": VALID_SHA})
     )
     (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 12, "git_sha": VALID_SHA})
+        json.dumps({"runtime_api_version": 13, "git_sha": VALID_SHA})
     )
 
-    provenance = validate_runtime_manifests(str(runtime), str(code), expected_api_version=12)
-    assert provenance["runtime_api_version"] == 12
+    provenance = validate_runtime_manifests(str(runtime), str(code), expected_api_version=13)
+    assert provenance["runtime_api_version"] == 13
     assert provenance["git_sha"] == VALID_SHA
 
 
-def test_nested_kaggle_layout_end_to_end_v12_resolution(tmp_path: Path):
-    """Item 8: Verify end-to-end V12 sequence on exact Kaggle nested directory structure."""
+def test_nested_kaggle_layout_end_to_end_v13_resolution(tmp_path: Path):
+    """Item 8: Verify end-to-end V13 sequence on exact Kaggle nested directory structure."""
     kaggle_input = tmp_path / "kaggle" / "input"
     ds_root = kaggle_input / "datasets" / "phucdangg" / "legalqa-task2-clean-data"
     code_root = ds_root / "code" / "LegalQA"
@@ -99,15 +99,15 @@ def test_nested_kaggle_layout_end_to_end_v12_resolution(tmp_path: Path):
 
     # Populate manifests
     (ds_root / "dataset_manifest.json").write_text(
-        json.dumps({"title": "LegalQA", "runtime_api_version": 12, "git_sha": VALID_SHA}),
+        json.dumps({"title": "LegalQA", "runtime_api_version": 13, "git_sha": VALID_SHA}),
         encoding="utf-8",
     )
     (ds_root / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 12, "git_sha": VALID_SHA}),
+        json.dumps({"runtime_api_version": 13, "git_sha": VALID_SHA}),
         encoding="utf-8",
     )
     (code_root / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 12, "git_sha": VALID_SHA}),
+        json.dumps({"runtime_api_version": 13, "git_sha": VALID_SHA}),
         encoding="utf-8",
     )
     (ds_root / "legal_chunks.parquet").write_bytes(b"PAR1_DUMMY")
@@ -121,7 +121,7 @@ def test_nested_kaggle_layout_end_to_end_v12_resolution(tmp_path: Path):
     )
 
     # Execute Cell 3 logic step-by-step
-    REQUIRED_RUNTIME_API_VERSION = 12
+    REQUIRED_RUNTIME_API_VERSION = 13
     resolved_code_root = resolve_packaged_code_root(str(kaggle_input), strict=True)
     runtime_root_from_code = str(Path(resolved_code_root).resolve().parents[1])
 
@@ -134,7 +134,7 @@ def test_nested_kaggle_layout_end_to_end_v12_resolution(tmp_path: Path):
         code_root=resolved_code_root,
         expected_api_version=REQUIRED_RUNTIME_API_VERSION,
     )
-    assert provenance["runtime_api_version"] == 12
+    assert provenance["runtime_api_version"] == 13
 
     # Resolve paths
     paths = resolve_runtime_paths(

@@ -106,25 +106,8 @@ from src.task2.runtime_integrity import EXPECTED_RUNTIME_API_VERSION, validate_r
 VALID_TEST_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
-def test_stale_v11_package_rejected_by_v12_validator(tmp_path: Path):
-    """Verify that a package with runtime_api_version=11 is rejected when expected_api_version=12."""
-    runtime = tmp_path / "runtime"
-    code = runtime / "code" / "LegalQA"
-    code.mkdir(parents=True)
-    (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 11, "git_sha": VALID_TEST_SHA})
-    )
-    (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 11, "git_sha": VALID_TEST_SHA})
-    )
-
-    with pytest.raises(RuntimeError, match="runtime_api_version mismatch: found 11, expected 12"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=12)
-
-
-def test_fresh_v12_package_passes_v12_validator(tmp_path: Path):
-    """Verify that a fresh package with runtime_api_version=12 passes validation."""
-    assert EXPECTED_RUNTIME_API_VERSION == 12
+def test_stale_v12_package_rejected_by_v13_validator(tmp_path: Path):
+    """Verify that a package with runtime_api_version=12 is rejected when expected_api_version=13."""
     runtime = tmp_path / "runtime"
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
@@ -135,8 +118,25 @@ def test_fresh_v12_package_passes_v12_validator(tmp_path: Path):
         json.dumps({"runtime_api_version": 12, "git_sha": VALID_TEST_SHA})
     )
 
-    provenance = validate_runtime_manifests(str(runtime), str(code), expected_api_version=12)
-    assert provenance["runtime_api_version"] == 12
+    with pytest.raises(RuntimeError, match="runtime_api_version mismatch: found 12, expected 13"):
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=13)
+
+
+def test_fresh_v13_package_passes_v13_validator(tmp_path: Path):
+    """Verify that a fresh package with runtime_api_version=13 passes validation."""
+    assert EXPECTED_RUNTIME_API_VERSION == 13
+    runtime = tmp_path / "runtime"
+    code = runtime / "code" / "LegalQA"
+    code.mkdir(parents=True)
+    (runtime / "dataset_manifest.json").write_text(
+        json.dumps({"runtime_api_version": 13, "git_sha": VALID_TEST_SHA})
+    )
+    (code / "code_manifest.json").write_text(
+        json.dumps({"runtime_api_version": 13, "git_sha": VALID_TEST_SHA})
+    )
+
+    provenance = validate_runtime_manifests(str(runtime), str(code), expected_api_version=13)
+    assert provenance["runtime_api_version"] == 13
     assert provenance["git_sha"] == VALID_TEST_SHA
 
 
