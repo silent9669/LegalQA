@@ -180,7 +180,7 @@ def test_stale_runtime_api_manifest_detection():
     import yaml
     with open("configs/runtime_api.yaml", "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    assert data.get("runtime_api_version") == 11
+    assert data.get("runtime_api_version") == 12
 
 
 def test_sequence_diagnostics_use_tokenizer_counts(tmp_path):
