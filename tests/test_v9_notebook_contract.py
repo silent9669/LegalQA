@@ -39,7 +39,7 @@ def test_notebook_disables_transformers_v5_async_model_loading():
 
     # Assert committed profile and release binding API 13 remain untouched
     src = notebook_source()
-    assert 'EXECUTION_PROFILE = "final_train_and_submit"' in src
+    assert 'EXECUTION_PROFILE = "screen_fold0"' in src
     assert "REQUIRED_RUNTIME_API_VERSION = 13" in src
     assert "REQUIRED_RUNTIME_API_VERSION = 12" not in src
     assert "REQUIRED_RUNTIME_API_VERSION = 14" not in src
