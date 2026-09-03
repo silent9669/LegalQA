@@ -165,9 +165,9 @@ def test_required_import_failure_is_fatal(monkeypatch):
 
 
 def test_requirements_kaggle_aligned():
-    """Task 5: Verify requirements-kaggle.txt has trl>=0.17.0 and does not specify torch."""
+    """Task 5: Verify requirements-kaggle.txt has trl==1.12.0 and does not specify torch."""
     req_text = Path("requirements-kaggle.txt").read_text()
-    assert "trl>=0.17.0" in req_text
+    assert "trl==1.12.0" in req_text
     # Torch should not be an unconstrained requirement
     for line in req_text.splitlines():
         line = line.strip()
@@ -191,5 +191,5 @@ def test_notebook_uses_strict_runtime_resolution():
     assert "validate_runtime_manifests" in src
     assert "resolve_runtime_paths(" in src
     assert "allow_remote_model_download=False" in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 13" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 14" in src
     assert 'resolve_runtime_paths("/kaggle/input", strict=False' not in src

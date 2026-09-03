@@ -35,7 +35,7 @@ def test_notebook_cell1_strict_screen_fold0_profile():
     assert "ALLOW_UNVALIDATED_FINAL = False" in src
     assert 'ALLOW_UNVALIDATED_FINAL = True' not in src
     assert 'os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"' in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 13" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 14" in src
 
 
 def test_notebook_cell10_contains_auto_promotion_and_handoff():

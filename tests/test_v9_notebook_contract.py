@@ -37,12 +37,12 @@ def test_notebook_disables_transformers_v5_async_model_loading():
     assert 'os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "0"' not in notebook_source()
     assert 'HF_DEACTIVATE_ASYNC_LOAD"] = "0"' not in notebook_source()
 
-    # Assert committed profile and release binding API 13 remain untouched
+    # Assert committed profile and release binding API 14 remain untouched
     src = notebook_source()
     assert 'EXECUTION_PROFILE = "screen_fold0"' in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 13" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 14" in src
     assert "REQUIRED_RUNTIME_API_VERSION = 12" not in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 14" not in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 13" not in src
 
 
 def test_notebook_calls_strict_packaged_code_resolver():

@@ -91,14 +91,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install minimum supported TRL contract
+      - name: Install pinned TRL contract
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyyaml pytest packaging
-          pip install "trl==0.17.0" transformers peft bitsandbytes accelerate
+          pip install "trl==1.12.0" transformers peft bitsandbytes accelerate
 
-      - name: Verify SFT completion_only_loss and processing_class API
+      - name: Verify SFT completion_only_loss, loss_type, activation_offloading, and processing_class API
         run: |
           python - <<'PY'
           import inspect
@@ -107,9 +107,11 @@ jobs:
           sc = inspect.signature(SFTConfig)
           st = inspect.signature(SFTTrainer)
           assert "completion_only_loss" in sc.parameters, "SFTConfig missing completion_only_loss"
+          assert "loss_type" in sc.parameters, "SFTConfig missing loss_type"
+          assert "activation_offloading" in sc.parameters, "SFTConfig missing activation_offloading"
           assert "max_length" in sc.parameters or "max_seq_length" in sc.parameters, "SFTConfig missing max_length/max_seq_length"
           assert "processing_class" in st.parameters, "SFTTrainer missing processing_class"
-          print("MINIMUM TRL API CONTRACT PASS")
+          print("PINNED TRL API CONTRACT PASS")
           PY
           python -c "import src.task2.training.train_generator as tg; assert not hasattr(tg, 'DataCollatorForCompletionOnlyLM')"
           python -c "from src.task2.training.train_generator import build_sft_config, build_grounded_training_examples"
