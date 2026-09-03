@@ -178,9 +178,11 @@ def test_strict_kaggle_path_resolution_no_local_fallback(tmp_path):
 def test_stale_runtime_api_manifest_detection():
     """Task 7: Verify that runtime API version is defined and validated."""
     import yaml
+    from src.task2.runtime_integrity import EXPECTED_RUNTIME_API_VERSION
     with open("configs/runtime_api.yaml", "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    assert data.get("runtime_api_version") == 13
+    assert data.get("runtime_api_version") == EXPECTED_RUNTIME_API_VERSION
+    assert EXPECTED_RUNTIME_API_VERSION == 14
 
 
 def test_sequence_diagnostics_use_tokenizer_counts(tmp_path):

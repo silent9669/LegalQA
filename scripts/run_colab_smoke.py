@@ -39,6 +39,12 @@ def parse_args():
         help="Smoke test mode: quick (3 steps) or full (30 steps)",
     )
     p.add_argument(
+        "--max-train-examples",
+        type=int,
+        default=None,
+        help="Max generator training examples (default: None for full 5956-example pool)",
+    )
+    p.add_argument(
         "--model-name",
         default="Qwen/Qwen2.5-3B-Instruct",
         help="HuggingFace model ID or local path for Qwen base model",
@@ -98,12 +104,12 @@ def main():
 
     if args.mode == "quick":
         generator_steps = 3
-        generator_examples = 32
+        generator_examples = args.max_train_examples
         reranker_steps = 3
         reranker_pairs = 64
     else:
         generator_steps = 30
-        generator_examples = 128
+        generator_examples = args.max_train_examples
         reranker_steps = 30
         reranker_pairs = 256
 
@@ -113,6 +119,7 @@ def main():
         "cuda_device_count": 1,
         "component": args.component,
         "mode": args.mode,
+        "max_train_examples": generator_examples,
         "status": "IN_PROGRESS",
     }
 
@@ -127,7 +134,8 @@ def main():
             if not f.exists():
                 raise FileNotFoundError(f"COLAB_SMOKE_ERROR: Required generator file missing: {f}")
 
-        print(f"Starting Generator {args.mode} smoke ({generator_steps} steps, max {generator_examples} examples)...")
+        ex_str = "full dataset (None)" if generator_examples is None else f"max {generator_examples} examples"
+        print(f"Starting Generator {args.mode} smoke ({generator_steps} steps, {ex_str})...")
         from src.task2.training.train_generator import run_qlora_training
 
         res_gen = run_qlora_training(
@@ -154,6 +162,8 @@ def main():
         report["generator_steps"] = generator_steps
         report["generator_status"] = res_gen.get("status", "completed")
         report["peak_vram_mb"] = gen_manifest.get("peak_vram_mb", 0.0)
+        report["peak_reserved_mb"] = gen_manifest.get("peak_reserved_mb", 0.0)
+        report["free_vram_mb"] = gen_manifest.get("free_vram_mb", 0.0)
         report["adapter_reload"] = "pass"
 
     # Execute Reranker Smoke (if requested)

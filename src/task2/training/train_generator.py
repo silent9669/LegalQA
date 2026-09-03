@@ -384,8 +384,88 @@ def enforce_single_gpu_trainer_args(args: Any, device: str) -> None:
         )
 
 
+def inspect_and_guard_trl_chunk_size(target_chunk_size: int = 256) -> Dict[str, Any]:
+    """Inspect TRL chunked LM head chunk size and safely cap to target if > target in TRL 1.12.0.
+
+    Guarded strictly by:
+    - TRL version == 1.12.0 (or starts with 1.12.)
+    - trl.trainer.sft_trainer._CHUNKED_LM_HEAD_CHUNK_SIZE exists
+    - current value > target_chunk_size
+    """
+    info: Dict[str, Any] = {
+        "trl_version": "unknown",
+        "chunk_size_attr_present": False,
+        "original_chunk_size": None,
+        "modified_chunk_size": None,
+        "action": "none",
+    }
+    try:
+        import trl
+        trl_ver = str(getattr(trl, "__version__", "unknown"))
+        info["trl_version"] = trl_ver
+
+        import trl.trainer.sft_trainer as sft_module
+        if hasattr(sft_module, "_CHUNKED_LM_HEAD_CHUNK_SIZE"):
+            info["chunk_size_attr_present"] = True
+            orig_val = getattr(sft_module, "_CHUNKED_LM_HEAD_CHUNK_SIZE")
+            info["original_chunk_size"] = orig_val
+            info["modified_chunk_size"] = orig_val
+
+            if (trl_ver == "1.12.0" or trl_ver.startswith("1.12.")) and isinstance(orig_val, int) and orig_val > target_chunk_size:
+                setattr(sft_module, "_CHUNKED_LM_HEAD_CHUNK_SIZE", target_chunk_size)
+                info["modified_chunk_size"] = target_chunk_size
+                info["action"] = f"capped from {orig_val} to {target_chunk_size}"
+                print(
+                    f"[TRL Memory Guard] Capped _CHUNKED_LM_HEAD_CHUNK_SIZE from {orig_val} to {target_chunk_size} "
+                    f"for TRL {trl_ver} to prevent GPU0 OOM on large vocab models."
+                )
+            else:
+                info["action"] = f"retained {orig_val}"
+                print(f"[TRL Memory Guard] _CHUNKED_LM_HEAD_CHUNK_SIZE={orig_val} (action: {info['action']}).")
+        else:
+            info["action"] = "attr_not_found"
+    except Exception as e:
+        info["action"] = f"inspection_error: {e}"
+        print(f"[TRL Memory Guard] Note: Could not inspect/modify TRL chunk size: {e}")
+
+    return info
+
+
+def log_cuda_memory_diagnostics(stage_label: str, device: str = "cuda:0") -> Dict[str, Any]:
+    """Log non-secret GPU memory diagnostics for a given training stage."""
+    diag: Dict[str, Any] = {"stage": stage_label, "device": device}
+    try:
+        import torch
+        if not torch.cuda.is_available() or not device.startswith("cuda"):
+            return diag
+
+        dev_idx = int(device.split(":")[-1]) if ":" in device else 0
+        free_bytes, total_bytes = torch.cuda.mem_get_info(dev_idx)
+        alloc_bytes = torch.cuda.memory_allocated(dev_idx)
+        res_bytes = torch.cuda.memory_reserved(dev_idx)
+
+        diag.update({
+            "free_mb": round(free_bytes / (1024 * 1024), 2),
+            "total_mb": round(total_bytes / (1024 * 1024), 2),
+            "allocated_mb": round(alloc_bytes / (1024 * 1024), 2),
+            "reserved_mb": round(res_bytes / (1024 * 1024), 2),
+        })
+        print(
+            f"[VRAM Diagnostics - {stage_label}] Device {device}: "
+            f"Allocated: {diag['allocated_mb']:.1f} MiB | "
+            f"Reserved: {diag['reserved_mb']:.1f} MiB | "
+            f"Free: {diag['free_mb']:.1f} MiB | "
+            f"Total: {diag['total_mb']:.1f} MiB"
+        )
+    except Exception as e:
+        print(f"[VRAM Diagnostics - {stage_label}] Memory query notice: {e}")
+
+    return diag
+
+
 def build_sft_config(max_seq_len: int, **kwargs) -> Any:
-    """Build SFTConfig requiring modern completion_only_loss support, failing loud if unavailable (Step 1.6)."""
+    """Build SFTConfig requiring modern completion_only_loss, loss_type, and activation_offloading."""
+    import trl
     from trl import SFTConfig
 
     sig = inspect.signature(SFTConfig)
@@ -397,6 +477,12 @@ def build_sft_config(max_seq_len: int, **kwargs) -> Any:
 
     config_kwargs = dict(kwargs)
     config_kwargs["completion_only_loss"] = True
+
+    # Memory-efficient chunked loss and activation offloading for T4 stability
+    if "loss_type" in sig.parameters:
+        config_kwargs["loss_type"] = "chunked_nll"
+    if "activation_offloading" in sig.parameters:
+        config_kwargs["activation_offloading"] = True
 
     if "max_length" in sig.parameters:
         config_kwargs["max_length"] = max_seq_len
@@ -435,14 +521,25 @@ def run_qlora_training(
     try:
         import torch
         from datasets import Dataset as HFDataset
+        import peft
         from peft import LoraConfig, PeftModel
+        import transformers
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        import trl
         from trl import SFTConfig, SFTTrainer
+        import bitsandbytes
     except ImportError as e:
         msg = f"Required training packages not installed: {e}"
         if fail_on_error:
             raise RuntimeError(f"FINAL_PIPELINE_ERROR: {msg}")
         return {"status": "skipped", "reason": "missing_dependencies"}
+
+    # Non-secret diagnostics & TRL chunk-size inspection and guard
+    print(f"TRL version: {getattr(trl, '__version__', 'unknown')}")
+    print(f"Transformers version: {getattr(transformers, '__version__', 'unknown')}")
+    print(f"PEFT version: {getattr(peft, '__version__', 'unknown')}")
+    print(f"bitsandbytes version: {getattr(bitsandbytes, '__version__', 'unknown')}")
+    inspect_and_guard_trl_chunk_size(target_chunk_size=256)
 
     if not torch.cuda.is_available() and device is None:
         msg = "CUDA not available for QLoRA GPU training."
@@ -502,6 +599,7 @@ def run_qlora_training(
         token=token,
     )
     model.config.use_cache = False
+    log_cuda_memory_diagnostics("After 4-bit Base Model Load", dev)
 
     peft_config = LoraConfig(
         r=16,
@@ -551,6 +649,7 @@ def run_qlora_training(
         processing_class=tokenizer,
         peft_config=peft_config,
     )
+    log_cuda_memory_diagnostics("After SFTTrainer Construction", dev)
 
     if int(trainer.args.n_gpu) != 1 and dev.startswith("cuda"):
         raise RuntimeError(
@@ -558,15 +657,27 @@ def run_qlora_training(
             f"expected n_gpu=1, got {trainer.args.n_gpu} (would enable DataParallel)."
         )
 
+    log_cuda_memory_diagnostics("Immediately Before trainer.train()", dev)
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    log_cuda_memory_diagnostics("After Training Completion", dev)
 
-    # Measure peak VRAM allocated on GPU
+    # Measure peak VRAM allocated and reserved on GPU
     peak_vram_mb = 0.0
+    peak_reserved_mb = 0.0
+    free_vram_mb = 0.0
     if torch.cuda.is_available() and dev.startswith("cuda"):
         try:
             peak_bytes = torch.cuda.max_memory_allocated(dev)
             peak_vram_mb = round(peak_bytes / (1024 * 1024), 2)
-            print(f"QLoRA Training Peak VRAM on {dev}: {peak_vram_mb:.2f} MB")
+            peak_res_bytes = torch.cuda.max_memory_reserved(dev)
+            peak_reserved_mb = round(peak_res_bytes / (1024 * 1024), 2)
+            dev_idx = int(dev.split(":")[-1]) if ":" in dev else 0
+            free_bytes, total_bytes = torch.cuda.mem_get_info(dev_idx)
+            free_vram_mb = round(free_bytes / (1024 * 1024), 2)
+            print(
+                f"QLoRA Training Peak VRAM on {dev}: {peak_vram_mb:.2f} MB "
+                f"(Reserved: {peak_reserved_mb:.2f} MB, Free: {free_vram_mb:.2f} MB)"
+            )
         except Exception:
             pass
 
@@ -603,6 +714,8 @@ def run_qlora_training(
         "dataset_size": len(dataset),
         "adapter_trainable_params": adapter_trainable_params,
         "peak_vram_mb": peak_vram_mb,
+        "peak_reserved_mb": peak_reserved_mb,
+        "free_vram_mb": free_vram_mb,
     }
     with open(os.path.join(output_dir, "generator_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

@@ -17,19 +17,19 @@ from scripts.bootstrap_kaggle_env import (
 
 def test_trl_floor_guarantees_modern_sft_api():
     req = Path("requirements-kaggle.txt").read_text(encoding="utf-8")
-    assert "trl>=0.17.0" in req
+    assert "trl==1.12.0" in req
 
     target = {
         pip_name: spec
         for _, spec, pip_name in TARGET_USER_PACKAGES
     }
-    assert target["trl"] == ">=0.17.0"
+    assert target["trl"] == "==1.12.0"
 
 
 def test_check_trl_api_signatures_mock_legacy_and_modern():
-    # Modern signature (e.g. TRL >= 0.17.0)
+    # Modern signature (e.g. TRL 1.12.0)
     class ModernSFTConfig:
-        def __init__(self, completion_only_loss=True, max_length=2048, **kwargs):
+        def __init__(self, completion_only_loss=True, loss_type="chunked_nll", activation_offloading=True, max_length=2048, **kwargs):
             pass
 
     class ModernSFTTrainer:
@@ -41,7 +41,7 @@ def test_check_trl_api_signatures_mock_legacy_and_modern():
 
     # Also test alternative max_seq_length parameter name
     class AltModernSFTConfig:
-        def __init__(self, completion_only_loss=True, max_seq_length=2048, **kwargs):
+        def __init__(self, completion_only_loss=True, loss_type="chunked_nll", activation_offloading=True, max_seq_length=2048, **kwargs):
             pass
 
     missing_alt = check_trl_api_signatures(AltModernSFTConfig, ModernSFTTrainer)
@@ -49,11 +49,27 @@ def test_check_trl_api_signatures_mock_legacy_and_modern():
 
     # Legacy signature (missing completion_only_loss)
     class LegacySFTConfigNoCompLoss:
-        def __init__(self, max_seq_length=2048, **kwargs):
+        def __init__(self, loss_type="chunked_nll", activation_offloading=True, max_seq_length=2048, **kwargs):
             pass
 
     missing_legacy1 = check_trl_api_signatures(LegacySFTConfigNoCompLoss, ModernSFTTrainer)
     assert "SFTConfig.completion_only_loss" in missing_legacy1
+
+    # Legacy signature (missing activation_offloading)
+    class LegacySFTConfigNoOffloading:
+        def __init__(self, completion_only_loss=True, loss_type="chunked_nll", max_length=2048, **kwargs):
+            pass
+
+    missing_legacy_offload = check_trl_api_signatures(LegacySFTConfigNoOffloading, ModernSFTTrainer)
+    assert "SFTConfig.activation_offloading" in missing_legacy_offload
+
+    # Legacy signature (missing loss_type)
+    class LegacySFTConfigNoLossType:
+        def __init__(self, completion_only_loss=True, activation_offloading=True, max_length=2048, **kwargs):
+            pass
+
+    missing_legacy_loss_type = check_trl_api_signatures(LegacySFTConfigNoLossType, ModernSFTTrainer)
+    assert "SFTConfig.loss_type" in missing_legacy_loss_type
 
     # Legacy signature (missing tokenizer/processing_class on trainer, e.g. accepts only tokenizer keyword)
     class LegacySFTTrainerNoProcessingClass:
@@ -70,6 +86,8 @@ def test_check_trl_api_signatures_mock_legacy_and_modern():
 
     missing_legacy_all = check_trl_api_signatures(Legacy011SFTConfig, LegacySFTTrainerNoProcessingClass)
     assert "SFTConfig.completion_only_loss" in missing_legacy_all
+    assert "SFTConfig.loss_type" in missing_legacy_all
+    assert "SFTConfig.activation_offloading" in missing_legacy_all
     assert "SFTConfig.max_length/max_seq_length" in missing_legacy_all
     assert "SFTTrainer.processing_class" in missing_legacy_all
 
@@ -106,25 +124,8 @@ from src.task2.runtime_integrity import EXPECTED_RUNTIME_API_VERSION, validate_r
 VALID_TEST_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
-def test_stale_v12_package_rejected_by_v13_validator(tmp_path: Path):
-    """Verify that a package with runtime_api_version=12 is rejected when expected_api_version=13."""
-    runtime = tmp_path / "runtime"
-    code = runtime / "code" / "LegalQA"
-    code.mkdir(parents=True)
-    (runtime / "dataset_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 12, "git_sha": VALID_TEST_SHA})
-    )
-    (code / "code_manifest.json").write_text(
-        json.dumps({"runtime_api_version": 12, "git_sha": VALID_TEST_SHA})
-    )
-
-    with pytest.raises(RuntimeError, match="runtime_api_version mismatch: found 12, expected 13"):
-        validate_runtime_manifests(str(runtime), str(code), expected_api_version=13)
-
-
-def test_fresh_v13_package_passes_v13_validator(tmp_path: Path):
-    """Verify that a fresh package with runtime_api_version=13 passes validation."""
-    assert EXPECTED_RUNTIME_API_VERSION == 13
+def test_stale_v13_package_rejected_by_v14_validator(tmp_path: Path):
+    """Verify that a package with runtime_api_version=13 is rejected when expected_api_version=14."""
     runtime = tmp_path / "runtime"
     code = runtime / "code" / "LegalQA"
     code.mkdir(parents=True)
@@ -135,8 +136,25 @@ def test_fresh_v13_package_passes_v13_validator(tmp_path: Path):
         json.dumps({"runtime_api_version": 13, "git_sha": VALID_TEST_SHA})
     )
 
-    provenance = validate_runtime_manifests(str(runtime), str(code), expected_api_version=13)
-    assert provenance["runtime_api_version"] == 13
+    with pytest.raises(RuntimeError, match="runtime_api_version mismatch: found 13, expected 14"):
+        validate_runtime_manifests(str(runtime), str(code), expected_api_version=14)
+
+
+def test_fresh_v14_package_passes_v14_validator(tmp_path: Path):
+    """Verify that a fresh package with runtime_api_version=14 passes validation."""
+    assert EXPECTED_RUNTIME_API_VERSION == 14
+    runtime = tmp_path / "runtime"
+    code = runtime / "code" / "LegalQA"
+    code.mkdir(parents=True)
+    (runtime / "dataset_manifest.json").write_text(
+        json.dumps({"runtime_api_version": 14, "git_sha": VALID_TEST_SHA})
+    )
+    (code / "code_manifest.json").write_text(
+        json.dumps({"runtime_api_version": 14, "git_sha": VALID_TEST_SHA})
+    )
+
+    provenance = validate_runtime_manifests(str(runtime), str(code), expected_api_version=14)
+    assert provenance["runtime_api_version"] == 14
     assert provenance["git_sha"] == VALID_TEST_SHA
 
 

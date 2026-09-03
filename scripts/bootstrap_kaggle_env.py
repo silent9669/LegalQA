@@ -30,7 +30,7 @@ TARGET_USER_PACKAGES: List[Tuple[str, str, str]] = [
     ("accelerate", ">=0.34.0", "accelerate"),
     ("datasets", ">=2.20.0", "datasets"),
     ("peft", ">=0.10.0", "peft"),
-    ("trl", ">=0.17.0", "trl"),
+    ("trl", "==1.12.0", "trl"),
     ("bitsandbytes", ">=0.43.0", "bitsandbytes"),
     ("sentence_transformers", ">=3.0.0", "sentence-transformers"),
     ("bm25s", ">=0.2.5", "bm25s"),
@@ -325,6 +325,8 @@ def check_trl_api_signatures(sft_config_cls: Any, sft_trainer_cls: Any) -> List[
 
     Required APIs:
     - SFTConfig.completion_only_loss
+    - SFTConfig.loss_type
+    - SFTConfig.activation_offloading
     - SFTConfig.max_length OR SFTConfig.max_seq_length
     - SFTTrainer.processing_class
 
@@ -336,6 +338,10 @@ def check_trl_api_signatures(sft_config_cls: Any, sft_trainer_cls: Any) -> List[
 
     if "completion_only_loss" not in config_sig.parameters:
         missing.append("SFTConfig.completion_only_loss")
+    if "loss_type" not in config_sig.parameters:
+        missing.append("SFTConfig.loss_type")
+    if "activation_offloading" not in config_sig.parameters:
+        missing.append("SFTConfig.activation_offloading")
     if not (
         "max_length" in config_sig.parameters
         or "max_seq_length" in config_sig.parameters
@@ -390,12 +396,12 @@ def verify_runtime_imports(strict: bool = True) -> Dict[str, Any]:
             msg = (
                 "Installed TRL lacks LegalQA-required SFT APIs: "
                 + ", ".join(missing_apis)
-                + ". Require trl>=0.17.0."
+                + ". Require trl==1.12.0."
             )
             failures.append(msg)
             print(f"  ! TRL SFT API check: {msg}", file=sys.stderr)
         else:
-            print("  + TRL SFT API (completion_only_loss, max_length, processing_class): PASS")
+            print("  + TRL SFT API (completion_only_loss, loss_type, activation_offloading, max_length, processing_class): PASS")
     except Exception as e:
         failures.append(f"TRL SFTConfig/SFTTrainer import: {e}")
         print(f"  ! TRL SFT check: {e}", file=sys.stderr)
