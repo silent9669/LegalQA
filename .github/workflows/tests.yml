@@ -123,4 +123,7 @@ jobs:
             tests/test_v8_promotion_provenance.py \
             tests/test_generator_training_data.py \
             tests/test_v11_dependency_contract.py \
+            tests/test_v14_qlora_oom_fix.py \
+            tests/test_v15_t4_ce_chunk.py \
+            tests/test_v15_generator_probe_profile.py \
             -v

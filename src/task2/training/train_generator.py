@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -384,7 +386,22 @@ def enforce_single_gpu_trainer_args(args: Any, device: str) -> None:
         )
 
 
-def inspect_and_guard_trl_chunk_size(target_chunk_size: int = 256) -> Dict[str, Any]:
+def validate_ce_chunk_size(value: int) -> int:
+    """Validate that LegalQA CE chunk size is a positive power of two <= 256."""
+    value = int(value)
+    if value <= 0 or (value & (value - 1)) != 0:
+        raise ValueError(
+            "LegalQA CE chunk size must be a positive power of two, "
+            f"got {value}."
+        )
+    if value > 256:
+        raise ValueError(
+            f"LegalQA T4 CE chunk size must be <=256, got {value}."
+        )
+    return value
+
+
+def inspect_and_guard_trl_chunk_size(target_chunk_size: int = 32) -> Dict[str, Any]:
     """Inspect TRL chunked LM head chunk size and safely cap to target if > target in TRL 1.12.0.
 
     Guarded strictly by:
@@ -392,6 +409,7 @@ def inspect_and_guard_trl_chunk_size(target_chunk_size: int = 256) -> Dict[str, 
     - trl.trainer.sft_trainer._CHUNKED_LM_HEAD_CHUNK_SIZE exists
     - current value > target_chunk_size
     """
+    target_chunk_size = validate_ce_chunk_size(target_chunk_size)
     info: Dict[str, Any] = {
         "trl_version": "unknown",
         "chunk_size_attr_present": False,
@@ -414,7 +432,7 @@ def inspect_and_guard_trl_chunk_size(target_chunk_size: int = 256) -> Dict[str, 
             if (trl_ver == "1.12.0" or trl_ver.startswith("1.12.")) and isinstance(orig_val, int) and orig_val > target_chunk_size:
                 setattr(sft_module, "_CHUNKED_LM_HEAD_CHUNK_SIZE", target_chunk_size)
                 info["modified_chunk_size"] = target_chunk_size
-                info["action"] = f"capped from {orig_val} to {target_chunk_size}"
+                info["action"] = "capped"
                 print(
                     f"[TRL Memory Guard] Capped _CHUNKED_LM_HEAD_CHUNK_SIZE from {orig_val} to {target_chunk_size} "
                     f"for TRL {trl_ver} to prevent GPU0 OOM on large vocab models."
@@ -513,6 +531,7 @@ def run_qlora_training(
     max_train_examples: Optional[int] = None,
     is_final_checkpoint: Optional[bool] = None,
     fail_on_error: bool = True,
+    ce_chunk_size: int = 32,
 ) -> Dict[str, Any]:
     """Execute QLoRA fine-tuning on GPU 0 using modern TRL prompt-completion SFT with strict reload verification."""
     print(f"=== Starting QLoRA Generator Fine-Tuning (Base: {base_model_id} | Path: {model_name_or_path}) ===")
@@ -539,7 +558,18 @@ def run_qlora_training(
     print(f"Transformers version: {getattr(transformers, '__version__', 'unknown')}")
     print(f"PEFT version: {getattr(peft, '__version__', 'unknown')}")
     print(f"bitsandbytes version: {getattr(bitsandbytes, '__version__', 'unknown')}")
-    inspect_and_guard_trl_chunk_size(target_chunk_size=256)
+    ce_chunk_size = validate_ce_chunk_size(ce_chunk_size)
+    chunk_info = inspect_and_guard_trl_chunk_size(target_chunk_size=ce_chunk_size)
+    print(
+        "LegalQA QLoRA CE Chunk Policy: "
+        f"requested={ce_chunk_size} | "
+        f"effective={chunk_info['modified_chunk_size']}"
+    )
+    if chunk_info.get("chunk_size_attr_present") and chunk_info.get("modified_chunk_size") != ce_chunk_size:
+        raise RuntimeError(
+            "FINAL_PIPELINE_ERROR: TRL CE chunk size guard failed: "
+            f"requested={ce_chunk_size} but effective={chunk_info.get('modified_chunk_size')}."
+        )
 
     if not torch.cuda.is_available() and device is None:
         msg = "CUDA not available for QLoRA GPU training."
@@ -658,8 +688,30 @@ def run_qlora_training(
         )
 
     log_cuda_memory_diagnostics("Immediately Before trainer.train()", dev)
+    train_started = time.perf_counter()
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    train_elapsed = time.perf_counter() - train_started
     log_cuda_memory_diagnostics("After Training Completion", dev)
+
+    # Compute step telemetry
+    optimizer_steps = int(trainer.state.global_step) if hasattr(trainer, "state") and hasattr(trainer.state, "global_step") else (max_steps or 0)
+    seconds_per_step = round(train_elapsed / max(1, optimizer_steps), 2)
+    train_elapsed_sec = round(train_elapsed, 2)
+
+    if optimizer_steps > 0 and len(dataset) > 0:
+        estimated_total_optimizer_steps = math.ceil(
+            len(dataset) / (batch_size * grad_accum)
+        )
+        estimated_generator_hours = round(
+            (seconds_per_step * estimated_total_optimizer_steps) / 3600,
+            2
+        )
+        print(
+            f"[Generator Telemetry] Completed {optimizer_steps} optimizer steps in {train_elapsed_sec:.1f}s "
+            f"({seconds_per_step:.2f}s/step). "
+            f"Estimated full epoch ({len(dataset)} examples, {estimated_total_optimizer_steps} steps): "
+            f"~{estimated_generator_hours:.2f} hours."
+        )
 
     # Measure peak VRAM allocated and reserved on GPU
     peak_vram_mb = 0.0
@@ -713,6 +765,10 @@ def run_qlora_training(
         "smoke_only": max_steps is not None,
         "dataset_size": len(dataset),
         "adapter_trainable_params": adapter_trainable_params,
+        "ce_chunk_size": ce_chunk_size,
+        "train_elapsed_seconds": train_elapsed_sec,
+        "optimizer_steps": optimizer_steps,
+        "seconds_per_optimizer_step": seconds_per_step,
         "peak_vram_mb": peak_vram_mb,
         "peak_reserved_mb": peak_reserved_mb,
         "free_vram_mb": free_vram_mb,
