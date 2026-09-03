@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c 'import sys, json, os; data = json.load(sys.stdin); path = data.get(\"tool_input\", {}).get(\"file_path\", \"\"); sys.exit(0 if not any(f in path for f in [\"runtime_api.yaml\", \"legalqa_gpu_pipeline.ipynb\"]) else print(json.dumps({\"systemMessage\": f\"⚠️ Notice: Modifying runtime contract file ({os.path.basename(path)}). Ensure runtime API version parity across runtime_api.yaml, runtime_integrity.py, and legalqa_gpu_pipeline.ipynb.\", \"continue\": True})))'",
+            "timeout": 15,
+            "statusMessage": "Checking contract file guards..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c 'import sys, json, subprocess, os; data = json.load(sys.stdin); path = data.get(\"tool_input\", {}).get(\"file_path\", \"\"); (subprocess.run([\"./.venv/bin/pytest\" if os.path.exists(\"./.venv/bin/pytest\") else \"pytest\", \"tests/test_v7_runtime_integrity.py\", \"-q\"]) if any(p in path for p in [\"src/task2/\", \"configs/\"]) else None)'",
+            "timeout": 180,
+            "async": true,
+            "statusMessage": "Running runtime integrity tests in background..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -191,5 +191,5 @@ def test_notebook_uses_strict_runtime_resolution():
     assert "validate_runtime_manifests" in src
     assert "resolve_runtime_paths(" in src
     assert "allow_remote_model_download=False" in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 14" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 15" in src
     assert 'resolve_runtime_paths("/kaggle/input", strict=False' not in src

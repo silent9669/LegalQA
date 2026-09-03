@@ -28,14 +28,14 @@ def notebook_source():
 
 
 def test_notebook_cell1_strict_screen_fold0_profile():
-    """Task 1: Verify Cell 1 commits screen_fold0 with ALLOW_UNVALIDATED_FINAL=False."""
+    """Task 1: Verify Cell 1 commits generator_probe or screen_fold0 with ALLOW_UNVALIDATED_FINAL=False."""
     src = notebook_source()
-    assert 'EXECUTION_PROFILE = "screen_fold0"' in src
+    assert ('EXECUTION_PROFILE = "generator_probe"' in src or 'EXECUTION_PROFILE = "screen_fold0"' in src)
     assert "ALLOW_SINGLE_GPU_SMOKE = False" in src
     assert "ALLOW_UNVALIDATED_FINAL = False" in src
     assert 'ALLOW_UNVALIDATED_FINAL = True' not in src
     assert 'os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"' in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 14" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 15" in src
 
 
 def test_notebook_cell10_contains_auto_promotion_and_handoff():

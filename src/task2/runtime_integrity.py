@@ -1,4 +1,4 @@
-"""Strict packaged runtime identity and manifest provenance verification for Kaggle (V14)."""
+"""Strict packaged runtime identity and manifest provenance verification for Kaggle (V15)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-EXPECTED_RUNTIME_API_VERSION: int = 14
+EXPECTED_RUNTIME_API_VERSION: int = 15
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
