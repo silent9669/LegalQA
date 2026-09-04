@@ -117,6 +117,14 @@ def build_v16_sft_config(config: GeneratorTrainConfig, **kwargs: Any) -> Any:
         config_kwargs.update(build_liger_training_kwargs(enabled=True))
     assert_loss_type_compatible(config_kwargs.get("loss_type"), config.use_liger_fused_ce)
 
+    # CPU/GPU precision guards to prevent SFTConfig/TrainingArguments validation errors on CPU CI
+    if "bf16" in sig.parameters and "bf16" not in config_kwargs:
+        config_kwargs["bf16"] = False
+    if "fp16" in sig.parameters and "fp16" not in config_kwargs:
+        config_kwargs["fp16"] = (config.compute_dtype == "float16" and config.device.startswith("cuda"))
+    if torch is not None and not torch.cuda.is_available() and "use_cpu" in sig.parameters:
+        config_kwargs.setdefault("use_cpu", True)
+
     # Set sequence length
     if "max_length" in sig.parameters:
         config_kwargs["max_length"] = config.max_seq_len
