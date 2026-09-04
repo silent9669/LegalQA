@@ -1,4 +1,4 @@
-"""Tests for LegalQA V15 generator_probe profile and notebook CE chunk binding."""
+"""Tests for LegalQA V16 generator probe profiles and pipeline decoupling."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 import pytest
+
+from src.task2.pipeline.profiles import resolve_execution_profile
 
 
 def notebook_cells() -> list[dict]:
@@ -23,44 +25,41 @@ def notebook_source() -> str:
     return "\n".join(parts)
 
 
-def test_notebook_default_profile_is_generator_probe():
+def test_notebook_default_profile_is_generator_probe_worstcase():
     src = notebook_source()
-    assert 'EXECUTION_PROFILE = "generator_probe"' in src
+    assert 'EXECUTION_PROFILE = "generator_probe_worstcase"' in src
     assert "ALLOW_SINGLE_GPU_SMOKE = False" in src
     assert "ALLOW_UNVALIDATED_FINAL = False" in src
 
 
-def test_notebook_defines_qlora_ce_chunk_size_32():
-    src = notebook_source()
-    assert re.search(r"QLORA_CE_CHUNK_SIZE\s*=\s*32", src)
+def test_profile_worstcase_probe_semantics():
+    prof = resolve_execution_profile("generator_probe_worstcase")
+    assert prof.name == "generator_probe_worstcase"
+    assert prof.run_reranker_training is False
+    assert prof.run_generator_training is True
+    assert prof.run_dev_evaluation is False
+    assert prof.run_public_inference is False
+    assert prof.val_fold == 0
+    assert prof.probe_selection == "worst_case"
+    assert prof.max_generator_steps == 3
+    assert prof.max_generator_examples is None
 
 
-def test_notebook_generator_probe_profile_semantics():
-    src = notebook_source()
-    # Ensure generator_probe branch exists in Cell 3
-    assert 'elif EXECUTION_PROFILE == "generator_probe":' in src or 'if EXECUTION_PROFILE == "generator_probe":' in src
-
-    probe_block_match = re.search(
-        r'EXECUTION_PROFILE == "generator_probe":\s*(.*?)(?=\nelif|\nelse:|\n[A-Z0-9_]+\s*=)',
-        src,
-        re.DOTALL,
-    )
-    assert probe_block_match is not None, "generator_probe profile block not found"
-    probe_block = probe_block_match.group(1)
-
-    assert "RUN_RERANKER_TRAINING = False" in probe_block
-    assert "RUN_GENERATOR_TRAINING = True" in probe_block
-    assert "RUN_DEV_EVALUATION = False" in probe_block
-    assert "RUN_PUBLIC_INFERENCE = False" in probe_block
-    assert "REUSE_EXISTING_CHECKPOINTS = False" in probe_block
-    assert "TRAIN_VAL_FOLD = 0" in probe_block
-    assert "MAX_GENERATOR_STEPS = 3" in probe_block
-    assert "MAX_GENERATOR_EXAMPLES = None" in probe_block
-    assert "DEV_EVAL_SIZE = None" in probe_block
+def test_profile_endurance_probe_semantics():
+    prof = resolve_execution_profile("generator_probe_endurance")
+    assert prof.name == "generator_probe_endurance"
+    assert prof.run_reranker_training is False
+    assert prof.run_generator_training is True
+    assert prof.run_dev_evaluation is False
+    assert prof.run_public_inference is False
+    assert prof.val_fold == 0
+    assert prof.probe_selection == "endurance"
+    assert prof.max_generator_steps == 30
+    assert prof.max_generator_examples is None
 
 
-def test_notebook_passes_ce_chunk_size_to_run_qlora_training():
-    src = notebook_source()
-    # Check Cell 8 invocation
-    assert re.search(r"run_qlora_training\([^)]*ce_chunk_size\s*=\s*QLORA_CE_CHUNK_SIZE", src, re.DOTALL)
-    assert "QLORA_CE_CHUNK_SIZE:" in src
+def test_v16_pipeline_runner_wires_generator_probe():
+    runner_src = Path("src/task2/pipeline/runner.py").read_text(encoding="utf-8")
+    assert "train_generator_qlora(" in runner_src
+    assert "probe_mode=profile.probe_selection" in runner_src
+    assert "use_liger_fused_ce=True" in runner_src
