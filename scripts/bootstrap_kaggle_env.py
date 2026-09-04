@@ -25,6 +25,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
+PROTECTED_RUNTIME_PREFIXES: Tuple[str, ...] = (
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "triton",
+    "nvidia-",
+    "cuda-",
+)
+
 TARGET_USER_PACKAGES: List[Tuple[str, str, str]] = [
     ("transformers", ">=4.45.0", "transformers"),
     ("accelerate", ">=0.34.0", "accelerate"),
@@ -32,6 +41,7 @@ TARGET_USER_PACKAGES: List[Tuple[str, str, str]] = [
     ("peft", ">=0.10.0", "peft"),
     ("trl", "==1.12.0", "trl"),
     ("bitsandbytes", ">=0.43.0", "bitsandbytes"),
+    ("liger_kernel", "==0.8.2", "liger-kernel"),
     ("sentence_transformers", ">=3.0.0", "sentence-transformers"),
     ("bm25s", ">=0.2.5", "bm25s"),
     ("scikit-learn", ">=1.4.0", "scikit-learn"),
