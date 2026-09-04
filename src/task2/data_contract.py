@@ -77,9 +77,13 @@ def find_file_in_root(root: Path, relative_name: str, manifest_source: Optional[
     candidates = []
     if manifest_source:
         candidates.append(root / manifest_source)
+        candidates.append(Path(manifest_source))
     candidates.append(root / relative_name)
     candidates.append(root / "data" / relative_name)
     candidates.append(root / "artifacts" / "raw" / relative_name)
+    candidates.append(root.parent / relative_name)
+    if manifest_source:
+        candidates.append(root.parent / manifest_source)
 
     for c in candidates:
         if c.exists() and c.is_file():
