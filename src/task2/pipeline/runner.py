@@ -258,6 +258,12 @@ def run_pipeline(
                 output_path=promoted_config_path,
             )
 
+            with open(promotion_report_path, "r", encoding="utf-8") as f:
+                report_data = json.load(f)
+
+            if report_data.get("screen_protocol_version") != 8:
+                raise RuntimeError("SCREEN_PROMOTION_ERROR: screen_protocol_version must be 8")
+
             promoted_cfg = load_production_selection(promoted_config_path)
             if promoted_cfg.status != "PROMOTED":
                 raise RuntimeError(f"SCREEN_PROMOTION_ERROR: expected PROMOTED, got {promoted_cfg.status!r}")
@@ -269,10 +275,23 @@ def run_pipeline(
             shutil.copy(promotion_report_path, os.path.join(handoff_dir, "promotion_report.json"))
             shutil.copy(promoted_config_path, os.path.join(handoff_dir, "promoted_production_selection.yaml"))
 
+            screen_manifest = {
+                "runtime_api_version": 16,
+                "execution_profile": "screen_fold0",
+                "screen_protocol_version": 8,
+                "promotion_report_sha256": sha256_file(promotion_report_path),
+                "promoted_config_sha256": sha256_file(promoted_config_path),
+                "status": "SCREEN_PASS",
+            }
+            manifest_file = os.path.join(handoff_dir, "screen_run_manifest.json")
+            with open(manifest_file, "w", encoding="utf-8") as f:
+                json.dump(screen_manifest, f, indent=2)
+
             handoff_zip = os.path.join(output_dir, "screen_handoff.zip")
             with zipfile.ZipFile(handoff_zip, "w", zipfile.ZIP_DEFLATED) as z:
                 z.write(promotion_report_path, arcname="promotion_report.json")
                 z.write(promoted_config_path, arcname="promoted_production_selection.yaml")
+                z.write(manifest_file, arcname="screen_run_manifest.json")
 
             print(f"Protocol-8 screen complete! Handoff zip created: {handoff_zip}")
             results["stages"]["screen"] = {"handoff_zip": handoff_zip}

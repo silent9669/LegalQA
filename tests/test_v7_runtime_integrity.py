@@ -182,7 +182,7 @@ def test_stale_runtime_api_manifest_detection():
     with open("configs/runtime_api.yaml", "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     assert data.get("runtime_api_version") == EXPECTED_RUNTIME_API_VERSION
-    assert EXPECTED_RUNTIME_API_VERSION == 15
+    assert EXPECTED_RUNTIME_API_VERSION == 16
 
 
 def test_sequence_diagnostics_use_tokenizer_counts(tmp_path):

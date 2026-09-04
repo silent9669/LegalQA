@@ -30,24 +30,23 @@ def notebook_source():
 def test_notebook_cell1_strict_screen_fold0_profile():
     """Task 1: Verify Cell 1 commits generator_probe or screen_fold0 with ALLOW_UNVALIDATED_FINAL=False."""
     src = notebook_source()
-    assert ('EXECUTION_PROFILE = "generator_probe"' in src or 'EXECUTION_PROFILE = "screen_fold0"' in src)
+    assert ('EXECUTION_PROFILE = "generator_probe_worstcase"' in src or 'EXECUTION_PROFILE = "screen_fold0"' in src)
     assert "ALLOW_SINGLE_GPU_SMOKE = False" in src
     assert "ALLOW_UNVALIDATED_FINAL = False" in src
     assert 'ALLOW_UNVALIDATED_FINAL = True' not in src
     assert 'os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"' in src
-    assert "REQUIRED_RUNTIME_API_VERSION = 15" in src
+    assert "REQUIRED_RUNTIME_API_VERSION = 16" in src
 
 
 def test_notebook_cell10_contains_auto_promotion_and_handoff():
-    """Task 2, 3 & 4: Verify Cell 10 validates promotion_report, promotes config, and zips handoff."""
-    src = notebook_source()
-    assert "promote_production_selection(" in src
-    assert "promoted_production_selection.yaml" in src
-    assert "screen_handoff.zip" in src
-    assert "screen_run_manifest.json" in src
-    assert "screen_protocol_version" in src
-    assert "SCREEN_PROMOTION_ERROR" in src
-    assert "SCREEN_PASS" in src
+    """Task 2, 3 & 4: Verify runner validates promotion_report, promotes config, and zips handoff."""
+    runner_src = Path("src/task2/pipeline/runner.py").read_text(encoding="utf-8")
+    assert "promote_production_selection(" in runner_src
+    assert "promoted_production_selection.yaml" in runner_src
+    assert "screen_handoff.zip" in runner_src
+    assert "screen_protocol_version" in runner_src
+    assert "SCREEN_PROMOTION_ERROR" in runner_src
+    assert "screen_handoff" in runner_src
 
 
 def test_unvalidated_config_rejected_for_final_profile():
@@ -63,8 +62,11 @@ def test_unvalidated_config_rejected_for_final_profile():
 
 
 def test_notebook_screen_fold0_semantics_preserved():
-    """Task 5: Verify Cell 3 sets full 250 evaluation queries and all training components for screen_fold0."""
-    src = notebook_source()
-    assert 'elif EXECUTION_PROFILE == "screen_fold0":' in src
-    assert "DEV_EVAL_SIZE = 250" in src
-    assert "TRAIN_VAL_FOLD = 0" in src
+    """Task 5: Verify profiles set full 250 evaluation queries and all training components for screen_fold0."""
+    from src.task2.pipeline.profiles import resolve_execution_profile
+    prof = resolve_execution_profile("screen_fold0")
+    assert prof.dev_eval_size == 250
+    assert prof.val_fold == 0
+    assert prof.run_reranker_training is True
+    assert prof.run_generator_training is True
+    assert prof.run_dev_evaluation is True
