@@ -91,12 +91,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install pinned TRL contract
+      - name: Install pinned TRL and Liger contract
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyyaml pytest packaging
-          pip install "trl==1.12.0" transformers peft bitsandbytes accelerate
+          pip install "trl==1.12.0" "liger-kernel==0.8.2" transformers peft bitsandbytes accelerate
 
       - name: Verify SFT completion_only_loss, loss_type, activation_offloading, and processing_class API
         run: |
@@ -113,8 +113,10 @@ jobs:
           assert "processing_class" in st.parameters, "SFTTrainer missing processing_class"
           print("PINNED TRL API CONTRACT PASS")
           PY
+          python -c "import liger_kernel; assert liger_kernel.__version__ == '0.8.2', f'liger {liger_kernel.__version__}'"
           python -c "import src.task2.training.train_generator as tg; assert not hasattr(tg, 'DataCollatorForCompletionOnlyLM')"
           python -c "from src.task2.training.train_generator import build_sft_config, build_grounded_training_examples"
+          python -c "from src.task2.generation.trainer import train_generator_qlora, build_v16_sft_config"
 
       - name: Run promotion consistency, training, and dependency contract tests
         run: |
@@ -126,4 +128,13 @@ jobs:
             tests/test_v14_qlora_oom_fix.py \
             tests/test_v15_t4_ce_chunk.py \
             tests/test_v15_generator_probe_profile.py \
+            tests/contracts/test_dependency_lock.py \
+            tests/contracts/test_dataset_inheritance.py \
+            tests/contracts/test_v16_profiles.py \
+            tests/contracts/test_v16_notebook.py \
+            tests/unit/test_generation_config.py \
+            tests/unit/test_liger_backend.py \
+            tests/unit/test_sft_dataset.py \
+            tests/unit/test_memory_policy.py \
+            tests/integration/test_generator_training_contract.py \
             -v
