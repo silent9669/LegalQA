@@ -136,35 +136,65 @@ def main():
 
         ex_str = "full dataset (None)" if generator_examples is None else f"max {generator_examples} examples"
         print(f"Starting Generator {args.mode} smoke ({generator_steps} steps, {ex_str})...")
-        from src.task2.training.train_generator import run_qlora_training
+        try:
+            from src.task2.generation.trainer import train_generator_qlora
+            from src.task2.generation.config import GeneratorTrainConfig
 
-        res_gen = run_qlora_training(
-            model_name_or_path=args.model_name,
-            base_model_id="Qwen/Qwen2.5-3B-Instruct",
-            qa_path=str(data_root / "qa_unique.parquet"),
-            labels_path=str(data_root / "retrieval_labels.parquet"),
-            chunks_path=str(data_root / "legal_chunks.parquet"),
-            output_dir=str(out / "generator"),
-            epochs=1,
-            batch_size=1,
-            grad_accum=8,
-            lr=1e-4,
-            max_seq_len=2048,
-            val_fold=0,
-            device="cuda:0",
-            max_steps=generator_steps,
-            max_train_examples=generator_examples,
-            is_final_checkpoint=False,
-            fail_on_error=True,
-        )
+            gen_cfg = GeneratorTrainConfig(
+                model_id=args.model_name,
+                max_seq_len=2048,
+                batch_size=1,
+                grad_accum=8,
+                learning_rate=1e-4,
+                activation_offloading=True,
+                use_liger_fused_ce=True,
+                device="cuda:0",
+            )
+            res_gen = train_generator_qlora(
+                model_name_or_path=args.model_name,
+                qa_path=str(data_root / "qa_unique.parquet"),
+                labels_path=str(data_root / "retrieval_labels.parquet"),
+                chunks_path=str(data_root / "legal_chunks.parquet"),
+                output_dir=str(out / "generator"),
+                config=gen_cfg,
+                val_fold=0,
+                device="cuda:0",
+                max_steps=generator_steps,
+                max_train_examples=generator_examples,
+                probe_mode="worst_case" if args.mode == "quick" else "endurance",
+                fail_on_error=True,
+            )
+            gen_manifest = res_gen
+        except ImportError:
+            from src.task2.training.train_generator import run_qlora_training
 
-        gen_manifest = res_gen.get("manifest", {})
+            res_gen = run_qlora_training(
+                model_name_or_path=args.model_name,
+                base_model_id="Qwen/Qwen2.5-3B-Instruct",
+                qa_path=str(data_root / "qa_unique.parquet"),
+                labels_path=str(data_root / "retrieval_labels.parquet"),
+                chunks_path=str(data_root / "legal_chunks.parquet"),
+                output_dir=str(out / "generator"),
+                epochs=1,
+                batch_size=1,
+                grad_accum=8,
+                lr=1e-4,
+                max_seq_len=2048,
+                val_fold=0,
+                device="cuda:0",
+                max_steps=generator_steps,
+                max_train_examples=generator_examples,
+                is_final_checkpoint=False,
+                fail_on_error=True,
+            )
+            gen_manifest = res_gen.get("manifest", {})
+
         report["generator_steps"] = generator_steps
         report["generator_status"] = res_gen.get("status", "completed")
         report["peak_vram_mb"] = gen_manifest.get("peak_vram_mb", 0.0)
         report["peak_reserved_mb"] = gen_manifest.get("peak_reserved_mb", 0.0)
         report["free_vram_mb"] = gen_manifest.get("free_vram_mb", 0.0)
-        report["adapter_reload"] = "pass"
+        report["adapter_reload"] = gen_manifest.get("strict_reload", "pass")
 
     # Execute Reranker Smoke (if requested)
     if args.component in ("reranker", "all"):
