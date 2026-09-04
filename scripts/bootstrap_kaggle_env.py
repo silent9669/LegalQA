@@ -112,9 +112,6 @@ def assert_protected_versions_unchanged(before: Dict[str, str], after: Dict[str,
         raise RuntimeError(f"Protected runtime package removed during bootstrap: {removed}")
 
     introduced = after_keys - before_keys
-    # In CPU CI test fixtures where triton is not preinstalled, installing liger-kernel pulls in triton.
-    # On Kaggle GPU, triton is preinstalled and in before_keys, so version mutations remain strictly guarded below.
-    introduced.discard("triton")
     if introduced:
         raise RuntimeError(f"New protected runtime package introduced during bootstrap: {introduced}")
 
