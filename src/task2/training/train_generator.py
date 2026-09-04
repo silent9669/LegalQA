@@ -25,6 +25,10 @@ from src.task2.generation.dataset import (
     build_grounded_training_examples,
     select_worst_case_probe,
 )
+from src.task2.generation.trainer import (
+    train_generator_qlora,
+    build_v16_sft_config,
+)
 
 
 def run_seq_len_diagnostic(
