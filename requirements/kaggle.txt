@@ -1,5 +1,5 @@
-# LegalQA Kaggle user-space compatibility floors.
-# Torch/CUDA are intentionally omitted; bootstrap protects Kaggle's preinstalled stack.
+# Canonical LegalQA Kaggle user-space dependencies (V16)
+# Torch/CUDA/Triton are strictly protected and omitted here.
 transformers>=4.45.0
 accelerate>=0.34.0
 datasets>=2.20.0

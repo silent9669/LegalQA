@@ -1,0 +1,3 @@
+# Optional GPU validation requirements (e.g. for testing QLoRA/Liger on CUDA hosts)
+-r kaggle.txt
+pytest>=8.0.0
