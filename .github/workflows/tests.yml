@@ -133,9 +133,93 @@ jobs:
             tests/contracts/test_dataset_inheritance.py \
             tests/contracts/test_v16_profiles.py \
             tests/contracts/test_v16_notebook.py \
+            tests/contracts/test_kaggle_hf_stack_contract.py \
             tests/unit/test_generation_config.py \
             tests/unit/test_liger_backend.py \
             tests/unit/test_sft_dataset.py \
             tests/unit/test_memory_policy.py \
             tests/integration/test_generator_training_contract.py \
+            -v
+
+  kaggle-hf-compat:
+    name: Exact Kaggle HF Stack Compatibility Lane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install exact Kaggle user-space HF stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pyyaml pytest packaging
+          pip install "transformers==5.0.0" "peft==0.19.1" "accelerate==1.13.0" "datasets==5.0.0" "trl==1.12.0" "liger-kernel==0.8.2"
+
+      - name: Verify exact Kaggle HF versions and SFT API contract
+        run: |
+          python - <<'PY'
+          import inspect
+          import importlib.metadata as md
+          from trl import SFTConfig, SFTTrainer
+
+          # Verify exact package versions
+          for pkg, exp_ver in [
+              ("transformers", "5.0.0"),
+              ("peft", "0.19.1"),
+              ("accelerate", "1.13.0"),
+              ("datasets", "5.0.0"),
+              ("trl", "1.12.0"),
+              ("liger-kernel", "0.8.2"),
+          ]:
+              v = md.version(pkg)
+              assert v == exp_ver, f"{pkg} expected {exp_ver}, got {v}"
+              print(f"Verified {pkg}=={v}")
+
+          # Verify SFT signatures
+          sc = inspect.signature(SFTConfig)
+          st = inspect.signature(SFTTrainer)
+          assert "completion_only_loss" in sc.parameters, "SFTConfig missing completion_only_loss"
+          assert "activation_offloading" in sc.parameters, "SFTConfig missing activation_offloading"
+          assert "loss_type" in sc.parameters, "SFTConfig missing loss_type"
+          assert "processing_class" in st.parameters, "SFTTrainer missing processing_class"
+
+          # Verify Liger symbols from Section 1 import on exact stack
+          from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+          from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+          assert callable(apply_liger_kernel_to_qwen2)
+          assert LigerFusedLinearCrossEntropyLoss is not None
+
+          # Verify V16 SFT config construction
+          from src.task2.generation.config import GeneratorTrainConfig
+          from src.task2.generation.trainer import build_v16_sft_config
+          cfg = GeneratorTrainConfig(
+              model_id="Qwen/Qwen2.5-3B-Instruct",
+              max_seq_len=2048,
+              activation_offloading=True,
+              use_liger_fused_ce=True,
+          )
+          sft_args = build_v16_sft_config(cfg, output_dir="/tmp/dummy_sft")
+          assert sft_args.completion_only_loss is True
+          assert sft_args.activation_offloading is True
+          assert sft_args.use_liger_kernel is True
+          assert sft_args.loss_type == "nll"
+          assert getattr(sft_args, "max_length", getattr(sft_args, "max_seq_length", None)) == 2048
+          print("EXACT KAGGLE HF STACK COMPATIBILITY PASS")
+          PY
+
+      - name: Run Kaggle HF contract tests
+        run: |
+          pytest \
+            tests/contracts/test_kaggle_hf_stack_contract.py \
+            tests/contracts/test_dependency_lock.py \
+            tests/contracts/test_v16_profiles.py \
+            tests/contracts/test_v16_notebook.py \
+            tests/unit/test_generation_config.py \
+            tests/unit/test_liger_backend.py \
             -v

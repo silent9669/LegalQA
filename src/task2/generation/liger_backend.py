@@ -25,6 +25,7 @@ class LigerBackendStatus:
 
     version: str
     enabled: bool
+    qwen2_patch_available: bool
     fused_linear_ce: bool
     config: Dict[str, bool]
 
@@ -50,9 +51,14 @@ def assert_loss_type_compatible(loss_type: Optional[str], use_liger: bool) -> No
 
 
 def validate_liger_environment(strict: bool = True) -> LigerBackendStatus:
-    """Validate installed Liger-Kernel version and selective kernel compatibility.
+    """Validate installed Liger-Kernel version and strict symbol imports.
 
-    Raises RuntimeError in strict mode if Liger is not installed or version != 0.8.2.
+    Verifies:
+    1. liger-kernel version is exactly REQUIRED_LIGER_VERSION ("0.8.2").
+    2. apply_liger_kernel_to_qwen2 is importable from liger_kernel.transformers.
+    3. LigerFusedLinearCrossEntropyLoss is importable from liger_kernel.transformers.fused_linear_cross_entropy.
+
+    In strict mode (strict=True), raises RuntimeError on any failure.
     """
     try:
         import liger_kernel
@@ -64,10 +70,11 @@ def validate_liger_environment(strict: bool = True) -> LigerBackendStatus:
                 installed_ver = md.version("liger-kernel")
             except Exception:
                 installed_ver = None
+
         if installed_ver != REQUIRED_LIGER_VERSION:
             msg = (
                 f"Liger-Kernel version mismatch: installed={installed_ver!r}, "
-                f"required={REQUIRED_LIGER_VERSION!r} (liger-kernel==0.8.2)."
+                f"required={REQUIRED_LIGER_VERSION!r} (liger-kernel=={REQUIRED_LIGER_VERSION})."
             )
             if strict:
                 raise RuntimeError(msg)
@@ -75,26 +82,68 @@ def validate_liger_environment(strict: bool = True) -> LigerBackendStatus:
             return LigerBackendStatus(
                 version=str(installed_ver),
                 enabled=False,
+                qwen2_patch_available=False,
                 fused_linear_ce=False,
                 config={},
             )
 
-        # Check that fused_linear_cross_entropy module exists
-        has_fused_ce = hasattr(liger_kernel, "transformers")
+        # Strict symbol imports: apply_liger_kernel_to_qwen2
+        qwen2_patch_available = False
+        try:
+            from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+            qwen2_patch_available = apply_liger_kernel_to_qwen2 is not None
+        except Exception as e:
+            if strict:
+                raise RuntimeError(
+                    f"Required symbol 'apply_liger_kernel_to_qwen2' not importable from "
+                    f"liger_kernel.transformers: {e}"
+                ) from e
+
+        # Strict symbol imports: LigerFusedLinearCrossEntropyLoss
+        fused_linear_ce_available = False
+        try:
+            from liger_kernel.transformers.fused_linear_cross_entropy import (
+                LigerFusedLinearCrossEntropyLoss,
+            )
+            fused_linear_ce_available = LigerFusedLinearCrossEntropyLoss is not None
+        except Exception as e:
+            if strict:
+                raise RuntimeError(
+                    f"Required symbol 'LigerFusedLinearCrossEntropyLoss' not importable from "
+                    f"liger_kernel.transformers.fused_linear_cross_entropy: {e}"
+                ) from e
+
+        if not (qwen2_patch_available and fused_linear_ce_available):
+            msg = (
+                "Liger-Kernel required symbols (apply_liger_kernel_to_qwen2, "
+                "LigerFusedLinearCrossEntropyLoss) are not available."
+            )
+            if strict:
+                raise RuntimeError(msg)
+            return LigerBackendStatus(
+                version=str(installed_ver),
+                enabled=False,
+                qwen2_patch_available=qwen2_patch_available,
+                fused_linear_ce=fused_linear_ce_available,
+                config={},
+            )
+
         return LigerBackendStatus(
             version=str(installed_ver),
             enabled=True,
-            fused_linear_ce=has_fused_ce,
+            qwen2_patch_available=True,
+            fused_linear_ce=True,
             config=dict(TARGET_LIGER_CONFIG),
         )
 
-    except ImportError:
+    except ImportError as exc:
         msg = f"Liger-Kernel not installed. Exactly liger-kernel=={REQUIRED_LIGER_VERSION} is required for V16."
         if strict:
-            raise RuntimeError(msg)
+            raise RuntimeError(msg) from exc
         return LigerBackendStatus(
             version="not_installed",
             enabled=False,
+            qwen2_patch_available=False,
             fused_linear_ce=False,
             config={},
         )

@@ -43,6 +43,7 @@ def test_build_v16_sft_config_parameters():
             assert call_kwargs["max_length"] == 2048
             assert call_kwargs.get("use_liger_kernel") is True
             assert call_kwargs.get("liger_kernel_config", {}).get("fused_linear_cross_entropy") is True
+            assert call_kwargs.get("loss_type") == "nll"
             # TRL chunked_nll must NOT be present
             assert call_kwargs.get("loss_type") != "chunked_nll"
 
@@ -106,3 +107,27 @@ def test_train_generator_qlora_dry_mock_pipeline(tmp_path):
         assert res["backend"] == "liger_fused_linear_ce"
         assert res["liger_version"] == "0.8.2"
         assert res["strict_reload"] == "pass"
+
+
+def test_train_generator_qlora_fails_loud_before_model_load_on_invalid_liger(tmp_path):
+    output_dir = str(tmp_path / "checkpoint")
+    cfg = GeneratorTrainConfig(model_id="Qwen/Qwen2.5-3B-Instruct", device="cuda:0")
+
+    mock_auto_model = MagicMock()
+
+    with patch("src.task2.generation.trainer.validate_liger_environment", side_effect=RuntimeError("Liger validation failed")), \
+         patch("src.task2.generation.trainer.AutoModelForCausalLM", mock_auto_model):
+
+        with pytest.raises(RuntimeError, match="Liger validation failed"):
+            train_generator_qlora(
+                model_name_or_path="Qwen/Qwen2.5-3B-Instruct",
+                qa_path="dummy_qa.parquet",
+                labels_path="dummy_labels.parquet",
+                chunks_path="dummy_chunks.parquet",
+                output_dir=output_dir,
+                config=cfg,
+                device="cuda:0",
+            )
+
+        # Verify model loading was NEVER attempted
+        assert not mock_auto_model.from_pretrained.called
