@@ -1,0 +1,79 @@
+{
+  "title": "LegalQA",
+  "slug": "legalqa-task2-clean-data",
+  "owner": "phucdangg",
+  "profile": "final_training",
+  "runtime_api_version": 15,
+  "git_sha": "151313fc3126615ec11c08ca68f154d5b0c5406f",
+  "files": {
+    "legal_chunks.parquet": {
+      "source": "data/legal_chunks.parquet",
+      "sha256": "6b34c7f338871f3786b94f947c89f6eff000f5bf21785ebee59dc267a00c164e",
+      "size_mb": 327.24
+    },
+    "qa_unique.parquet": {
+      "source": "data/qa_unique.parquet",
+      "sha256": "5f0055113346cba7faa1ee92f105b29d0570473d3033c214a1f52e8b77176e7a",
+      "size_mb": 6.17
+    },
+    "known_qa.json": {
+      "source": "data/known_qa.json",
+      "sha256": "1b453f36f5db10d913f6e1b04b48e081170ff9b4f88a3cb008abb376c971d00c",
+      "size_mb": 29.57
+    },
+    "qa_citations.parquet": {
+      "source": "data/qa_citations.parquet",
+      "sha256": "0772c6b3e0d4c1b72711331ed924c0a753c94a49e2f0f26aa5d7891f20b22e19",
+      "size_mb": 0.51
+    },
+    "retrieval_labels.parquet": {
+      "source": "data/retrieval_labels.parquet",
+      "sha256": "f11d0e46185e06d2aa8b997817877694938f51034b678fa071665891cb73004c",
+      "size_mb": 0.71
+    },
+    "fold_assignments.parquet": {
+      "source": "data/fold_assignments.parquet",
+      "sha256": "1422fd1587fce02941c1e31846d6e2f4dcb9b88b6b65890686137aad85a9f0c3",
+      "size_mb": 0.45
+    },
+    "reranker_training_pairs.parquet": {
+      "source": "data/reranker_training_pairs.parquet",
+      "sha256": "d67274b1b5cb2fd4892b55a327ed9b30de26140692e103c78eec38cd3ba4a126",
+      "size_mb": 13.33
+    },
+    "public-official.json": {
+      "source": "artifacts/raw/public-official.json",
+      "sha256": "5f68ca901cb20798559538bef60fa7c32bd7d0df59f5bf31a37eb220c9e00df5",
+      "size_mb": 0.18
+    }
+  },
+  "indexes": {
+    "indexes/bm25": {
+      "source": "indexes/bm25",
+      "files_count": 7,
+      "files": [
+        "bm25_manifest.json",
+        "corpus_meta.parquet",
+        "bm25s_index/params.index.json",
+        "bm25s_index/vocab.index.json",
+        "bm25s_index/indices.csc.index.npy",
+        "bm25s_index/data.csc.index.npy",
+        "bm25s_index/indptr.csc.index.npy"
+      ]
+    },
+    "indexes/dek21": {
+      "source": "indexes/dek21",
+      "files_count": 3,
+      "files": [
+        "dek21_manifest.json",
+        "dense_manifest.json",
+        "embeddings.npy"
+      ]
+    }
+  },
+  "code": {
+    "root": "code/LegalQA",
+    "files_count": 54,
+    "runtime_api_version": 15
+  }
+}
