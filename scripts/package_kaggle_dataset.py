@@ -195,13 +195,13 @@ def package_kaggle_dataset(
             manifest["indexes"][opt_dir] = {
                 "source": str(opt_dir),
                 "files_count": len(idx_files),
-                "files": idx_files[:10],
+                "files": sorted(idx_files),
             }
             print(f"  + {opt_dir}/ ({len(idx_files)} index files staged)")
         else:
             print(f"  - {opt_dir}/ (not found or empty, skipped)")
 
-    # Staging Code Runtime (src/, scripts/, configs/, requirements-kaggle.txt)
+    # Staging Code Runtime (src/, scripts/, configs/, requirements/)
     if include_code:
         print("Staging code runtime into code/LegalQA/ :")
         code_root = stage / "code" / "LegalQA"
@@ -225,7 +225,7 @@ def package_kaggle_dataset(
         src_dir = Path("src")
         if src_dir.exists() and not dry_run:
             shutil.copytree(src_dir, code_root / "src", dirs_exist_ok=True, ignore=ignore_patterns)
-        for py_file in src_dir.rglob("*.py"):
+        for py_file in sorted(src_dir.rglob("*.py")):
             if "__pycache__" not in str(py_file):
                 code_manifest["files"][str(py_file)] = sha256_file(py_file)
 
@@ -233,7 +233,7 @@ def package_kaggle_dataset(
         scripts_dir = Path("scripts")
         if scripts_dir.exists() and not dry_run:
             shutil.copytree(scripts_dir, code_root / "scripts", dirs_exist_ok=True, ignore=ignore_patterns)
-        for py_file in scripts_dir.rglob("*.py"):
+        for py_file in sorted(scripts_dir.rglob("*.py")):
             if "__pycache__" not in str(py_file):
                 code_manifest["files"][str(py_file)] = sha256_file(py_file)
 
@@ -241,10 +241,17 @@ def package_kaggle_dataset(
         cfg_dir = Path("configs")
         if cfg_dir.exists() and not dry_run:
             shutil.copytree(cfg_dir, code_root / "configs", dirs_exist_ok=True, ignore=ignore_patterns)
-        for yaml_file in cfg_dir.rglob("*.yaml"):
+        for yaml_file in sorted(cfg_dir.rglob("*.yaml")):
             code_manifest["files"][str(yaml_file)] = sha256_file(yaml_file)
 
-        # 4. requirements-kaggle.txt
+        # 4. requirements/
+        req_dir = Path("requirements")
+        if req_dir.exists() and not dry_run:
+            shutil.copytree(req_dir, code_root / "requirements", dirs_exist_ok=True, ignore=ignore_patterns)
+        for req_txt in sorted(req_dir.rglob("*.txt")):
+            code_manifest["files"][str(req_txt)] = sha256_file(req_txt)
+
+        # 5. requirements-kaggle.txt
         req_file = Path("requirements-kaggle.txt")
         if req_file.exists() and not dry_run:
             shutil.copy2(req_file, code_root / "requirements-kaggle.txt")
