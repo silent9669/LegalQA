@@ -113,7 +113,7 @@ jobs:
           assert "processing_class" in st.parameters, "SFTTrainer missing processing_class"
           print("PINNED TRL API CONTRACT PASS")
           PY
-          python -c "import liger_kernel; assert liger_kernel.__version__ == '0.8.2', f'liger {liger_kernel.__version__}'"
+          python -c "import importlib.metadata as md; v = md.version('liger-kernel'); assert v == '0.8.2', f'liger {v}'"
           python -c "import src.task2.training.train_generator as tg; assert not hasattr(tg, 'DataCollatorForCompletionOnlyLM')"
           python -c "from src.task2.training.train_generator import build_sft_config, build_grounded_training_examples"
           python -c "from src.task2.generation.trainer import train_generator_qlora, build_v16_sft_config"

@@ -58,6 +58,12 @@ def validate_liger_environment(strict: bool = True) -> LigerBackendStatus:
         import liger_kernel
 
         installed_ver = getattr(liger_kernel, "__version__", None)
+        if not installed_ver:
+            try:
+                import importlib.metadata as md
+                installed_ver = md.version("liger-kernel")
+            except Exception:
+                installed_ver = None
         if installed_ver != REQUIRED_LIGER_VERSION:
             msg = (
                 f"Liger-Kernel version mismatch: installed={installed_ver!r}, "
