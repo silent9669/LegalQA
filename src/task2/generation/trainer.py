@@ -109,13 +109,13 @@ def build_v16_sft_config(config: GeneratorTrainConfig, **kwargs: Any) -> Any:
     if "activation_offloading" in sig.parameters:
         config_kwargs["activation_offloading"] = config.activation_offloading
 
-    # CRITICAL V16 rule: DO NOT set loss_type="chunked_nll" when use_liger_fused_ce is True
-    if config.use_liger_fused_ce:
-        if "loss_type" in config_kwargs:
-            del config_kwargs["loss_type"]
-        config_kwargs.update(build_liger_training_kwargs(enabled=True))
-    elif "loss_type" in sig.parameters:
+    # CRITICAL V16 rule: loss_type must be "nll", NEVER "chunked_nll" when Liger is active
+    if "loss_type" in sig.parameters:
         config_kwargs["loss_type"] = "nll"
+
+    if config.use_liger_fused_ce:
+        config_kwargs.update(build_liger_training_kwargs(enabled=True))
+    assert_loss_type_compatible(config_kwargs.get("loss_type"), config.use_liger_fused_ce)
 
     # Set sequence length
     if "max_length" in sig.parameters:
@@ -159,9 +159,23 @@ def train_generator_qlora(
     if probe_mode in ("worst_case", "endurance"):
         validate_generator_config_for_profile(config, profile=profile_name)
 
-    # 2. Validate Liger environment if active
+    # 2. Validate Liger environment if active (fail loudly before model load, no fallback)
     if config.use_liger_fused_ce and device.startswith("cuda"):
-        validate_liger_environment(strict=True)
+        liger_status = validate_liger_environment(strict=True)
+        assert liger_status.version == REQUIRED_LIGER_VERSION, f"Expected liger-kernel {REQUIRED_LIGER_VERSION}"
+        assert liger_status.qwen2_patch_available, "Expected Qwen2 Liger patch available"
+        assert liger_status.fused_linear_ce, "Expected Liger fused-linear CE available"
+        assert config.use_liger_fused_ce is True, "Expected use_liger_fused_ce=True"
+        assert config.trainer_n_gpu == 1, "Expected trainer_n_gpu=1"
+        assert device == "cuda:0", f"Expected generator on cuda:0, got {device}"
+        print(f"Liger-Kernel: {liger_status.version}")
+        print("Qwen2 Liger patch: PASS")
+        print("Liger fused-linear CE: PASS")
+        print("use_liger_kernel=True")
+        print("fused_linear_cross_entropy=True")
+        print("loss_type=nll")
+        print(f"target={device}")
+        print(f"trainer_n_gpu={config.trainer_n_gpu}")
 
     # 3. Clean up prior CUDA stage memory
     cleanup_cuda_stage(devices=(0, 1))

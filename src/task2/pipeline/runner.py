@@ -175,6 +175,28 @@ def run_pipeline(
             device=gen_device,
         )
 
+        # One-shot Liger backend preflight assertion before model training
+        if gen_device.startswith("cuda"):
+            from src.task2.generation.liger_backend import (
+                validate_liger_environment,
+                REQUIRED_LIGER_VERSION,
+            )
+            liger_status = validate_liger_environment(strict=True)
+            assert liger_status.version == REQUIRED_LIGER_VERSION, f"Liger-Kernel version must be {REQUIRED_LIGER_VERSION}"
+            assert liger_status.qwen2_patch_available, "Qwen2 Liger patch must be available"
+            assert liger_status.fused_linear_ce, "Liger fused-linear CE must be available"
+            assert gen_cfg.use_liger_fused_ce is True, "use_liger_fused_ce must be True"
+            assert gen_cfg.trainer_n_gpu == 1, "trainer_n_gpu must be 1"
+            assert gen_device == "cuda:0", f"Generator device must be cuda:0, got {gen_device}"
+            print(f"Liger-Kernel: {liger_status.version}")
+            print("Qwen2 Liger patch: PASS")
+            print("Liger fused-linear CE: PASS")
+            print("use_liger_kernel=True")
+            print("fused_linear_cross_entropy=True")
+            print("loss_type=nll")
+            print(f"target={gen_device}")
+            print(f"trainer_n_gpu={gen_cfg.trainer_n_gpu}")
+
         res_qlora = train_generator_qlora(
             model_name_or_path=model_path,
             qa_path=qa_path,
