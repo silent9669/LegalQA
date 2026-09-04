@@ -4,6 +4,7 @@ datasets==5.0.0
 peft==0.19.1
 trl==1.12.0
 bitsandbytes==0.50.2
+liger-kernel==0.8.2
 sentence-transformers==5.4.1
 bm25s==0.3.11
 scikit-learn==1.6.1
