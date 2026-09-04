@@ -27,7 +27,9 @@ except ImportError:
 try:
     from peft import LoraConfig
 except ImportError:
-    LoraConfig = None
+    class LoraConfig:  # type: ignore
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
 
 try:
     from trl import SFTConfig, SFTTrainer
