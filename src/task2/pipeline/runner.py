@@ -42,6 +42,11 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     """Execute all stages for the specified profile."""
     os.makedirs(output_dir, exist_ok=True)
+
+    if profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit"):
+        from src.task2.production_config import verify_promotion_provenance
+        verify_promotion_provenance(production_cfg)
+
     results: Dict[str, Any] = {
         "profile": profile.name,
         "runtime_api_version": 16,
