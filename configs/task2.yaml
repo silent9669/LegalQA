@@ -1,7 +1,13 @@
-# Task 2 LegalQA Pipeline Configuration
+# Task 2 LegalQA Pipeline Configuration (Reference/Legacy Specification)
+# NOTE: Active authoritative configurations are:
+# - configs/runtime_api.yaml          -> Runtime API Contract (API 16)
+# - configs/models.yaml               -> Model identities and parameter accounting (<4B limit)
+# - configs/pipeline.yaml             -> Infrastructure and runtime pipeline defaults
+# - configs/production_selection.yaml -> Empirical Protocol-8 promoted decisions
+
 task:
   name: "Task 2 - LegalQA"
-  version: "2.0.0"
+  version: "16.0.0"
   metric: "METEOR"
   parameter_limit: 4000000000
 
@@ -20,13 +26,13 @@ models:
     name: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
     dimension: 768
     word_segmentation: "pyvi"
-    top_k: 60
+    top_k: 50
   reranker:
     name: "BAAI/bge-reranker-v2-m3"
     top_k: 8
   generator:
     name: "Qwen/Qwen2.5-3B-Instruct"
-    max_new_tokens: 512
+    max_new_tokens: 384
     lora_r: 16
     lora_alpha: 32
 
