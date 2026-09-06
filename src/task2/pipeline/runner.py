@@ -153,11 +153,13 @@ def run_pipeline(
         if profile.name == "final_train_and_submit":
             assert_final_checkpoint(reranker_checkpoint, expected_base_model="BAAI/bge-reranker-v2-m3", component_name="reranker")
     elif profile.reuse_existing_checkpoints and production_cfg.use_task_tuned_reranker:
-        import glob
-        cands = glob.glob("/kaggle/input/**/checkpoints/reranker/best", recursive=True) or glob.glob("checkpoints/reranker/best", recursive=True)
-        if not cands:
-            raise FileNotFoundError("Reusing checkpoints requested but no reranker checkpoint found!")
-        reranker_checkpoint = cands[0]
+        from src.task2.checkpoint_resolver import resolve_component_checkpoint
+        reranker_checkpoint = resolve_component_checkpoint(
+            component="reranker",
+            expected_base_model="BAAI/bge-reranker-v2-m3",
+            preferred_path=production_cfg.reranker_checkpoint,
+            expected_runtime_api=16,
+        )
         assert_final_checkpoint(reranker_checkpoint, expected_base_model="BAAI/bge-reranker-v2-m3", component_name="reranker")
 
     # -------------------------------------------------------------
@@ -219,11 +221,13 @@ def run_pipeline(
         if profile.name == "final_train_and_submit":
             assert_final_checkpoint(adapter_path, expected_base_model=production_cfg.generator_base_model, component_name="generator")
     elif profile.reuse_existing_checkpoints and production_cfg.use_qlora and profile.requires_generator:
-        import glob
-        ad_cands = glob.glob("/kaggle/input/**/checkpoints/generator/hf_adapter", recursive=True) or glob.glob("checkpoints/generator/hf_adapter", recursive=True)
-        if not ad_cands:
-            raise FileNotFoundError("Reusing checkpoints requested but no adapter found!")
-        adapter_path = ad_cands[0]
+        from src.task2.checkpoint_resolver import resolve_component_checkpoint
+        adapter_path = resolve_component_checkpoint(
+            component="generator",
+            expected_base_model=production_cfg.generator_base_model,
+            preferred_path=production_cfg.adapter_path,
+            expected_runtime_api=16,
+        )
         assert_final_checkpoint(adapter_path, expected_base_model=production_cfg.generator_base_model, component_name="generator")
 
     # -------------------------------------------------------------
