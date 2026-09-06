@@ -208,6 +208,7 @@ def run_pipeline(
             max_steps=profile.max_generator_steps,
             max_train_examples=profile.max_generator_examples,
             probe_mode=profile.probe_selection,
+            execution_profile=profile.name,
             device=gen_device,
             fail_on_error=True,
             seed=seed,
