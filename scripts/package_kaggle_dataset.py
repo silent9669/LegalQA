@@ -15,7 +15,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.common.hashing import sha256_file
 from src.common.security import assert_no_secrets_in_workspace
-from src.task2.production_config import load_production_selection
+from src.task2.production_config import (
+    load_production_selection,
+    validate_production_selection_for_profile,
+)
 from src.task2.runtime_integrity import (
     EXPECTED_RUNTIME_API_VERSION,
     validate_runtime_manifests,
@@ -104,12 +107,19 @@ def package_kaggle_dataset(
         else:
             try:
                 prod_cfg = load_production_selection(production_config_path)
+                validate_production_selection_for_profile(
+                    prod_cfg,
+                    profile="final_train_and_submit",
+                    allow_unvalidated_final=False,
+                )
                 if prod_cfg.use_task_tuned_reranker:
                     rerank_pairs = src / "data" / "reranker_training_pairs.parquet"
                     if not rerank_pairs.exists():
                         missing.append("data/reranker_training_pairs.parquet (required by production_selection tuned reranker)")
             except Exception as e:
-                missing.append(f"Invalid {production_config_path}: {e}")
+                raise RuntimeError(
+                    f"Production config at '{production_config_path}' is invalid for 'final_training' packaging: {e}"
+                ) from e
 
     if missing:
         raise FileNotFoundError(
