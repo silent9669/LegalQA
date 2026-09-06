@@ -86,8 +86,9 @@ def audit_parameter_budget(
 def verify_config_consistency(
     pipeline_path: str = "configs/pipeline.yaml",
     models_path: str = "configs/models.yaml",
+    production_path: str = "configs/production_selection.yaml",
 ) -> Dict[str, Any]:
-    """Verify that pipeline.yaml specifies valid models present in models.yaml."""
+    """Verify that pipeline.yaml and production_selection.yaml specify valid models present in models.yaml."""
     pipe_cfg = load_config_file(pipeline_path)
     mod_cfg = load_config_file(models_path)
 
@@ -112,6 +113,20 @@ def verify_config_consistency(
         if m_id and m_id not in all_models:
             consistent = False
             issues.append(f"{label} in pipeline ({m_id}) is not in models.yaml ({all_models})")
+
+    if os.path.exists(production_path):
+        prod_cfg = load_config_file(production_path)
+        prod_dense = prod_cfg.get("retrieval", {}).get("dense", {}).get("model", "")
+        prod_reranker = prod_cfg.get("reranker", {}).get("base_model", "")
+        prod_generator = prod_cfg.get("generator", {}).get("base_model", "")
+        for label, m_id in [
+            ("Production Dense", prod_dense),
+            ("Production Reranker", prod_reranker),
+            ("Production Generator", prod_generator),
+        ]:
+            if m_id and m_id not in all_models:
+                consistent = False
+                issues.append(f"{label} in production_selection ({m_id}) is not in models.yaml ({all_models})")
 
     return {
         "is_consistent": consistent,
