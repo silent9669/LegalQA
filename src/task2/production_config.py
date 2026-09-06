@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence
 
 import yaml
+
+from src.common.hashing import sha256_file
 
 GENERATOR_DEPENDENT_CANDIDATES = {
     "generated",
@@ -37,6 +40,7 @@ class ProductionSelection:
     selector_checkpoint: Optional[str]
     primary_evidence_pack: str
     raw_config: Dict[str, Any]
+    provenance: Optional[Dict[str, Any]] = None
 
     @property
     def requires_generator(self) -> bool:
@@ -111,13 +115,100 @@ def load_production_selection(config_path: str = "configs/production_selection.y
         selector_checkpoint=policy_cfg.get("selector_checkpoint"),
         primary_evidence_pack=evidence_cfg.get("primary_pack", "multi_seed_2500_chars"),
         raw_config=data,
+        provenance=data.get("provenance"),
     )
+
+
+def verify_promotion_provenance(
+    config: ProductionSelection,
+    search_roots: Optional[Sequence[str | Path]] = None,
+) -> None:
+    """Cryptographically revalidate promotion report and screen manifests before final/reuse execution."""
+    prov = config.provenance or {}
+    report_rel_path = prov.get("promotion_report_path") or config.source_screen_manifest
+    expected_report_sha = prov.get("promotion_report_sha256") or config.source_screen_sha256
+
+    if not report_rel_path or not expected_report_sha:
+        raise RuntimeError("Production config is missing promotion report provenance path or SHA256.")
+
+    # Locate report file
+    roots = [Path(r) for r in (search_roots or [".", "/kaggle/input", "/kaggle/working"])]
+    report_path: Optional[Path] = None
+    if Path(report_rel_path).is_file():
+        report_path = Path(report_rel_path)
+    else:
+        for r in roots:
+            cand = r / report_rel_path
+            if cand.is_file():
+                report_path = cand
+                break
+            cand_direct = r / Path(report_rel_path).name
+            if cand_direct.is_file():
+                report_path = cand_direct
+                break
+            for sub in r.glob("**/promotion_report.json"):
+                if sub.is_file():
+                    report_path = sub
+                    break
+            if report_path:
+                break
+
+    if not report_path:
+        raise FileNotFoundError(f"Promotion report file not found: {report_rel_path}")
+
+    actual_report_sha = sha256_file(report_path)
+    if actual_report_sha != expected_report_sha:
+        raise RuntimeError(
+            f"Promotion report SHA256 mismatch for {report_path}: "
+            f"actual {actual_report_sha} != expected {expected_report_sha}"
+        )
+
+    # Validate screen_run_manifest if specified
+    manifest_rel_path = prov.get("screen_run_manifest_path")
+    expected_manifest_sha = prov.get("screen_run_manifest_sha256")
+    if manifest_rel_path and expected_manifest_sha:
+        manifest_path: Optional[Path] = None
+        if Path(manifest_rel_path).is_file():
+            manifest_path = Path(manifest_rel_path)
+        else:
+            for r in roots:
+                cand = r / manifest_rel_path
+                if cand.is_file():
+                    manifest_path = cand
+                    break
+                cand_direct = r / Path(manifest_rel_path).name
+                if cand_direct.is_file():
+                    manifest_path = cand_direct
+                    break
+                for sub in r.glob("**/screen_run_manifest.json"):
+                    if sub.is_file():
+                        manifest_path = sub
+                        break
+                if manifest_path:
+                    break
+        if manifest_path:
+            actual_m_sha = sha256_file(manifest_path)
+            if actual_m_sha != expected_manifest_sha:
+                raise RuntimeError(
+                    f"Screen run manifest SHA256 mismatch for {manifest_path}: "
+                    f"actual {actual_m_sha} != expected {expected_manifest_sha}"
+                )
+
+    # Validate protocol version and API version
+    protocol_v = prov.get("screen_protocol_version") or config.raw_config.get("screen_protocol_version", 1)
+    if int(protocol_v) < 8:
+        raise RuntimeError(f"Promotion provenance requires screen_protocol_version >= 8, got {protocol_v}")
+
+    api_v = prov.get("runtime_api_version")
+    if api_v and int(api_v) != 16:
+        raise RuntimeError(f"Promotion provenance requires runtime_api_version=16, got {api_v}")
 
 
 def validate_production_selection_for_profile(
     config: ProductionSelection,
     profile: str,
     allow_unvalidated_final: bool = False,
+    verify_provenance: bool = False,
 ) -> None:
     """Validate that the production configuration is eligible for the chosen execution profile (Protocol 8)."""
     if profile in ("final_train_and_submit", "reuse_final_checkpoints_and_submit"):
@@ -134,3 +225,5 @@ def validate_production_selection_for_profile(
                     f"Promoted config uses screen_protocol_version={protocol_v} < 8. "
                     f"Profile '{profile}' requires screening under Protocol 8 (staged component consistency and provenance)."
                 )
+            if verify_provenance:
+                verify_promotion_provenance(config)

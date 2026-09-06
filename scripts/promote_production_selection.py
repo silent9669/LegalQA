@@ -183,6 +183,13 @@ def promote_production_selection(
         "status": "PROMOTED",
         "source_screen_manifest": report_path,
         "source_screen_sha256": report_sha256,
+        "provenance": {
+            "promotion_report_path": report_path,
+            "promotion_report_sha256": report_sha256,
+            "sample_ids_sha256": report.get("sample_ids_sha256"),
+            "runtime_api_version": 16,
+            "screen_protocol_version": 8,
+        },
         "stack": base_config.get("stack", "stack_a"),
         "retrieval": base_config.get("retrieval", {
             "sparse": {"method": "bm25s", "top_k": 50},
