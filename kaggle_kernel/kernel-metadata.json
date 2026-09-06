@@ -1,6 +1,5 @@
 {
-  "id": "phucdangg/legalqa-top-2-training-gpu",
-  "id_no": 132539626,
+  "id": "phucdangg/legalqa-training",
   "title": "LegalQA training",
   "code_file": "legalqa_gpu_pipeline.ipynb",
   "language": "python",
