@@ -153,6 +153,7 @@ def train_generator_qlora(
     fail_on_error: bool = True,
     seed: int = 42,
     resume_from_checkpoint: Optional[str] = None,
+    execution_profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Train Qwen2.5-3B-Instruct with 4-bit NF4 QLoRA, selective Liger fused-linear CE, and strict validation (V16)."""
     assert_no_secrets_in_workspace(Path.cwd())
@@ -161,10 +162,18 @@ def train_generator_qlora(
         config = GeneratorTrainConfig(model_id=model_name_or_path, device=device)
 
     # 1. Validate configuration for the active execution profile
-    profile_name = "generator_probe_worstcase" if probe_mode == "worst_case" else (
-        "generator_probe_endurance" if probe_mode == "endurance" else "standard"
+    profile_name = execution_profile or (
+        "generator_probe_worstcase" if probe_mode == "worst_case" else (
+            "generator_probe_endurance" if probe_mode == "endurance" else "standard"
+        )
     )
-    if probe_mode in ("worst_case", "endurance"):
+    strict_profiles = {
+        "final_train_and_submit",
+        "screen_fold0",
+        "generator_probe_worstcase",
+        "generator_probe_endurance",
+    }
+    if profile_name in strict_profiles:
         validate_generator_config_for_profile(config, profile=profile_name)
 
     # 2. Validate Liger environment if active (fail loudly before model load, no fallback)
