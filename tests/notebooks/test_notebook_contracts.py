@@ -13,8 +13,8 @@ def test_kaggle_smoke_notebook_contract():
     assert len(cells) >= 5, "Expected at least 5 cells in Kaggle smoke notebook"
 
     source_all = "\n".join("".join(c.get("source", [])) for c in cells)
-    assert "kaggle_smoke_t4.yaml" in source_all
-    assert "kaggle_smoke_report.json" in source_all
+    assert "kaggle_t4x2.yaml" in source_all or "kaggle_smoke_t4.yaml" in source_all
+    assert "kaggle_t4x2_report.json" in source_all or "kaggle_smoke_report.json" in source_all
     assert "HF_DEACTIVATE_ASYNC_LOAD" in source_all
     assert "/kaggle/input/**/code/LegalQA" not in source_all, "Notebook must not look for code inside dataset!"
 

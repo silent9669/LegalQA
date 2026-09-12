@@ -9,6 +9,9 @@ from src.task2.production_config import (
 )
 
 VALID_V16_PROFILES: Set[str] = {
+    "kaggle_t4x2",
+    "colab_t4",
+    "colab_a100",
     "kaggle_smoke_t4",
     "colab_train_a100",
     "generator_probe_worstcase",
@@ -59,10 +62,10 @@ def resolve_execution_profile(
             f"Unknown execution profile '{prof}'. Valid profiles: {sorted(VALID_V16_PROFILES)}"
         )
 
-    # 0. kaggle_smoke_t4 (Canonical Notion spec Kaggle Dual-T4 CUDA smoke gate)
-    if prof == "kaggle_smoke_t4":
+    # 0. kaggle_t4x2 / kaggle_smoke_t4 (Canonical Kaggle Dual-T4 CUDA gate)
+    if prof in ("kaggle_t4x2", "kaggle_smoke_t4"):
         return ExecutionProfile(
-            name="kaggle_smoke_t4",
+            name=prof,
             run_reranker_training=False,
             run_generator_training=True,
             run_dev_evaluation=True,
@@ -79,16 +82,36 @@ def resolve_execution_profile(
             requires_generator=True,
         )
 
-    # 0.1 colab_train_a100 (Canonical Notion spec Colab A100 production training)
-    if prof == "colab_train_a100":
+    # 0.1 colab_t4 (Canonical Colab Single-T4 gate)
+    if prof == "colab_t4":
         return ExecutionProfile(
-            name="colab_train_a100",
+            name="colab_t4",
             run_reranker_training=False,
             run_generator_training=True,
             run_dev_evaluation=True,
             run_public_inference=False,
             reuse_existing_checkpoints=False,
             val_fold=0,
+            probe_selection="worst_case",
+            max_generator_steps=5,
+            max_generator_examples=None,
+            max_reranker_steps=None,
+            max_reranker_pairs=None,
+            max_reranker_val_pairs=None,
+            dev_eval_size=5,
+            requires_generator=True,
+        )
+
+    # 0.2 colab_a100 / colab_train_a100 (Canonical Colab A100 production training)
+    if prof in ("colab_a100", "colab_train_a100"):
+        return ExecutionProfile(
+            name=prof,
+            run_reranker_training=False,
+            run_generator_training=True,
+            run_dev_evaluation=True,
+            run_public_inference=False,
+            reuse_existing_checkpoints=False,
+            val_fold=None,  # All allowed data for production
             probe_selection=None,
             max_generator_steps=None,
             max_generator_examples=None,

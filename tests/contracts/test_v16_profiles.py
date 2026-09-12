@@ -8,10 +8,40 @@ from src.task2.production_config import ProductionSelection
 
 
 def test_valid_v16_profiles_set():
+    assert "kaggle_t4x2" in VALID_V16_PROFILES
+    assert "colab_t4" in VALID_V16_PROFILES
+    assert "colab_a100" in VALID_V16_PROFILES
     assert "generator_probe_worstcase" in VALID_V16_PROFILES
     assert "generator_probe_endurance" in VALID_V16_PROFILES
     assert "screen_fold0" in VALID_V16_PROFILES
     assert "final_train_and_submit" in VALID_V16_PROFILES
+
+
+def test_resolve_kaggle_t4x2():
+    prof = resolve_execution_profile("kaggle_t4x2")
+    assert prof.name == "kaggle_t4x2"
+    assert prof.run_generator_training is True
+    assert prof.run_dev_evaluation is True
+    assert prof.probe_selection == "worst_case"
+    assert prof.max_generator_steps == 3
+    assert prof.dev_eval_size == 10
+
+
+def test_resolve_colab_t4():
+    prof = resolve_execution_profile("colab_t4")
+    assert prof.name == "colab_t4"
+    assert prof.run_generator_training is True
+    assert prof.probe_selection == "worst_case"
+    assert prof.max_generator_steps == 5
+    assert prof.dev_eval_size == 5
+
+
+def test_resolve_colab_a100():
+    prof = resolve_execution_profile("colab_a100")
+    assert prof.name == "colab_a100"
+    assert prof.run_generator_training is True
+    assert prof.val_fold is None  # all allowed training data
+    assert prof.dev_eval_size is None
 
 
 def test_resolve_generator_probe_worstcase():
