@@ -2,43 +2,67 @@ name: Tests
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, feature/** ]
   pull_request:
     branches: [ main, master ]
 
 jobs:
-  preflight-and-unit-tests:
-    name: Preflight & Test Suite (${{ matrix.python-version }})
+  local-contract:
+    name: local-contract
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
-          pip install pyyaml pytest pytest-cov packaging "trl>=0.12.0" "liger-kernel>=0.5.0" "transformers>=4.45.0" peft bitsandbytes accelerate
+          pip install pyyaml pytest pytest-cov packaging "trl>=0.12.0" peft bitsandbytes accelerate
 
       - name: Download NLTK data
         run: |
           python -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')"
 
-      - name: Run Canonical Pre-Push Check Gate
+      - name: Run Fast Pre-Push Check Gate
         run: |
-          python scripts/pre_push_check.py
+          python scripts/pre_push_check.py --mode fast
 
-  kaggle-hf-compat:
-    name: Exact Kaggle HF Stack Compatibility Lane
+  python-tests-3.10:
+    name: python-tests-3.10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pyyaml pytest pytest-cov packaging "trl>=0.12.0" peft bitsandbytes accelerate
+
+      - name: Download NLTK data
+        run: |
+          python -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')"
+
+      - name: Run Full Pre-Push Check Gate
+        run: |
+          python scripts/pre_push_check.py --mode full
+
+  python-tests-3.12:
+    name: python-tests-3.12
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,22 +73,49 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install exact Kaggle user-space HF stack
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
-          pip install pyyaml pytest packaging
-          pip install "transformers==5.0.0" "peft==0.19.1" "accelerate==1.13.0" "datasets==5.0.0" "trl==1.12.0" "liger-kernel==0.8.2"
+          pip install pyyaml pytest pytest-cov packaging "trl>=0.12.0" peft bitsandbytes accelerate
 
-      - name: Verify exact Kaggle HF versions and SFT API contract
+      - name: Download NLTK data
+        run: |
+          python -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')"
+
+      - name: Run Full Pre-Push Check Gate
+        run: |
+          python scripts/pre_push_check.py --mode full
+
+  exact-gpu-userspace-stack:
+    name: exact-gpu-userspace-stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install exact GPU user-space stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pyyaml pytest pytest-cov packaging
+          pip install -c constraints-gpu.txt transformers peft accelerate datasets trl liger-kernel bitsandbytes
+
+      - name: Verify exact GPU versions and SFT API contract
         run: |
           python - <<'PY'
           import inspect
           import importlib.metadata as md
           from trl import SFTConfig, SFTTrainer
 
-          # Verify exact package versions
+          # Verify exact package versions from constraints-gpu.txt
           for pkg, exp_ver in [
               ("transformers", "5.0.0"),
               ("peft", "0.19.1"),
@@ -72,6 +123,7 @@ jobs:
               ("datasets", "5.0.0"),
               ("trl", "1.12.0"),
               ("liger-kernel", "0.8.2"),
+              ("bitsandbytes", "0.50.2"),
           ]:
               v = md.version(pkg)
               assert v == exp_ver, f"{pkg} expected {exp_ver}, got {v}"
@@ -106,18 +158,46 @@ jobs:
           assert sft_args.use_liger_kernel is True
           assert sft_args.loss_type == "nll"
           assert getattr(sft_args, "max_length", getattr(sft_args, "max_seq_length", None)) == 2048
-          print("EXACT KAGGLE HF STACK COMPATIBILITY PASS")
+          print("EXACT GPU USERSPACE STACK COMPATIBILITY PASS")
           PY
 
-      - name: Run Kaggle HF contract tests
+      - name: Run GPU Stack Contract Tests
         run: |
           pytest \
             tests/contracts/test_kaggle_hf_stack_contract.py \
             tests/contracts/test_dependency_lock.py \
+            tests/contracts/test_config_authority.py \
             tests/contracts/test_v16_profiles.py \
             tests/contracts/test_configs.py \
             tests/contracts/test_profile_resolution.py \
             tests/notebooks/test_notebook_contracts.py \
             tests/unit/test_generation_config.py \
             tests/unit/test_liger_backend.py \
+            -v
+
+  security-and-provenance:
+    name: security-and-provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pyyaml pytest pytest-cov packaging
+
+      - name: Run Security and Provenance Gate
+        run: |
+          pytest \
+            tests/contracts/test_security.py \
+            tests/contracts/test_no_legacy_config_references.py \
+            tests/provenance \
             -v
