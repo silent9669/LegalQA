@@ -224,7 +224,17 @@ class BM25Retriever:
                 pass
 
         bm25s_dir = os.path.join(index_dir, "bm25s_index")
-        if bm25s is not None and os.path.exists(os.path.join(bm25s_dir, "params.index.json")):
+        params_file = os.path.join(bm25s_dir, "params.index.json")
+        if not os.path.exists(params_file) and os.path.exists(os.path.join(index_dir, "params.index.json")):
+            bm25s_dir = index_dir
+            params_file = os.path.join(index_dir, "params.index.json")
+
+        if os.path.exists(params_file):
+            if bm25s is None:
+                raise ModuleNotFoundError(
+                    f"BM25S index found at {bm25s_dir}, but the 'bm25s' Python package is not installed. "
+                    "Run 'pip install bm25s' before running retrieval."
+                )
             try:
                 retriever.bm25s_index = bm25s.BM25.load(bm25s_dir, mmap=True)
                 return retriever
