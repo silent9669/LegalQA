@@ -75,9 +75,25 @@ def main():
     gen_device = dev_cfg.get("generator", "cuda:0" if gpu_count > 0 else "cpu")
     retrieval_device = dev_cfg.get("retrieval", "cuda:1" if gpu_count > 1 else ("cuda:0" if gpu_count > 0 else "cpu"))
 
+    # If running on single GPU or explicit single-GPU mode requested, clamp to available devices
+    if gpu_count <= 1 or args.allow_single_gpu:
+        if gpu_count == 1:
+            gen_device = "cuda:0"
+            retrieval_device = "cuda:0"
+        elif gpu_count == 0:
+            gen_device = "cpu"
+            retrieval_device = "cpu"
+    print(f"Allocated Devices -> Generator: {gen_device} | Retrieval: {retrieval_device}")
+
     # Resolve paths
     base_data = args.data_dir or cfg.get("data", {}).get("runtime_root", "/kaggle/input")
     paths = resolve_runtime_paths(base_data, strict=False)
+
+    if "public_test_path" not in paths:
+        candidate_test = os.path.join(paths.get("data_dir", ""), "public-official.json")
+        if not os.path.exists(candidate_test):
+            candidate_test = os.path.join(paths.get("runtime_root", ""), "public-official.json")
+        paths["public_test_path"] = candidate_test
 
     out_dir = args.output_dir or cfg.get("outputs", {}).get("report_path", "runs/current")
     if out_dir.endswith(".json"):
