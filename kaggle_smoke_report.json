@@ -1,0 +1,15 @@
+{
+  "status": "PASS",
+  "profile": "kaggle_smoke_t4",
+  "hardware": {
+    "gpu_count": 2,
+    "gen_device": "cuda:0",
+    "retrieval_device": "cuda:1"
+  },
+  "dataset_verified": true,
+  "stages_executed": [
+    "generator",
+    "audit",
+    "evaluation"
+  ]
+}
