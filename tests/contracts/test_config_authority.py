@@ -1,36 +1,36 @@
 import yaml
-from pathlib import Path
-
+import os
 
 def test_config_authority_and_no_drift():
-    # Load authoritative configs
-    with open("configs/pipeline.yaml", "r", encoding="utf-8") as f:
-        pipeline_cfg = yaml.safe_load(f)
-    with open("configs/models.yaml", "r", encoding="utf-8") as f:
-        models_cfg = yaml.safe_load(f)
-    with open("configs/runtime_api.yaml", "r", encoding="utf-8") as f:
-        runtime_cfg = yaml.safe_load(f)
-    with open("configs/production_selection.yaml", "r", encoding="utf-8") as f:
-        prod_cfg = yaml.safe_load(f)
-    with open("configs/task2.yaml", "r", encoding="utf-8") as f:
-        task2_cfg = yaml.safe_load(f)
+    # 1. Authoritative configs exist
+    smoke_path = "configs/kaggle_smoke_t4.yaml"
+    colab_path = "configs/colab_train_a100.yaml"
+    schema_path = "configs/dataset_schema.yaml"
 
-    # 1. Runtime API
-    assert runtime_cfg["runtime_api_version"] == 16
+    assert os.path.exists(smoke_path), f"Missing {smoke_path}"
+    assert os.path.exists(colab_path), f"Missing {colab_path}"
+    assert os.path.exists(schema_path), f"Missing {schema_path}"
 
-    # 2. Models identity alignment with Stack A
-    retriever_model = models_cfg["stacks"]["stack_a"]["dense_model"]
-    reranker_model = models_cfg["stacks"]["stack_a"]["reranker_model"]
-    generator_model = models_cfg["stacks"]["stack_a"]["generator_model"]
+    with open(smoke_path, "r", encoding="utf-8") as f:
+        smoke_cfg = yaml.safe_load(f)
+    with open(colab_path, "r", encoding="utf-8") as f:
+        colab_cfg = yaml.safe_load(f)
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_cfg = yaml.safe_load(f)
 
-    assert pipeline_cfg["retrieval"]["dense"]["stack_a_model"] == retriever_model
-    assert pipeline_cfg["reranker"]["model"] == reranker_model
-    assert pipeline_cfg["generation"]["stack_a_model"] == generator_model
+    # 2. Base Model Alignment (<4B Competition Bound)
+    assert smoke_cfg["generator"]["model_id"] == "Qwen/Qwen2.5-3B-Instruct"
+    assert colab_cfg["generator"]["model_id"] == "Qwen/Qwen2.5-3B-Instruct"
 
-    assert prod_cfg["retrieval"]["dense"]["model"] == retriever_model
-    assert prod_cfg["reranker"]["base_model"] == reranker_model
-    assert prod_cfg["generator"]["base_model"] == generator_model
+    # 3. Liger Kernel Enabled Across Both Targets
+    assert smoke_cfg["generator"]["use_liger_kernel"] is True
+    assert colab_cfg["generator"]["use_liger_kernel"] is True
 
-    # 3. Parameter alignment across pipeline and task2.yaml
-    assert task2_cfg["models"]["retriever"]["top_k"] == 50
-    assert task2_cfg["models"]["generator"]["max_new_tokens"] == 384
+    # 4. Sequence Length Consistency
+    assert smoke_cfg["data"]["max_seq_len"] == 2048
+    assert colab_cfg["data"]["max_seq_len"] == 2048
+
+    # 5. Dataset Schema Target
+    assert schema_cfg["schema_version"] == "2.0.0"
+    assert "legal_chunks" in schema_cfg["tables"]
+    assert "qa_unique" in schema_cfg["tables"]

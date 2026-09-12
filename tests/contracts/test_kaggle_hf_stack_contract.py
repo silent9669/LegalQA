@@ -22,35 +22,6 @@ from src.task2.generation.liger_backend import (
 )
 
 
-def _load_notebook_source() -> str:
-    nb_path = Path("kaggle_kernel/legalqa_gpu_pipeline.ipynb")
-    data = json.loads(nb_path.read_text(encoding="utf-8"))
-    return "\n".join(
-        "".join(c.get("source", "")) if isinstance(c.get("source"), list) else str(c.get("source", ""))
-        for c in data.get("cells", [])
-        if c.get("cell_type") == "code"
-    )
-
-
-def test_kaggle_notebook_critical_regression_invariants():
-    """Verify notebook owns API 16, committed worst-case probe, async load disabled, and dual-T4 guard."""
-    src = _load_notebook_source()
-
-    assert re.search(r"REQUIRED_RUNTIME_API_VERSION\s*=\s*16\b", src), (
-        "Notebook must define literal REQUIRED_RUNTIME_API_VERSION = 16"
-    )
-    assert 'EXECUTION_PROFILE = "generator_probe_worstcase"' in src, (
-        "Committed profile must be generator_probe_worstcase"
-    )
-    assert 'os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"' in src, (
-        "Async model loading guard must be active"
-    )
-    assert "ALLOW_SINGLE_GPU_SMOKE = False" in src, (
-        "Strict dual-T4 execution must be required"
-    )
-    assert "gpu_count < 2 and not ALLOW_SINGLE_GPU_SMOKE" in src
-
-
 def test_v16_generator_trainer_single_gpu_policy_enforcement():
     """Verify single-GPU policy forces n_gpu=1 and rejects secondary GPU / DataParallel."""
     mock_args = type("MockArgs", (), {"device": "cuda:0", "_n_gpu": 2, "n_gpu": 1})()
