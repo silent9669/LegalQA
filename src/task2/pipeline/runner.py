@@ -106,7 +106,7 @@ def run_pipeline(
     from src.common.bm25 import BM25Retriever
 
     memory = QAMemory.load(known_qa_path, qa_path)
-    bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path, fail_on_missing_index=True)
+    bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path, fail_on_missing_index=is_final)
     print(f"Loaded QA Memory: {len(memory.id_to_answer):,} IDs | BM25 Chunks: {bm25.corpus_size:,}")
 
     # -------------------------------------------------------------
@@ -332,7 +332,7 @@ def run_pipeline(
                 eval_output_dir=os.path.join(output_dir, "evaluations"),
                 gen_device=gen_device,
                 retrieval_device=retrieval_device,
-                fail_on_fallback=True,
+                fail_on_fallback=is_final,
                 seed=seed,
             )
             results["stages"]["evaluation"] = eval_res
