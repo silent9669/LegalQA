@@ -258,6 +258,7 @@ def train_generator_qlora(
         )
         model_kwargs["quantization_config"] = bnb_config
         model_kwargs["device_map"] = {"": device}
+        model_kwargs["dtype"] = torch.float16
         model_kwargs["torch_dtype"] = torch.float16
         model_kwargs["attn_implementation"] = "sdpa"
     else:
@@ -310,7 +311,7 @@ def train_generator_qlora(
         "num_train_epochs": epochs,
         "learning_rate": config.learning_rate,
         "lr_scheduler_type": "cosine",
-        "warmup_ratio": 0.03,
+        "warmup_steps": 1,
         "logging_steps": 10,
         "save_strategy": "epoch",
         "report_to": "none",
@@ -349,6 +350,13 @@ def train_generator_qlora(
                 if isinstance(ld, (dict, nn.ModuleDict)):
                     for k in list(ld.keys()):
                         ld[k] = nn.Identity()
+
+        # Enforce float16 on all trainable parameters when training with fp16
+        # to prevent PyTorch GradScaler "_amp_foreach_non_finite_check_and_unscale_cuda" NotImplementedError for BFloat16
+        if getattr(sft_args, "fp16", False):
+            for name, param in trainer.model.named_parameters():
+                if param.requires_grad and param.dtype == torch.bfloat16:
+                    param.data = param.data.to(torch.float16)
 
     if hasattr(trainer, "args") and hasattr(trainer.args, "n_gpu") and int(trainer.args.n_gpu) != 1 and device.startswith("cuda"):
         raise RuntimeError(
