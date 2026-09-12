@@ -351,12 +351,12 @@ def train_generator_qlora(
                     for k in list(ld.keys()):
                         ld[k] = nn.Identity()
 
-        # Enforce float16 on all trainable parameters when training with fp16
-        # to prevent PyTorch GradScaler "_amp_foreach_non_finite_check_and_unscale_cuda" NotImplementedError for BFloat16
+        # Enforce float32 on all trainable parameters when training with fp16
+        # PyTorch AMP GradScaler strictly requires float32 master weights/gradients for safe unscaling.
         if getattr(sft_args, "fp16", False):
             for name, param in trainer.model.named_parameters():
-                if param.requires_grad and param.dtype == torch.bfloat16:
-                    param.data = param.data.to(torch.float16)
+                if param.requires_grad and param.dtype != torch.float32:
+                    param.data = param.data.to(torch.float32)
 
     if hasattr(trainer, "args") and hasattr(trainer.args, "n_gpu") and int(trainer.args.n_gpu) != 1 and device.startswith("cuda"):
         raise RuntimeError(
