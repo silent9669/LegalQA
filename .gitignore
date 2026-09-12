@@ -29,6 +29,7 @@ wheels/
 .coverage
 htmlcov/
 .playwright-mcp/
+.remember/
 
 # OS & Temp
 .DS_Store
