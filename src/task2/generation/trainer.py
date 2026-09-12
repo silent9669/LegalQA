@@ -195,8 +195,10 @@ def train_generator_qlora(
         print(f"target={device}")
         print(f"trainer_n_gpu={config.trainer_n_gpu}")
 
-    # 3. Clean up prior CUDA stage memory
+    # 3. Clean up prior CUDA stage memory and restore generator device context
     cleanup_cuda_stage(devices=(0, 1))
+    if device.startswith("cuda") and torch is not None and torch.cuda.is_available():
+        torch.cuda.set_device(device)
 
     # 4. Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
