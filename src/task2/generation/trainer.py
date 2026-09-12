@@ -232,6 +232,7 @@ def train_generator_qlora(
     # 6. Load base model with 4-bit NF4 quantization and Liger Kernel patching
     model_kwargs: Dict[str, Any] = {
         "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
     }
 
     if config.use_liger_fused_ce and device.startswith("cuda") and torch is not None and torch.cuda.is_available():

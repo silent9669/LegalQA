@@ -9,7 +9,7 @@ devices:
 data:
   dataset_slug: "phucdangg/legalqa-task2-clean-data"
   runtime_root: "/kaggle/input/legalqa-task2-clean-data"
-  max_seq_len: 2048
+  max_seq_len: 1024
 
 generator:
   model_id: "Qwen/Qwen2.5-3B-Instruct"
