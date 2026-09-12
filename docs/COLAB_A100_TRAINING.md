@@ -45,10 +45,12 @@ python scripts/run_pipeline.py \
   --allow-single-gpu
 ```
 
-### Headless / Colab CLI Execution
+### Automated Headless / Colab CLI Execution (Recommended)
+Run the automated session orchestrator from your local terminal:
 ```bash
-colab run --notebook notebooks/colab_a100_train.ipynb --gpu A100
+./scripts/launch_colab_training.py --gpu A100
 ```
+This automatically verifies local `.env` credentials and `kaggle_smoke_report.json`, provisions the A100 VM, uploads credentials, executes `notebooks/colab_a100_train.ipynb`, uploads all artifacts to Hugging Face, and releases the VM upon completion to prevent credit leakage.
 
 ---
 
@@ -74,4 +76,4 @@ Upon completion, the pipeline evaluates the final model against the validation f
     └── README.md (Model Card)
 ```
 
-The notebook uploads this bundle directly to the team Hugging Face model repository (`silent9669/legalqa-qwen2.5-3b-adapter`).
+The notebook uploads this bundle directly to the Hugging Face model repository (`dangphuc2109/legalqa-qwen2.5-3b-adapter`).

@@ -64,4 +64,5 @@ data
 .env
 .env.*
 !.env.example
+notebooks/*_output.ipynb
 
