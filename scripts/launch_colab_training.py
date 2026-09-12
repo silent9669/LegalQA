@@ -95,6 +95,21 @@ def preflight_checks(
             print(f" [!] Warning: No smoke report file found at {smoke_report_file}.")
 
 
+def list_active_server_sessions(colab_bin: str) -> List[Dict[str, str]]:
+    """Query Colab CLI for active server-side GPU/TPU session assignments."""
+    try:
+        out = subprocess.check_output([colab_bin, "sessions"], stderr=subprocess.STDOUT).decode()
+        active = []
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("[") and "]" in line:
+                name = line[1:line.index("]")].strip()
+                active.append({"name": name, "raw": line})
+        return active
+    except Exception:
+        return []
+
+
 def run_colab_command(cmd: List[str], desc: str) -> None:
     """Execute a Colab CLI command and stream output."""
     print(f"\n[*] {desc}...")
@@ -108,12 +123,15 @@ def main():
     parser = argparse.ArgumentParser(description="Automated Google Colab Training Launcher")
     parser.add_argument("--gpu", choices=["A100", "T4", "L4"], default="A100", help="GPU accelerator type")
     parser.add_argument("-s", "--session-name", default=None, help="Custom Colab session name")
+    parser.add_argument("--attach", default=None, help="Attach to an existing active Colab session by name")
+    parser.add_argument("--reuse-existing", action="store_true", help="Automatically reuse matching active server session if present")
     parser.add_argument("--notebook", default="notebooks/colab_a100_train.ipynb", help="Notebook path to execute")
     parser.add_argument("--env-file", default=".env", help="Path to local .env file")
     parser.add_argument("--smoke-report", default="kaggle_smoke_report.json", help="Path to kaggle_smoke_report.json")
     parser.add_argument("--timeout", type=float, default=None, help="Timeout in seconds for code execution")
     parser.add_argument("--non-strict-smoke", action="store_true", help="Allow running without strict smoke report PASS")
     parser.add_argument("--keep-alive", action="store_true", help="Keep Colab session running instead of stopping on exit")
+    parser.add_argument("--stop-on-finish", action="store_true", help="Force stop the session even if it was previously attached")
     parser.add_argument("--colab-bin", default=None, help="Explicit path to colab binary")
 
     args = parser.parse_args()
@@ -137,20 +155,43 @@ def main():
         strict_smoke=not args.non_strict_smoke,
     )
 
-    session_name = args.session_name or f"colab-{args.gpu.lower()}-{uuid.uuid4().hex[:6]}"
-    print(f"\nTarget Session Name: {session_name}")
-    print(f"Target Accelerator:  {args.gpu}")
-    print(f"Execution Timeout:   {timeout_sec:.0f} seconds")
-
+    session_name = args.attach
     session_created = False
-    try:
-        # 1. Provision Colab Session
-        run_colab_command(
-            [colab_bin, "new", "-s", session_name, "--gpu", args.gpu],
-            desc=f"Provisioning Colab session '{session_name}' with {args.gpu} GPU",
-        )
-        session_created = True
 
+    if not session_name and args.reuse_existing:
+        active_sessions = list_active_server_sessions(colab_bin)
+        for s in active_sessions:
+            if args.gpu in s["raw"]:
+                session_name = s["name"]
+                print(f"Reusing active server session: {session_name} ({s['raw']})")
+                break
+
+    if not session_name:
+        session_name = args.session_name or f"colab-{args.gpu.lower()}-{uuid.uuid4().hex[:6]}"
+        print(f"\nTarget Session Name: {session_name}")
+        print(f"Target Accelerator:  {args.gpu}")
+        print(f"Execution Timeout:   {timeout_sec:.0f} seconds")
+
+        try:
+            # 1. Provision Colab Session
+            run_colab_command(
+                [colab_bin, "new", "-s", session_name, "--gpu", args.gpu],
+                desc=f"Provisioning Colab session '{session_name}' with {args.gpu} GPU",
+            )
+            session_created = True
+        except RuntimeError as e:
+            active_sessions = list_active_server_sessions(colab_bin)
+            matching = [s for s in active_sessions if args.gpu in s["raw"]]
+            if matching:
+                session_name = matching[0]["name"]
+                print(f"\n[Notice] Single-GPU account quota active. Attaching to existing {args.gpu} session: '{session_name}'")
+            else:
+                raise e
+    else:
+        print(f"\nAttaching to Active Session: {session_name}")
+        print(f"Execution Timeout:         {timeout_sec:.0f} seconds")
+
+    try:
         # 2. Upload Credentials (.env)
         run_colab_command(
             [colab_bin, "upload", str(env_path), "/content/.env", "-s", session_name],
@@ -179,15 +220,16 @@ def main():
         raise
     finally:
         # 5. Clean up billable resources
-        if session_created and not args.keep_alive:
+        should_stop = (session_created and not args.keep_alive) or args.stop_on_finish
+        if should_stop:
             print(f"\n[*] Releasing Colab VM session '{session_name}' to prevent credit consumption...")
             try:
                 subprocess.run([colab_bin, "stop", "-s", session_name], check=True)
                 print(f"[+] Session '{session_name}' successfully stopped.")
             except Exception as stop_err:
                 print(f"Warning: Failed to stop session {session_name}: {stop_err}", file=sys.stderr)
-        elif session_created and args.keep_alive:
-            print(f"\nNotice: Session '{session_name}' left running (--keep-alive requested).")
+        else:
+            print(f"\nNotice: Session '{session_name}' left running.")
 
 
 if __name__ == "__main__":
