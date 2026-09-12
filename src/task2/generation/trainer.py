@@ -256,6 +256,8 @@ def train_generator_qlora(
         )
         model_kwargs["quantization_config"] = bnb_config
         model_kwargs["device_map"] = {"": device}
+        model_kwargs["torch_dtype"] = torch.float16
+        model_kwargs["attn_implementation"] = "sdpa"
     else:
         model_kwargs["device_map"] = {"": device}
 
@@ -279,6 +281,11 @@ def train_generator_qlora(
         except Exception as e:
             if hasattr(model, "enable_input_require_grads"):
                 model.enable_input_require_grads()
+
+    # Empty cache after base model loading
+    if torch is not None and torch.cuda.is_available():
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # 7. Configure LoRA adapter
     peft_config = LoraConfig(
@@ -330,6 +337,10 @@ def train_generator_qlora(
         )
 
     # 10. Execute Training
+    if torch is not None and torch.cuda.is_available():
+        gc.collect()
+        torch.cuda.empty_cache()
+
     train_start = time.perf_counter()
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     train_elapsed = time.perf_counter() - train_start
