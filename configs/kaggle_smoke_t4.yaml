@@ -1,0 +1,34 @@
+profile_name: kaggle_smoke_t4
+target_hardware: "NVIDIA T4 x2"
+seed: 42
+
+devices:
+  generator: "cuda:0"
+  retrieval: "cuda:1"
+
+data:
+  dataset_slug: "phucdangg/legalqa-task2-clean-data"
+  runtime_root: "/kaggle/input/legalqa-task2-clean-data"
+  max_seq_len: 2048
+
+generator:
+  model_id: "Qwen/Qwen2.5-3B-Instruct"
+  load_in_4bit: true
+  use_liger_kernel: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+
+probes:
+  run_worstcase_probe: true
+  worstcase_steps: 3
+  run_endurance_probe: true
+  endurance_steps: 30
+  run_mini_eval: true
+  mini_eval_samples: 10
+
+outputs:
+  report_path: "/kaggle/working/kaggle_smoke_report.json"
+  telemetry_path: "/kaggle/working/gpu_telemetry.json"

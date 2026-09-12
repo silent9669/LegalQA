@@ -1,0 +1,36 @@
+schema_version: "2.0.0"
+tables:
+  legal_chunks:
+    required_file: "legal_chunks.parquet"
+    primary_key: "chunk_id"
+    required_columns:
+      chunk_id: "string"
+      article_id: "string"
+      text: "string"
+  qa_unique:
+    required_file: "qa_unique.parquet"
+    primary_key: "qa_id"
+    required_columns:
+      qa_id: "string"
+      question: "string"
+      answer: "string"
+  qa_citations:
+    required_file: "qa_citations.parquet"
+    required_columns:
+      qa_id: "string"
+      article_id: "string"
+      chunk_id: "string"
+  fold_assignments:
+    required_file: "fold_assignments.parquet"
+    required_columns:
+      qa_id: "string"
+      fold: "int64"
+  retrieval_labels:
+    required_file: "retrieval_labels.parquet"
+    required_columns:
+      qa_id: "string"
+      chunk_id: "string"
+      relevance: "int64"
+  known_qa:
+    required_file: "known_qa.json"
+    type: "json"
