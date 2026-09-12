@@ -249,6 +249,7 @@ def run_pipeline(
     # -------------------------------------------------------------
     if profile.run_dev_evaluation:
         print(f"\n[Stage 6] Dev Evaluation / Screening (profile: {profile.name})...")
+        cleanup_cuda_stage(devices=(0, 1))
         eval_fold = profile.val_fold if profile.val_fold is not None else 0
 
         if profile.name == "screen_fold0":
