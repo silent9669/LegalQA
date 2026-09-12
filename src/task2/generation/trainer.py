@@ -318,6 +318,13 @@ def train_generator_qlora(
     if max_steps is not None:
         sft_kwargs["max_steps"] = max_steps
 
+    # Optimize gradient accumulation for smoke/probe mode to avoid multi-batch gradient accumulation VRAM retention
+    grad_accum_eff = (
+        1 if (probe_mode or (execution_profile and "smoke" in execution_profile))
+        else config.grad_accum
+    )
+    sft_kwargs["gradient_accumulation_steps"] = grad_accum_eff
+
     sft_args = build_v16_sft_config(config, **sft_kwargs)
     enforce_single_gpu_trainer_args(sft_args, device)
 
@@ -331,6 +338,16 @@ def train_generator_qlora(
         peft_config=peft_config,
         callbacks=[memory_callback],
     )
+
+    # Ensure lora_dropout layers do not allocate intermediate dropout tensors on wide intermediate projections
+    if hasattr(trainer, "model"):
+        import torch.nn as nn
+        for name, module in trainer.model.named_modules():
+            if hasattr(module, "lora_dropout"):
+                ld = getattr(module, "lora_dropout")
+                if isinstance(ld, (dict, nn.ModuleDict)):
+                    for k in list(ld.keys()):
+                        ld[k] = nn.Identity()
 
     if hasattr(trainer, "args") and hasattr(trainer.args, "n_gpu") and int(trainer.args.n_gpu) != 1 and device.startswith("cuda"):
         raise RuntimeError(
