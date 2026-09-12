@@ -32,7 +32,7 @@ def run_pipeline(
     *,
     profile: ExecutionProfile,
     paths: Dict[str, Any],
-    production_cfg: ProductionSelection,
+    production_cfg: Optional[ProductionSelection] = None,
     gen_device: str = "cuda:0",
     retrieval_device: str = "cuda:1",
     output_dir: str = "/kaggle/working",
@@ -42,6 +42,10 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     """Execute all stages for the specified profile."""
     os.makedirs(output_dir, exist_ok=True)
+
+    if production_cfg is None:
+        from src.task2.production_config import get_default_production_selection
+        production_cfg = get_default_production_selection()
 
     if profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit"):
         from src.task2.production_config import verify_promotion_provenance

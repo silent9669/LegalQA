@@ -59,6 +59,29 @@ def policy_requires_generator(candidate_policy: str, best_fixed_candidate: Optio
     return False
 
 
+def get_default_production_selection() -> ProductionSelection:
+    """Return canonical default production selection when running smoke or unconfigured pipelines."""
+    return ProductionSelection(
+        schema_version=1,
+        status="PROMOTED",
+        source_screen_manifest=None,
+        source_screen_sha256=None,
+        stack="stack_a",
+        use_task_tuned_reranker=False,
+        reranker_base_model="BAAI/bge-reranker-v2-m3",
+        reranker_checkpoint="BAAI/bge-reranker-v2-m3",
+        use_qlora=True,
+        generator_base_model="Qwen/Qwen2.5-3B-Instruct",
+        adapter_path=None,
+        max_new_tokens=384,
+        candidate_policy="fixed_baseline",
+        best_fixed_candidate="generated",
+        selector_checkpoint=None,
+        primary_evidence_pack="hybrid",
+        raw_config={},
+    )
+
+
 def load_production_selection(config_path: str = "configs/production_selection.yaml") -> ProductionSelection:
     """Load and parse production selection YAML into a typed ProductionSelection dataclass.
 
