@@ -44,8 +44,7 @@ def check_yaml_syntax():
 def check_notebook_syntax():
     print_step("Validating Jupyter notebooks")
     notebook_files = [
-        REPO_ROOT / "notebooks" / "kaggle_smoke_test.ipynb",
-        REPO_ROOT / "kaggle_kernel" / "legalqa_gpu_pipeline.ipynb",
+        REPO_ROOT / "notebooks" / "kaggle_smoke.ipynb",
         REPO_ROOT / "notebooks" / "colab_train_a100.ipynb",
     ]
     for nbf in notebook_files:
@@ -61,19 +60,19 @@ def check_notebook_syntax():
             fail(f"Invalid notebook format in {nbf}: {e}")
 
 def check_dataset_staging():
-    print_step("Validating dataset staging invariants")
-    staged_dir = REPO_ROOT / "kaggle_dataset" / "staged"
-    if staged_dir.exists():
+    print_step("Validating dataset invariants")
+    dataset_dir = REPO_ROOT / "kaggle_dataset"
+    if (dataset_dir / "qa_unique.parquet").exists():
         from src.task2.dataset.validator import validate_dataset
         report = validate_dataset(
-            data_dir=str(staged_dir),
+            data_dir=str(dataset_dir),
             schema_path=str(REPO_ROOT / "configs" / "dataset_schema.yaml"),
         )
         if report["status"] != "PASS":
             fail(f"Dataset validation failed: {report.get('errors')}")
-        print(f"  OK: Dataset staging verified ({len(report.get('tables_validated', {}))} tables, zero code bundle)")
+        print(f"  OK: Dataset verified ({len(report.get('tables_validated', {}))} tables, zero code bundle)")
     else:
-        print("  NOTICE: Staged dataset not present locally; skipping dataset byte checks.")
+        print("  NOTICE: Local dataset parquet files not present; skipping heavy byte checks.")
 
 def run_test_suite():
     print_step("Running automated test suite via pytest")
@@ -87,7 +86,7 @@ def run_test_suite():
         "tests/integration",
         "-v",
     ]
-    if (REPO_ROOT / "kaggle_dataset" / "staged" / "qa_unique.parquet").exists():
+    if (REPO_ROOT / "kaggle_dataset" / "qa_unique.parquet").exists():
         cmd.append("tests/dataset")
 
     res = subprocess.run(cmd, cwd=str(REPO_ROOT))

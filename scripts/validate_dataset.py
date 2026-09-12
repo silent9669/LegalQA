@@ -17,9 +17,9 @@ from src.task2.dataset.validator import validate_dataset
 
 def main():
     parser = argparse.ArgumentParser(description="Validate LegalQA canonical dataset release")
-    parser.add_argument("--data-dir", default="kaggle_dataset/staged", help="Path to dataset directory")
+    parser.add_argument("--data-dir", default="kaggle_dataset", help="Path to dataset directory")
     parser.add_argument("--schema-path", default="configs/dataset_schema.yaml", help="Path to schema YAML")
-    parser.add_argument("--report-out", default="kaggle_dataset/staged/validation_report.json", help="Report output path")
+    parser.add_argument("--report-out", default="kaggle_dataset/validation_report.json", help="Report output path")
     args = parser.parse_args()
 
     print(f"Validating dataset in: {args.data_dir}")

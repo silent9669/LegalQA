@@ -113,7 +113,7 @@ def package_dataset(source_dir: str, title: str = "LegalQA", slug: str = "legalq
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Package clean dataset for Kaggle")
-    parser.add_argument("--source-dir", default="kaggle_dataset/staged", help="Source staging directory")
+    parser.add_argument("--source-dir", default="kaggle_dataset", help="Source dataset directory")
     args = parser.parse_args()
 
     print(f"=== Packaging Kaggle Dataset: {args.source_dir} ===")
