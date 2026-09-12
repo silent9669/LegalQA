@@ -27,9 +27,9 @@ def test_colab_train_notebook_contract():
     assert len(cells) >= 5, "Expected at least 5 cells in Colab A100 notebook"
 
     source_all = "\n".join("".join(c.get("source", [])) for c in cells)
-    assert "colab_train_a100.yaml" in source_all
+    assert "colab_a100.yaml" in source_all or "colab_train_a100.yaml" in source_all
     assert "A100" in source_all
-    assert "kaggle_smoke_report.json" in source_all
+    assert "kaggle_t4x2_report.json" in source_all or "kaggle_smoke_report.json" in source_all
     assert "verify_smoke_pass" in source_all
 
 def test_kernel_metadata_contract():

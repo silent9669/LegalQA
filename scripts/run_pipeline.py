@@ -119,15 +119,24 @@ def main():
     if hf_cfg and hf_cfg.get("repo_id") and not args.no_upload_to_hf:
         repo_id = hf_cfg["repo_id"]
         private = hf_cfg.get("private", True)
-        print(f"\n=== Auto-Uploading Artifacts to Hugging Face ===")
+        print(f"\n=== Auto-Uploading Run Bundle to Hugging Face ===")
         print(f"Target Repo: {repo_id} (private={private})")
         try:
-            upload_res = upload_directory_to_hf(
-                repo_id=repo_id,
-                folder_path=out_dir,
-                private=private,
-                commit_message=f"feat(release): trained {profile.name} artifacts",
-            )
+            from src.task2.hf_uploader import upload_run_bundle_to_hf, upload_directory_to_hf
+            if os.path.exists(os.path.join(out_dir, "production_run_manifest.json")):
+                upload_res = upload_run_bundle_to_hf(
+                    bundle_dir=out_dir,
+                    repo_id=repo_id,
+                    private=private,
+                )
+            else:
+                upload_res = upload_directory_to_hf(
+                    repo_id=repo_id,
+                    folder_path=out_dir,
+                    path_in_repo=f"runs/{profile.name}",
+                    private=private,
+                    commit_message=f"feat(release): trained {profile.name} artifacts",
+                )
             print(f"Hugging Face Upload: {upload_res.get('status')} -> {upload_res.get('repo_url')}")
         except Exception as e:
             print(f"Warning: Hugging Face upload failed: {e}", file=sys.stderr)

@@ -96,7 +96,7 @@ def scan_file_for_secrets(file_path: str | Path) -> List[Dict[str, str]]:
 
 def scan_directory_for_secrets(
     root_dir: str | Path,
-    include_extensions: Sequence[str] = (".py", ".ipynb", ".json", ".yaml", ".yml", ".sh", ".md"),
+    include_extensions: Sequence[str] = (".py", ".ipynb", ".json", ".yaml", ".yml", ".sh", ".md", ".log", ".txt"),
     exclude_dirs: Sequence[str] = None,
 ) -> List[Dict[str, str]]:
     """Recursively scan a directory for secrets in text-like files."""
@@ -117,10 +117,14 @@ def scan_directory_for_secrets(
     return findings
 
 
-def assert_no_secrets_in_workspace(root_dir: str | Path, exclude_tests: bool = True) -> None:
+def assert_no_secrets_in_workspace(
+    root_dir: str | Path,
+    exclude_tests: bool = True,
+    include_extensions: Sequence[str] = (".py", ".ipynb", ".json", ".yaml", ".yml", ".sh", ".md", ".log", ".txt"),
+) -> None:
     """Preflight check that raises RuntimeError if any secrets are detected in workspace code."""
     ex_dirs = ["tests"] if exclude_tests else []
-    findings = scan_directory_for_secrets(root_dir, exclude_dirs=ex_dirs)
+    findings = scan_directory_for_secrets(root_dir, include_extensions=include_extensions, exclude_dirs=ex_dirs)
     if findings:
         report = "\n".join(f"- {f['file']} matched {f['type']} ({f['masked_preview']})" for f in findings)
         raise RuntimeError(f"CRITICAL: Secret scanner detected credentials in workspace:\n{report}")

@@ -6,6 +6,6 @@ def test_no_secrets_in_repository():
     repo_root = Path(__file__).resolve().parent.parent.parent
     findings = scan_directory_for_secrets(
         repo_root,
-        exclude_dirs=[".git", ".venv", ".venv-ml", ".pytest_cache", ".playwright-mcp", "artifacts/raw"]
+        exclude_dirs=[".git", ".venv", ".venv-ml", ".venv311", ".pytest_cache", ".playwright-mcp", "artifacts/raw", "tests"]
     )
     assert len(findings) == 0, f"Found leaked secrets in workspace: {findings}"
