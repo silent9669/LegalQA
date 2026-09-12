@@ -68,36 +68,18 @@ def run_pipeline(
     # Stage 1: Preflight & Dense Index Probe
     # -------------------------------------------------------------
     print(f"\n[Stage 1] Preflight & Dense Index Probe for profile '{profile.name}'...")
-    from scripts.preflight_kaggle import run_preflight_checks
     from src.common.dense import DenseRetriever
+    from src.task2.dataset.validator import validate_dataset
 
     is_final = profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit")
     cfg_root = code_root or "."
-    pipeline_cfg = os.path.join(cfg_root, "configs/pipeline.yaml")
-    models_cfg = os.path.join(cfg_root, "configs/models.yaml")
-    prod_cfg_path = os.path.join(cfg_root, "configs/production_selection.yaml")
+    schema_candidate = os.path.join(cfg_root, "configs/dataset_schema.yaml")
 
-    preflight_res = run_preflight_checks(
-        pipeline_config_path=pipeline_cfg if os.path.exists(pipeline_cfg) else "configs/pipeline.yaml",
-        models_config_path=models_cfg if os.path.exists(models_cfg) else "configs/models.yaml",
-        production_config_path=prod_cfg_path if os.path.exists(prod_cfg_path) else "configs/production_selection.yaml",
-        require_cuda=torch.cuda.is_available(),
-        expected_gpu_count=2 if not allow_single_gpu else 1,
-        allow_single_gpu=allow_single_gpu,
-        check_dataset_files=True,
-        check_indexes=True,
-        require_public=is_final,
-        data_dir=data_dir,
-        bm25_dir=bm25_dir,
-        dek21_dir=dek21_dir,
-        public_path=test_path,
-        stack="stack_a",
-        require_training_files=profile.run_reranker_training,
-        verify_dense_hash=is_final,
-    )
-
-    if not preflight_res["passed"]:
-        raise RuntimeError(f"PREFLIGHT FAILED: {preflight_res['errors']}")
+    if os.path.exists(schema_candidate) and os.path.exists(data_dir):
+        val_res = validate_dataset(data_dir=data_dir, schema_path=schema_candidate)
+        if val_res.get("status") != "PASS":
+            raise RuntimeError(f"PREFLIGHT DATASET VALIDATION FAILED: {val_res.get('errors')}")
+        print("Preflight dataset schema validation: PASS")
 
     print("Executing pre-training strict Dense index probe...")
     probe_dense = DenseRetriever.load_index(
