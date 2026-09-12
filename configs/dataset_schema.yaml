@@ -5,32 +5,41 @@ tables:
     primary_key: "chunk_id"
     required_columns:
       chunk_id: "string"
-      article_id: "string"
-      text: "string"
+      doc_id: "string"
+      text_norm: "string"
   qa_unique:
     required_file: "qa_unique.parquet"
     primary_key: "qa_id"
     required_columns:
       qa_id: "string"
-      question: "string"
-      answer: "string"
+      question_raw: "string"
+      answer_raw: "string"
+      fold_id: "int64"
   qa_citations:
     required_file: "qa_citations.parquet"
     required_columns:
       qa_id: "string"
-      article_id: "string"
-      chunk_id: "string"
+      doc_identifier: "string"
+      article: "string"
   fold_assignments:
     required_file: "fold_assignments.parquet"
+    primary_key: "qa_id"
     required_columns:
       qa_id: "string"
-      fold: "int64"
+      fold_id: "int64"
   retrieval_labels:
     required_file: "retrieval_labels.parquet"
     required_columns:
       qa_id: "string"
-      chunk_id: "string"
-      relevance: "int64"
+      positive_chunk_id: "string"
+      fold_id: "int64"
+  reranker_training_pairs:
+    required_file: "reranker_training_pairs.parquet"
+    required_columns:
+      qa_id: "string"
+      positive_chunk_id: "string"
+      negative_chunk_id: "string"
+      fold_id: "int64"
   known_qa:
     required_file: "known_qa.json"
     type: "json"

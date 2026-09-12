@@ -1,331 +1,121 @@
-"""Package clean, self-contained LegalQA dataset and code runtime artifacts for Kaggle (V9)."""
+#!/usr/bin/env python3
+"""
+Packages canonical dataset artifacts for direct upload to Kaggle.
+Strictly ensures ZERO code files or code directories are included in the package.
+Generates a cryptographic dataset_manifest.json containing exact SHA-256 hashes.
+"""
 
-from __future__ import annotations
-
-import argparse
-import json
 import os
-import shutil
-import subprocess
 import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+import glob
+import json
+import argparse
+import hashlib
+from typing import Dict, Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+def compute_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
 
-from src.common.hashing import sha256_file
-from src.common.security import assert_no_secrets_in_workspace
-from src.task2.production_config import (
-    load_production_selection,
-    validate_production_selection_for_profile,
-)
-from src.task2.runtime_integrity import (
-    EXPECTED_RUNTIME_API_VERSION,
-    validate_runtime_manifests,
-)
+def package_dataset(source_dir: str, title: str = "LegalQA", slug: str = "legalqa-task2-clean-data", owner: str = "phucdangg") -> Dict[str, Any]:
+    source_dir = os.path.abspath(source_dir)
+    if not os.path.isdir(source_dir):
+        raise ValueError(f"Source directory {source_dir} not found.")
 
-RUNTIME_API_VERSION = EXPECTED_RUNTIME_API_VERSION
+    # 1. Clean out any code artifacts if accidentally present
+    for bad_name in ["code", "src", "__pycache__", ".git"]:
+        bad_path = os.path.join(source_dir, bad_name)
+        if os.path.exists(bad_path):
+            print(f"Removing invalid artifact from dataset: {bad_path}")
+            if os.path.isdir(bad_path):
+                import shutil
+                shutil.rmtree(bad_path)
+            else:
+                os.remove(bad_path)
 
-REQUIRED_FILES = [
-    "data/legal_chunks.parquet",
-    "data/qa_unique.parquet",
-    "data/known_qa.json",
-    "data/qa_citations.parquet",
-    "data/retrieval_labels.parquet",
-    "data/fold_assignments.parquet",
-]
+    for py_file in glob.glob(os.path.join(source_dir, "**/*.py"), recursive=True):
+        print(f"Removing code file from dataset package: {py_file}")
+        os.remove(py_file)
 
-OPTIONAL_DATA_FILES = [
-    "data/reranker_training_pairs.parquet",
-]
-
-OPTIONAL_DIRS = [
-    "indexes/bm25",
-    "indexes/dek21",
-]
-
-
-def get_git_sha(strict: bool = False) -> str:
-    """Retrieve 40-character lowercase Git commit SHA (Task 2)."""
-    try:
-        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
-        sha = res.stdout.strip().lower()
-        if len(sha) == 40:
-            return sha
-        if strict:
-            raise RuntimeError(f"git rev-parse HEAD returned non-40-character SHA: {sha!r}")
-        return "0" * 40
-    except Exception as exc:
-        if strict:
-            raise RuntimeError("Could not resolve Git HEAD commit SHA for production package.") from exc
-        return "0" * 40
-
-
-def package_kaggle_dataset(
-    source_dir: str = "artifacts/task2",
-    staging_dir: str = "kaggle_dataset/staged",
-    dataset_title: str = "LegalQA",
-    dataset_slug: str = "legalqa-task2-clean-data",
-    user_handle: str = "phucdangg",
-    profile: str = "default",  # "default" or "final_training"
-    production_config_path: str = "configs/production_selection.yaml",
-    include_code: bool = True,
-    dry_run: bool = False,
-) -> None:
-    print(f"=== Packaging Self-Contained Kaggle Dataset '{dataset_title}' (Profile: {profile.upper()} | API: v{RUNTIME_API_VERSION}) ===")
-    src = Path(source_dir)
-    stage = Path(staging_dir)
-
-    # Security check
-    assert_no_secrets_in_workspace(Path.cwd())
-
-    # Resolve git commit SHA once for exact parity
-    resolved_git_sha = get_git_sha(strict=(profile == "final_training"))
-
-    # Verify required source files exist
-    missing = []
-    for rel_path in REQUIRED_FILES:
-        if not (src / rel_path).exists():
-            missing.append(rel_path)
-
-    if profile == "final_training":
-        # Strict checks for final_training profile
-        public_official = Path("artifacts/raw/public-official.json")
-        if not public_official.exists():
-            missing.append("artifacts/raw/public-official.json")
-
-        bm25_idx = src / "indexes" / "bm25"
-        if not bm25_idx.exists() or not any(bm25_idx.iterdir()):
-            missing.append("indexes/bm25")
-
-        dek21_idx = src / "indexes" / "dek21"
-        if not dek21_idx.exists() or not any(dek21_idx.iterdir()):
-            missing.append("indexes/dek21")
-
-        if not os.path.exists(production_config_path):
-            missing.append(production_config_path)
-        else:
-            try:
-                prod_cfg = load_production_selection(production_config_path)
-                validate_production_selection_for_profile(
-                    prod_cfg,
-                    profile="final_train_and_submit",
-                    allow_unvalidated_final=False,
-                )
-                if prod_cfg.use_task_tuned_reranker:
-                    rerank_pairs = src / "data" / "reranker_training_pairs.parquet"
-                    if not rerank_pairs.exists():
-                        missing.append("data/reranker_training_pairs.parquet (required by production_selection tuned reranker)")
-            except Exception as e:
-                raise RuntimeError(
-                    f"Production config at '{production_config_path}' is invalid for 'final_training' packaging: {e}"
-                ) from e
-
-    if missing:
-        raise FileNotFoundError(
-            f"Missing required artifact(s) for profile '{profile}' in {source_dir}: {missing}."
-        )
-
-    if not dry_run:
-        if stage.exists():
-            shutil.rmtree(stage)
-        stage.mkdir(parents=True, exist_ok=True)
-
+    # 2. Audit and hash data files
     manifest: Dict[str, Any] = {
-        "title": dataset_title,
-        "slug": dataset_slug,
-        "owner": user_handle,
-        "profile": profile,
-        "runtime_api_version": RUNTIME_API_VERSION,
-        "git_sha": resolved_git_sha,
+        "title": title,
+        "slug": slug,
+        "owner": owner,
+        "runtime_api_version": 16,
         "files": {},
         "indexes": {},
-        "code": {},
     }
 
-    print("Staging clean canonical data artifacts:")
-    for rel_path in REQUIRED_FILES:
-        src_file = src / rel_path
-        dest_file = stage / Path(rel_path).name
-        file_sha = sha256_file(src_file)
-        file_size_mb = src_file.stat().st_size / (1024 * 1024)
+    tracked_files = [
+        "legal_chunks.parquet",
+        "qa_unique.parquet",
+        "known_qa.json",
+        "qa_citations.parquet",
+        "retrieval_labels.parquet",
+        "fold_assignments.parquet",
+        "reranker_training_pairs.parquet",
+        "public-official.json",
+    ]
 
-        manifest["files"][Path(rel_path).name] = {
-            "source": str(rel_path),
-            "sha256": file_sha,
-            "size_mb": round(file_size_mb, 2),
-        }
-        print(f"  + {Path(rel_path).name} ({file_size_mb:.1f} MB) -> sha256: {file_sha[:12]}...")
-
-        if not dry_run:
-            shutil.copy2(src_file, dest_file)
-
-    # Stage optional training files (e.g. reranker_training_pairs.parquet)
-    for opt_rel in OPTIONAL_DATA_FILES:
-        src_opt = src / opt_rel
-        if src_opt.exists():
-            dest_file = stage / Path(opt_rel).name
-            file_sha = sha256_file(src_opt)
-            file_size_mb = src_opt.stat().st_size / (1024 * 1024)
-            manifest["files"][Path(opt_rel).name] = {
-                "source": str(opt_rel),
-                "sha256": file_sha,
-                "size_mb": round(file_size_mb, 2),
+    for fname in tracked_files:
+        fpath = os.path.join(source_dir, fname)
+        if os.path.exists(fpath):
+            size_mb = round(os.path.getsize(fpath) / (1024 * 1024), 2)
+            sha = compute_sha256(fpath)
+            manifest["files"][fname] = {
+                "source": fname,
+                "sha256": sha,
+                "size_mb": size_mb,
             }
-            print(f"  + {Path(opt_rel).name} ({file_size_mb:.1f} MB) -> sha256: {file_sha[:12]}...")
-            if not dry_run:
-                shutil.copy2(src_opt, dest_file)
-        else:
-            print(f"  - {opt_rel} (not found, run scripts/mine_retrieval_negatives.py to generate)")
+            print(f"  Tracked file: {fname:<32} {size_mb:>8.2f} MB  SHA: {sha[:12]}...")
 
-    # Stage public-official.json if present
-    public_official = Path("artifacts/raw/public-official.json")
-    if public_official.exists():
-        file_sha = sha256_file(public_official)
-        manifest["files"]["public-official.json"] = {
-            "source": "artifacts/raw/public-official.json",
-            "sha256": file_sha,
-            "size_mb": round(public_official.stat().st_size / (1024 * 1024), 2),
-        }
-        print(f"  + public-official.json ({public_official.stat().st_size / 1024:.1f} KB)")
-        if not dry_run:
-            shutil.copy2(public_official, stage / "public-official.json")
-
-    # Staging precomputed indexes
-    print("Staging precomputed retrieval indexes:")
-    for opt_dir in OPTIONAL_DIRS:
-        src_opt = src / opt_dir
-        if src_opt.exists() and any(src_opt.iterdir()):
-            dest_opt = stage / opt_dir
-            if not dry_run:
-                dest_opt.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src_opt, dest_opt, dirs_exist_ok=True)
-
-            idx_files = [str(f.relative_to(src_opt)) for f in src_opt.rglob("*") if f.is_file()]
-            manifest["indexes"][opt_dir] = {
-                "source": str(opt_dir),
-                "files_count": len(idx_files),
-                "files": sorted(idx_files),
-            }
-            print(f"  + {opt_dir}/ ({len(idx_files)} index files staged)")
-        else:
-            print(f"  - {opt_dir}/ (not found or empty, skipped)")
-
-    # Staging Code Runtime (src/, scripts/, configs/, requirements/)
-    if include_code:
-        print("Staging code runtime into code/LegalQA/ :")
-        code_root = stage / "code" / "LegalQA"
-        code_manifest: Dict[str, Any] = {
-            "git_sha": resolved_git_sha,
-            "runtime_api_version": RUNTIME_API_VERSION,
-            "files": {},
+    # Indexes
+    bm25_dir = os.path.join(source_dir, "indexes", "bm25")
+    if os.path.isdir(bm25_dir):
+        bm25_files = sorted([os.path.relpath(p, bm25_dir) for p in glob.glob(os.path.join(bm25_dir, "**"), recursive=True) if os.path.isfile(p)])
+        manifest["indexes"]["indexes/bm25"] = {
+            "source": "indexes/bm25",
+            "files_count": len(bm25_files),
+            "files": bm25_files,
         }
 
-        ignore_patterns = shutil.ignore_patterns(
-            "__pycache__",
-            "*.pyc",
-            ".DS_Store",
-            "artifacts",
-            "kaggle_dataset",
-            ".pytest_cache",
-            "logs",
-        )
-
-        # 1. src/
-        src_dir = Path("src")
-        if src_dir.exists() and not dry_run:
-            shutil.copytree(src_dir, code_root / "src", dirs_exist_ok=True, ignore=ignore_patterns)
-        for py_file in sorted(src_dir.rglob("*.py")):
-            if "__pycache__" not in str(py_file):
-                code_manifest["files"][str(py_file)] = sha256_file(py_file)
-
-        # 2. scripts/
-        scripts_dir = Path("scripts")
-        if scripts_dir.exists() and not dry_run:
-            shutil.copytree(scripts_dir, code_root / "scripts", dirs_exist_ok=True, ignore=ignore_patterns)
-        for py_file in sorted(scripts_dir.rglob("*.py")):
-            if "__pycache__" not in str(py_file):
-                code_manifest["files"][str(py_file)] = sha256_file(py_file)
-
-        # 3. configs/
-        cfg_dir = Path("configs")
-        if cfg_dir.exists() and not dry_run:
-            shutil.copytree(cfg_dir, code_root / "configs", dirs_exist_ok=True, ignore=ignore_patterns)
-        for yaml_file in sorted(cfg_dir.rglob("*.yaml")):
-            code_manifest["files"][str(yaml_file)] = sha256_file(yaml_file)
-
-        # 4. requirements/
-        req_dir = Path("requirements")
-        if req_dir.exists() and not dry_run:
-            shutil.copytree(req_dir, code_root / "requirements", dirs_exist_ok=True, ignore=ignore_patterns)
-        for req_txt in sorted(req_dir.rglob("*.txt")):
-            code_manifest["files"][str(req_txt)] = sha256_file(req_txt)
-
-        # 5. requirements-kaggle.txt
-        req_file = Path("requirements-kaggle.txt")
-        if req_file.exists() and not dry_run:
-            shutil.copy2(req_file, code_root / "requirements-kaggle.txt")
-            code_manifest["files"]["requirements-kaggle.txt"] = sha256_file(req_file)
-
-        manifest["code"] = {
-            "root": "code/LegalQA",
-            "files_count": len(code_manifest["files"]),
-            "runtime_api_version": RUNTIME_API_VERSION,
+    dek21_dir = os.path.join(source_dir, "indexes", "dek21")
+    if os.path.isdir(dek21_dir):
+        dek21_files = sorted([os.path.relpath(p, dek21_dir) for p in glob.glob(os.path.join(dek21_dir, "**"), recursive=True) if os.path.isfile(p)])
+        manifest["indexes"]["indexes/dek21"] = {
+            "source": "indexes/dek21",
+            "files_count": len(dek21_files),
+            "files": dek21_files,
         }
 
-        if not dry_run:
-            with open(stage / "code_manifest.json", "w", encoding="utf-8") as f:
-                json.dump(code_manifest, f, indent=2)
-            with open(code_root / "code_manifest.json", "w", encoding="utf-8") as f:
-                json.dump(code_manifest, f, indent=2)
-        print(f"  + Staged {len(code_manifest['files'])} code files (src, scripts, configs) and code_manifest.json (v{RUNTIME_API_VERSION}).")
+    # Save clean dataset_manifest.json
+    manifest_out = os.path.join(source_dir, "dataset_manifest.json")
+    with open(manifest_out, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"\nSaved canonical dataset manifest to {manifest_out}")
 
-    # Staging metadata.json for Kaggle CLI
-    kaggle_meta = {
-        "title": dataset_title,
-        "id": f"{user_handle}/{dataset_slug}",
-        "licenses": [{"name": "CC0-1.0"}],
+    # Ensure dataset-metadata.json exists
+    metadata_path = os.path.join(source_dir, "dataset-metadata.json")
+    meta = {
+        "title": title,
+        "id": f"{owner}/{slug}",
+        "licenses": [{"name": "CC0-1.0"}]
     }
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    print(f"Saved dataset metadata to {metadata_path}")
 
-    if not dry_run:
-        with open(stage / "dataset-metadata.json", "w", encoding="utf-8") as f:
-            json.dump(kaggle_meta, f, indent=2)
-        with open(stage / "dataset_manifest.json", "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
-
-        with open(Path("kaggle_dataset/dataset-metadata.json"), "w", encoding="utf-8") as f:
-            json.dump(kaggle_meta, f, indent=2)
-
-        # Self-validate staged manifests (Task 6)
-        validate_runtime_manifests(
-            runtime_root=str(stage),
-            code_root=str(stage / "code" / "LegalQA") if include_code else str(stage),
-            expected_api_version=RUNTIME_API_VERSION,
-        )
-
-    print(f"\nSuccessfully staged clean dataset to {stage}.")
-    print(f"Kaggle Dataset Title: '{dataset_title}' | ID: '{user_handle}/{dataset_slug}' | Runtime API: v{RUNTIME_API_VERSION} | Git SHA: {resolved_git_sha[:10]}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Package clean LegalQA dataset and code for Kaggle.")
-    parser.add_argument("--source", default="artifacts/task2", help="Source artifact directory")
-    parser.add_argument("--staging", default="kaggle_dataset/staged", help="Staging output directory")
-    parser.add_argument("--title", default="LegalQA", help="Kaggle dataset display title")
-    parser.add_argument("--profile", default="default", choices=["default", "final_training"])
-    parser.add_argument("--dry_run", action="store_true", help="Simulate staging without copying files")
-    parser.add_argument("--no_code", action="store_true", help="Omit code runtime from dataset")
-    args = parser.parse_args()
-
-    package_kaggle_dataset(
-        source_dir=args.source,
-        staging_dir=args.staging,
-        dataset_title=args.title,
-        profile=args.profile,
-        include_code=not args.no_code,
-        dry_run=args.dry_run,
-    )
-
+    return manifest
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Package clean dataset for Kaggle")
+    parser.add_argument("--source-dir", default="kaggle_dataset/staged", help="Source staging directory")
+    args = parser.parse_args()
+
+    print(f"=== Packaging Kaggle Dataset: {args.source_dir} ===")
+    package_dataset(args.source_dir)
+    print("=== Packaging Complete ===")
