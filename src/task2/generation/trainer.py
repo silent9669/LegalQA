@@ -238,14 +238,14 @@ def train_generator_qlora(
             from liger_kernel.transformers import apply_liger_kernel_to_qwen2
             apply_liger_kernel_to_qwen2(
                 rope=True,
-                cross_entropy=True,
+                cross_entropy=False,
                 fused_linear_cross_entropy=True,
                 rms_norm=True,
                 swiglu=True,
             )
             print("Successfully applied Liger Kernel monkey-patch to Qwen2 (fused-linear CE, RoPE, RMSNorm, SwiGLU).")
         except Exception as e:
-            print(f"Warning: Could not apply Liger monkey-patch to Qwen2: {e}", file=sys.stderr)
+            raise RuntimeError(f"FINAL_PIPELINE_ERROR: Failed to apply Liger Kernel to Qwen2: {e}") from e
 
     if device.startswith("cuda") and torch is not None and torch.cuda.is_available():
         bnb_config = BitsAndBytesConfig(
@@ -266,6 +266,20 @@ def train_generator_qlora(
     if hasattr(model, "config"):
         model.config.use_cache = False
 
+    # Prepare model for 4-bit k-bit training with gradient checkpointing
+    if device.startswith("cuda") and torch is not None and torch.cuda.is_available():
+        try:
+            from peft import prepare_model_for_kbit_training
+            model = prepare_model_for_kbit_training(
+                model,
+                use_gradient_checkpointing=config.gradient_checkpointing,
+                gradient_checkpointing_kwargs={"use_reentrant": False},
+            )
+            print("Successfully prepared model for k-bit training with gradient checkpointing (non-reentrant).")
+        except Exception as e:
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+
     # 7. Configure LoRA adapter
     peft_config = LoraConfig(
         r=config.lora_r,
@@ -282,6 +296,7 @@ def train_generator_qlora(
         "per_device_train_batch_size": config.batch_size,
         "gradient_accumulation_steps": config.grad_accum,
         "gradient_checkpointing": config.gradient_checkpointing,
+        "gradient_checkpointing_kwargs": {"use_reentrant": False},
         "optim": config.optimizer,
         "num_train_epochs": epochs,
         "learning_rate": config.learning_rate,

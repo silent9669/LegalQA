@@ -11,6 +11,11 @@ import yaml
 import argparse
 from pathlib import Path
 
+# Safe CUDA allocation and model loading defaults
+os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+
 # Ensure repo root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
