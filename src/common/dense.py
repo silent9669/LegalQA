@@ -124,7 +124,10 @@ class DenseRetriever:
         if self.device.startswith("cuda") and torch.cuda.is_available():
             target_dtype = torch.float16 if self.dtype_str == "float16" else torch.float32
             try:
-                t = torch.as_tensor(self.corpus_embeddings, dtype=target_dtype, device=self.device)
+                if isinstance(self.corpus_embeddings, np.ndarray) and not self.corpus_embeddings.flags.writeable:
+                    t = torch.from_numpy(self.corpus_embeddings.copy()).to(dtype=target_dtype, device=self.device)
+                else:
+                    t = torch.as_tensor(self.corpus_embeddings, dtype=target_dtype, device=self.device)
                 self.gpu_tensor = t
             except Exception as e:
                 if self.final_mode:
