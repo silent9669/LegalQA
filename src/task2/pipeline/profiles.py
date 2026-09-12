@@ -9,6 +9,8 @@ from src.task2.production_config import (
 )
 
 VALID_V16_PROFILES: Set[str] = {
+    "kaggle_smoke_t4",
+    "colab_train_a100",
     "generator_probe_worstcase",
     "generator_probe_endurance",
     "screen_fold0",
@@ -55,6 +57,46 @@ def resolve_execution_profile(
     if prof not in VALID_V16_PROFILES:
         raise ValueError(
             f"Unknown execution profile '{prof}'. Valid profiles: {sorted(VALID_V16_PROFILES)}"
+        )
+
+    # 0. kaggle_smoke_t4 (Canonical Notion spec Kaggle Dual-T4 CUDA smoke gate)
+    if prof == "kaggle_smoke_t4":
+        return ExecutionProfile(
+            name="kaggle_smoke_t4",
+            run_reranker_training=False,
+            run_generator_training=True,
+            run_dev_evaluation=True,
+            run_public_inference=False,
+            reuse_existing_checkpoints=False,
+            val_fold=0,
+            probe_selection="worst_case",
+            max_generator_steps=3,
+            max_generator_examples=None,
+            max_reranker_steps=None,
+            max_reranker_pairs=None,
+            max_reranker_val_pairs=None,
+            dev_eval_size=10,
+            requires_generator=True,
+        )
+
+    # 0.1 colab_train_a100 (Canonical Notion spec Colab A100 production training)
+    if prof == "colab_train_a100":
+        return ExecutionProfile(
+            name="colab_train_a100",
+            run_reranker_training=False,
+            run_generator_training=True,
+            run_dev_evaluation=True,
+            run_public_inference=False,
+            reuse_existing_checkpoints=False,
+            val_fold=0,
+            probe_selection=None,
+            max_generator_steps=None,
+            max_generator_examples=None,
+            max_reranker_steps=None,
+            max_reranker_pairs=None,
+            max_reranker_val_pairs=None,
+            dev_eval_size=None,
+            requires_generator=True,
         )
 
     # 1. generator_probe_worstcase (or alias generator_probe)
@@ -189,3 +231,13 @@ def resolve_execution_profile(
         )
 
     raise ValueError(f"Unhandled profile: {prof}")
+
+
+def load_profile_from_yaml(config_path: str) -> ExecutionProfile:
+    """Load and resolve an ExecutionProfile from a YAML configuration file."""
+    import yaml
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    p_name = cfg.get("profile_name", "kaggle_smoke_t4")
+    return resolve_execution_profile(p_name)
+
