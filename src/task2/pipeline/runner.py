@@ -159,10 +159,20 @@ def run_pipeline(
     adapter_path: Optional[str] = None
     if profile.run_generator_training:
         print(f"\n[Stage 4] Starting QLoRA training on {gen_device} (profile: {profile.name})...")
+        # Explicit memory hygiene: release retrieval handles before model training
+        try:
+            del memory
+            del bm25
+        except Exception:
+            pass
+        gc.collect()
+        cleanup_cuda_stage(devices=(0, 1))
+
         qlora_out = os.path.join(output_dir, "checkpoints/generator/hf_adapter")
         gen_cfg = GeneratorTrainConfig(
             model_id=model_path,
             max_seq_len=2048,
+            lora_dropout=0.0,
             activation_offloading=True,
             use_liger_fused_ce=True,
             device=gen_device,
