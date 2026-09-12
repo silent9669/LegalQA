@@ -228,10 +228,24 @@ def train_generator_qlora(
 
     train_dataset = HFDataset.from_list(examples)
 
-    # 6. Load base model with 4-bit NF4 quantization
+    # 6. Load base model with 4-bit NF4 quantization and Liger Kernel patching
     model_kwargs: Dict[str, Any] = {
         "trust_remote_code": True,
     }
+
+    if config.use_liger_fused_ce and device.startswith("cuda") and torch is not None and torch.cuda.is_available():
+        try:
+            from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+            apply_liger_kernel_to_qwen2(
+                rope=True,
+                cross_entropy=True,
+                fused_linear_cross_entropy=True,
+                rms_norm=True,
+                swiglu=True,
+            )
+            print("Successfully applied Liger Kernel monkey-patch to Qwen2 (fused-linear CE, RoPE, RMSNorm, SwiGLU).")
+        except Exception as e:
+            print(f"Warning: Could not apply Liger monkey-patch to Qwen2: {e}", file=sys.stderr)
 
     if device.startswith("cuda") and torch is not None and torch.cuda.is_available():
         bnb_config = BitsAndBytesConfig(
