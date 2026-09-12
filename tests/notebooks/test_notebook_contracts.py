@@ -39,6 +39,7 @@ def test_kernel_metadata_contract():
         meta = json.load(f)
     assert meta["id"] == "phucdangg/legalqa-training"
     assert meta["code_file"] == "kaggle_smoke.ipynb"
+    assert meta.get("machine_shape") == "NvidiaTeslaT4"
     assert "phucdangg/legalqa-task2-clean-data" in meta["dataset_sources"]
 
 def test_notebook_cells_python_ast_compilation():
