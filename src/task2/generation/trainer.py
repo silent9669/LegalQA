@@ -395,7 +395,10 @@ def train_generator_qlora(
 
     # 13. Strict Reload and Generation Smoke Verification
     print(f"\nExecuting strict reload smoke verification for adapter at {output_dir}...")
-    cleanup_cuda_stage(trainer, model, devices=(0, 1))
+    del trainer
+    del model
+    gc.collect()
+    cleanup_cuda_stage(devices=(0, 1))
 
     reload_status = "pass"
     try:
@@ -413,6 +416,9 @@ def train_generator_qlora(
             raise RuntimeError("Reloaded model generated empty response.")
         print(f"Strict reload sample output: {sample_out[:100]}...")
         cleanup_cuda_stage(reloaded, devices=(0, 1))
+        del reloaded
+        gc.collect()
+        cleanup_cuda_stage(devices=(0, 1))
     except Exception as e:
         reload_status = f"fail: {e}"
         msg = f"QLoRA adapter saved but failed strict reload verification: {e}"

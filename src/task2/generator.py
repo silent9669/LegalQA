@@ -123,25 +123,33 @@ class QwenGenerator:
                 dev = device or ("cuda:0" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
                 token = os.environ.get("HF_TOKEN")
 
-                # Detect compute dtype: FP16 on T4 / CUDA, BF16 only if supported
-                if dev.startswith("cuda") and torch.cuda.is_bf16_supported():
-                    compute_dtype = torch.bfloat16
-                elif dev.startswith("cuda") or dev == "mps":
+                # Detect compute dtype: Turing (compute 7.5) and below require FP16; Ampere+ (>=8.0) supports native BF16
+                if dev.startswith("cuda"):
+                    capability = torch.cuda.get_device_capability(dev) if hasattr(torch.cuda, "get_device_capability") else (0, 0)
+                    if capability[0] >= 8 and torch.cuda.is_bf16_supported():
+                        compute_dtype = torch.bfloat16
+                    else:
+                        compute_dtype = torch.float16
+                elif dev == "mps":
                     compute_dtype = torch.float16
                 else:
                     compute_dtype = torch.float32
 
                 print(f"Loading Qwen Generator ({model_path}) on {dev} with dtype={compute_dtype}...")
-                gen.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
+                gen.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token, trust_remote_code=True)
                 if gen.tokenizer.pad_token is None:
                     gen.tokenizer.pad_token = gen.tokenizer.eos_token
                 gen.tokenizer.padding_side = "left"
 
                 load_kwargs: Dict[str, Any] = {
                     "token": token,
+                    "low_cpu_mem_usage": True,
+                    "trust_remote_code": True,
                 }
                 if dev.startswith("cuda"):
                     load_kwargs["device_map"] = {"": dev}
+                    load_kwargs["dtype"] = compute_dtype
+                    load_kwargs["torch_dtype"] = compute_dtype
                     if BitsAndBytesConfig is not None:
                         load_kwargs["quantization_config"] = BitsAndBytesConfig(
                             load_in_4bit=True,
@@ -149,9 +157,8 @@ class QwenGenerator:
                             bnb_4bit_compute_dtype=compute_dtype,
                             bnb_4bit_use_double_quant=True,
                         )
-                    else:
-                        load_kwargs["torch_dtype"] = compute_dtype
                 else:
+                    load_kwargs["dtype"] = compute_dtype
                     load_kwargs["torch_dtype"] = compute_dtype
 
                 model = AutoModelForCausalLM.from_pretrained(
