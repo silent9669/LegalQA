@@ -1,0 +1,19 @@
+profile_name: colab_a100
+required_gpu_count: 1
+required_gpu_name_contains: A100
+devices:
+  generator: cuda:0
+  retrieval: cuda:0
+generator_runtime:
+  compute_dtype: bfloat16
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 2
+  activation_offloading: false
+a100_micro_probe:
+  optimizer_steps: 2
+production:
+  full_train: true
+outputs:
+  report_path: /content/legalqa_run/a100_micro_probe_report.json
+  log_path: /content/legalqa_run/train.log
+  telemetry_path: /content/legalqa_run/telemetry.json

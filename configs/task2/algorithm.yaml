@@ -1,0 +1,45 @@
+schema_version: 1
+seed: 42
+
+models:
+  generator:
+    id: Qwen/Qwen2.5-3B-Instruct
+    revision_policy: exact_commit
+  reranker:
+    id: BAAI/bge-reranker-v2-m3
+    revision_policy: exact_commit
+  dense:
+    id: CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2
+    revision_policy: exact_commit
+
+generator:
+  max_seq_len: 2048
+  quantization: 4bit_nf4
+  double_quant: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  learning_rate: 1.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+  effective_batch_size: 8
+  num_train_epochs: 3
+  completion_only_loss: true
+  use_liger_fused_ce: true
+  gradient_checkpointing: true
+
+final_training:
+  training_scope: all_allowed_train
+  val_fold: null
+
+evaluation:
+  primary_metric: whitespace_meteor
+  secondary_metric: rouge_l

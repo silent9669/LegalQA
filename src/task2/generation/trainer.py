@@ -47,6 +47,7 @@ except ImportError:
             return data
 
 from src.common.security import assert_no_secrets_in_workspace
+from src.task2.config.schema import ResolvedTask2Config
 from src.task2.generator import QwenGenerator
 from src.task2.generation.config import GeneratorTrainConfig, validate_generator_config_for_profile
 from src.task2.generation.dataset import (
@@ -120,7 +121,7 @@ def build_v16_sft_config(config: GeneratorTrainConfig, **kwargs: Any) -> Any:
 
     # CPU/GPU precision guards to prevent SFTConfig/TrainingArguments validation errors on CPU CI
     if "bf16" in sig.parameters and "bf16" not in config_kwargs:
-        config_kwargs["bf16"] = False
+        config_kwargs["bf16"] = (config.compute_dtype == "bfloat16" and config.device.startswith("cuda"))
     if "fp16" in sig.parameters and "fp16" not in config_kwargs:
         config_kwargs["fp16"] = (config.compute_dtype == "float16" and config.device.startswith("cuda"))
     if torch is not None and not torch.cuda.is_available() and "use_cpu" in sig.parameters:
@@ -145,6 +146,7 @@ def train_generator_qlora(
     chunks_path: str,
     output_dir: str,
     config: Optional[GeneratorTrainConfig] = None,
+    resolved_config: Optional[ResolvedTask2Config] = None,
     val_fold: Optional[int] = 0,
     max_steps: Optional[int] = None,
     max_train_examples: Optional[int] = None,
@@ -158,6 +160,41 @@ def train_generator_qlora(
 ) -> Dict[str, Any]:
     """Train Qwen2.5-3B-Instruct with 4-bit NF4 QLoRA, selective Liger fused-linear CE, and strict validation (V16)."""
     assert_no_secrets_in_workspace(Path.cwd())
+
+    if resolved_config is not None:
+        algo = resolved_config.algorithm
+        rt = resolved_config.runtime
+        target_dev = device if device != "cuda:0" else rt.devices.get("generator", device)
+        device = target_dev
+        config = GeneratorTrainConfig(
+            model_id=algo.models.generator.id,
+            max_seq_len=algo.generator.max_seq_len,
+            batch_size=rt.generator_runtime.per_device_train_batch_size,
+            grad_accum=rt.generator_runtime.gradient_accumulation_steps,
+            learning_rate=algo.generator.learning_rate,
+            lora_r=algo.generator.lora_r,
+            lora_alpha=algo.generator.lora_alpha,
+            lora_dropout=algo.generator.lora_dropout,
+            target_modules=tuple(algo.generator.target_modules),
+            activation_offloading=rt.generator_runtime.activation_offloading,
+            use_liger_fused_ce=algo.generator.use_liger_fused_ce,
+            device=target_dev,
+            quantization=algo.generator.quantization,
+            double_quant=algo.generator.double_quant,
+            compute_dtype=rt.generator_runtime.compute_dtype,
+            optimizer="paged_adamw_8bit",
+            gradient_checkpointing=algo.generator.gradient_checkpointing,
+            completion_only_loss=algo.generator.completion_only_loss,
+            trainer_n_gpu=1,
+        )
+        epochs = algo.generator.num_train_epochs
+        seed = algo.seed
+        if val_fold == 0 and algo.final_training.val_fold is None and (execution_profile == "final_train_and_submit" or rt.production):
+            val_fold = None
+        elif resolved_config.algorithm.final_training.val_fold is None and "final" in (execution_profile or ""):
+            val_fold = None
+        elif algo.final_training.val_fold is None and val_fold == 0 and not probe_mode:
+            val_fold = None
 
     if config is None:
         config = GeneratorTrainConfig(model_id=model_name_or_path, device=device)
@@ -252,16 +289,18 @@ def train_generator_qlora(
             raise RuntimeError(f"FINAL_PIPELINE_ERROR: Failed to apply Liger Kernel to Qwen2: {e}") from e
 
     if device.startswith("cuda") and torch is not None and torch.cuda.is_available():
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-        model_kwargs["quantization_config"] = bnb_config
+        target_torch_dtype = torch.bfloat16 if config.compute_dtype == "bfloat16" else torch.float16
+        if config.quantization == "4bit_nf4":
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=config.double_quant,
+                bnb_4bit_compute_dtype=target_torch_dtype,
+            )
+            model_kwargs["quantization_config"] = bnb_config
         model_kwargs["device_map"] = {"": device}
-        model_kwargs["dtype"] = torch.float16
-        model_kwargs["torch_dtype"] = torch.float16
+        model_kwargs["dtype"] = target_torch_dtype
+        model_kwargs["torch_dtype"] = target_torch_dtype
         model_kwargs["attn_implementation"] = "sdpa"
     else:
         model_kwargs["device_map"] = {"": device}
@@ -318,6 +357,7 @@ def train_generator_qlora(
         "save_strategy": "epoch",
         "report_to": "none",
         "fp16": config.compute_dtype == "float16" and device.startswith("cuda"),
+        "bf16": config.compute_dtype == "bfloat16" and device.startswith("cuda"),
     }
     if max_steps is not None:
         sft_kwargs["max_steps"] = max_steps

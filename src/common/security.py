@@ -36,7 +36,9 @@ EXCLUDED_EXTENSIONS = {
 EXCLUDED_DIRS = {
     ".git",
     ".venv",
+    ".venv311",
     ".venv-ml",
+    "venv",
     "__pycache__",
     ".pytest_cache",
     ".playwright-mcp",
@@ -104,7 +106,7 @@ def scan_directory_for_secrets(
     ex_dirs = EXCLUDED_DIRS.union(set(exclude_dirs or []))
 
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in ex_dirs]
+        dirnames[:] = [d for d in dirnames if d not in ex_dirs and not d.startswith(".venv") and d != "venv"]
 
         for filename in filenames:
             file_path = Path(dirpath) / filename

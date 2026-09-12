@@ -1,0 +1,19 @@
+profile_name: kaggle_t4x2
+required_gpu_count: 2
+required_gpu_name_contains: T4
+devices:
+  generator: cuda:0
+  retrieval: cuda:1
+generator_runtime:
+  compute_dtype: float16
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  activation_offloading: true
+smoke:
+  worstcase_steps: 3
+  endurance_steps: 30
+  mini_eval_samples: 10
+outputs:
+  report_path: /kaggle/working/kaggle_t4x2_report.json
+  log_path: /kaggle/working/kaggle_t4x2.log
+  telemetry_path: /kaggle/working/kaggle_t4x2_telemetry.json

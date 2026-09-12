@@ -341,9 +341,16 @@ class DenseRetriever:
                     raise ValueError("FINAL_PIPELINE_ERROR: Dense embeddings.npy SHA256 checksum mismatch against manifest!")
 
         if corpus_path and os.path.exists(corpus_path):
-            df = pd.read_parquet(corpus_path)
-            retriever.corpus = df.to_dict("records")
-            retriever.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(retriever.corpus)]
+            try:
+                df_cids = pd.read_parquet(corpus_path, columns=["chunk_id"])
+                retriever.doc_ids = df_cids["chunk_id"].astype(str).tolist()
+                retriever.corpus = [{"chunk_id": cid} for cid in retriever.doc_ids]
+                del df_cids
+            except Exception:
+                df = pd.read_parquet(corpus_path)
+                retriever.corpus = df.to_dict("records")
+                retriever.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(retriever.corpus)]
+                del df
 
             if retriever.corpus_embeddings is not None:
                 if len(retriever.corpus) != len(retriever.corpus_embeddings):

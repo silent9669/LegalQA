@@ -8,6 +8,7 @@ env/
 venv/
 .venv
 .venv/
+.venv*/
 build/
 develop-eggs/
 dist/
@@ -48,6 +49,7 @@ artifacts/data/
 artifacts/labels/
 artifacts/submissions/
 artifacts/task2/
+artifacts/gates/
 artifacts/archive/**
 !artifacts/archive/
 !artifacts/archive/**/

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
+from src.task2.config.schema import ResolvedTask2Config
 from src.task2.pipeline.profiles import ExecutionProfile
 from src.task2.production_config import ProductionSelection
 from src.task2.generation.config import GeneratorTrainConfig
@@ -33,6 +34,7 @@ def run_pipeline(
     profile: ExecutionProfile,
     paths: Dict[str, Any],
     production_cfg: Optional[ProductionSelection] = None,
+    resolved_config: Optional[ResolvedTask2Config] = None,
     gen_device: str = "cuda:0",
     retrieval_device: str = "cuda:1",
     output_dir: str = "/kaggle/working",
@@ -42,6 +44,11 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     """Execute all stages for the specified profile."""
     os.makedirs(output_dir, exist_ok=True)
+
+    if resolved_config is not None:
+        seed = resolved_config.algorithm.seed
+        gen_device = resolved_config.runtime.devices.get("generator", gen_device)
+        retrieval_device = resolved_config.runtime.devices.get("retrieval", retrieval_device)
 
     if production_cfg is None:
         from src.task2.production_config import get_default_production_selection
@@ -173,14 +180,36 @@ def run_pipeline(
 
         is_smoke = "smoke" in profile.name or "probe" in profile.name
         qlora_out = os.path.join(output_dir, "checkpoints/generator/hf_adapter")
-        gen_cfg = GeneratorTrainConfig(
-            model_id=model_path,
-            max_seq_len=256 if is_smoke else 2048,
-            lora_dropout=0.0,
-            activation_offloading=not is_smoke,
-            use_liger_fused_ce=True,
-            device=gen_device,
-        )
+        if resolved_config is not None:
+            gen_cfg = GeneratorTrainConfig(
+                model_id=resolved_config.algorithm.models.generator.id,
+                max_seq_len=resolved_config.algorithm.generator.max_seq_len,
+                batch_size=resolved_config.runtime.generator_runtime.per_device_train_batch_size,
+                grad_accum=resolved_config.runtime.generator_runtime.gradient_accumulation_steps,
+                learning_rate=resolved_config.algorithm.generator.learning_rate,
+                lora_r=resolved_config.algorithm.generator.lora_r,
+                lora_alpha=resolved_config.algorithm.generator.lora_alpha,
+                lora_dropout=resolved_config.algorithm.generator.lora_dropout,
+                target_modules=tuple(resolved_config.algorithm.generator.target_modules),
+                activation_offloading=resolved_config.runtime.generator_runtime.activation_offloading,
+                use_liger_fused_ce=resolved_config.algorithm.generator.use_liger_fused_ce,
+                device=gen_device,
+                quantization=resolved_config.algorithm.generator.quantization,
+                double_quant=resolved_config.algorithm.generator.double_quant,
+                compute_dtype=resolved_config.runtime.generator_runtime.compute_dtype,
+                gradient_checkpointing=resolved_config.algorithm.generator.gradient_checkpointing,
+                completion_only_loss=resolved_config.algorithm.generator.completion_only_loss,
+                trainer_n_gpu=1,
+            )
+        else:
+            gen_cfg = GeneratorTrainConfig(
+                model_id=model_path,
+                max_seq_len=256 if is_smoke else 2048,
+                lora_dropout=0.0,
+                activation_offloading=not is_smoke,
+                use_liger_fused_ce=True,
+                device=gen_device,
+            )
 
         # One-shot Liger backend preflight assertion before model training
         if gen_device.startswith("cuda"):
@@ -211,6 +240,7 @@ def run_pipeline(
             chunks_path=chunks_path,
             output_dir=qlora_out,
             config=gen_cfg,
+            resolved_config=resolved_config,
             val_fold=profile.val_fold,
             max_steps=profile.max_generator_steps,
             max_train_examples=profile.max_generator_examples,
