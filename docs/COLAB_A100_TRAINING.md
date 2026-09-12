@@ -12,7 +12,7 @@ Google Colab with NVIDIA A100 GPU (40GB or 80GB VRAM) serves as the **production
 
 ## 2. Prerequisites & Authorization Gate
 
-Before executing the Colab A100 notebook (`notebooks/colab_train_a100.ipynb`):
+Before executing the Colab A100 notebook (`notebooks/colab_a100_train.ipynb`):
 1. **GitHub Commit Frozen**: The exact Git commit SHA must be checked out.
 2. **Kaggle Dataset Manifest Verified**: `phucdangg/legalqa-task2-clean-data` SHA256 hashes must match.
 3. **Kaggle Smoke Pass Attached**: `kaggle_smoke_report.json` must be present and report `"status": "PASS"`.
@@ -34,7 +34,7 @@ Unlike the Kaggle Dual-T4 smoke profile (which used INT4 quantization to fit int
 ## 4. Execution Workflow
 
 ### Interactive Colab Execution
-Run `notebooks/colab_train_a100.ipynb` cell-by-cell in Google Colab with A100 runtime:
+Run `notebooks/colab_a100_train.ipynb` cell-by-cell in Google Colab with A100 runtime:
 ```bash
 # Cell 5 executes the production runner:
 python scripts/run_pipeline.py \
@@ -47,7 +47,7 @@ python scripts/run_pipeline.py \
 
 ### Headless / Colab CLI Execution
 ```bash
-colab run --notebook notebooks/colab_train_a100.ipynb --gpu A100
+colab run --notebook notebooks/colab_a100_train.ipynb --gpu A100
 ```
 
 ---

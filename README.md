@@ -51,21 +51,21 @@ This automatically validates all configuration YAMLs, notebooks, dataset staging
 
 ### B. Kaggle Dual-T4 CUDA Smoke Gate
 The smoke test notebook runs on Kaggle with Dual NVIDIA T4 GPUs:
-- **Notebook**: `notebooks/kaggle_smoke_test.ipynb` (mirrored to `kaggle_kernel/legalqa_gpu_pipeline.ipynb`)
+- **Notebook**: `notebooks/kaggle_smoke.ipynb`
 - **Kaggle URL**: [kaggle.com/code/phucdangg/legalqa-training](https://www.kaggle.com/code/phucdangg/legalqa-training)
 - **Config**: `configs/kaggle_smoke_t4.yaml`
 - **Output**: Generates `/kaggle/working/kaggle_smoke_report.json` with PASS status for the worst-case and endurance probes.
 
 ### C. Google Colab A100 Production Training
 The production training notebook executes full training on NVIDIA A100:
-- **Notebook**: `notebooks/colab_train_a100.ipynb`
+- **Notebook**: `notebooks/colab_a100_train.ipynb`
 - **Config**: `configs/colab_train_a100.yaml`
 - **CLI Runner**:
   ```bash
   python scripts/run_pipeline.py \
     --config configs/colab_train_a100.yaml \
-    --data-dir /content/data/legalqa-task2-clean-data \
-    --output-dir /content/runs/current \
+    --data-dir kaggle_dataset \
+    --output-dir runs/current \
     --require-smoke-pass kaggle_smoke_report.json \
     --allow-single-gpu
   ```
@@ -75,13 +75,13 @@ The production training notebook executes full training on NVIDIA A100:
 To package a new dataset version:
 ```bash
 # 1. Package and hash data files (ensures zero code is bundled)
-python scripts/package_kaggle_dataset.py --source-dir kaggle_dataset/staged
+python scripts/package_kaggle_dataset.py --source-dir kaggle_dataset
 
 # 2. Validate schema and referential integrity
-python scripts/validate_dataset.py --data-dir kaggle_dataset/staged
+python scripts/validate_dataset.py --data-dir kaggle_dataset
 
 # 3. Direct upload via Kaggle CLI
-cd kaggle_dataset/staged && kaggle datasets version -m "Release clean Task 2 data" -p .
+cd kaggle_dataset && kaggle datasets version -m "Release clean Task 2 data" -p .
 ```
 
 ---
