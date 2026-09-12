@@ -141,6 +141,12 @@ class QwenGenerator:
                     gen.tokenizer.pad_token = gen.tokenizer.eos_token
                 gen.tokenizer.padding_side = "left"
 
+                os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+                if torch is not None and torch.cuda.is_available():
+                    import gc
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
                 load_kwargs: Dict[str, Any] = {
                     "token": token,
                     "low_cpu_mem_usage": True,
