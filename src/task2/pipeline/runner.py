@@ -57,6 +57,10 @@ def run_pipeline(
         "stages": {},
     }
 
+    cfg_root = code_root or "."
+    models_cfg = os.path.join(cfg_root, "configs/models.yaml")
+    prod_cfg_path = os.path.join(cfg_root, "configs/production_selection.yaml")
+
     data_dir = paths["data_dir"]
     bm25_dir = paths["bm25_dir"]
     dek21_dir = paths["dek21_dir"]
@@ -76,7 +80,6 @@ def run_pipeline(
     from src.task2.dataset.validator import validate_dataset
 
     is_final = profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit")
-    cfg_root = code_root or "."
     schema_candidate = os.path.join(cfg_root, "configs/dataset_schema.yaml")
 
     if os.path.exists(schema_candidate) and os.path.exists(data_dir):
