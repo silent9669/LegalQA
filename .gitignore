@@ -50,6 +50,7 @@ artifacts/labels/
 artifacts/submissions/
 artifacts/task2/
 artifacts/gates/
+artifacts/candidates/
 artifacts/archive/**
 !artifacts/archive/
 !artifacts/archive/**/
