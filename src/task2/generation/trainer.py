@@ -409,7 +409,8 @@ def train_generator_qlora(
             device=device,
         )
         sample_out = reloaded.generate(
-            "Căn cứ Điều 1 Luật Dân sự, hãy cho biết hợp đồng là gì?",
+            question="Căn cứ Điều 1 Luật Dân sự, hãy cho biết hợp đồng là gì?",
+            evidence="Hợp đồng là sự thỏa thuận giữa các bên về việc xác lập, thay đổi hoặc chấm dứt quyền, nghĩa vụ dân sự.",
             max_new_tokens=32,
         )
         if not sample_out or not sample_out.strip():

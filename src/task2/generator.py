@@ -201,7 +201,7 @@ class QwenGenerator:
     def format_prompt(question: str, evidence: str, tokenizer: Optional[Any] = None) -> str:
         return format_qwen_chat_prompt(question, evidence, tokenizer=tokenizer)
 
-    def generate(self, question: str, evidence: str, max_new_tokens: int = 384) -> str:
+    def generate(self, question: str, evidence: str = "", max_new_tokens: int = 384) -> str:
         prompt = self.format_instance_prompt(question, evidence)
 
         # 1. PyTorch / CUDA Generation
