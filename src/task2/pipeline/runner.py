@@ -168,12 +168,13 @@ def run_pipeline(
         gc.collect()
         cleanup_cuda_stage(devices=(0, 1))
 
+        is_smoke = "smoke" in profile.name or "probe" in profile.name
         qlora_out = os.path.join(output_dir, "checkpoints/generator/hf_adapter")
         gen_cfg = GeneratorTrainConfig(
             model_id=model_path,
-            max_seq_len=2048,
+            max_seq_len=1024 if is_smoke else 2048,
             lora_dropout=0.0,
-            activation_offloading=True,
+            activation_offloading=not is_smoke,
             use_liger_fused_ce=True,
             device=gen_device,
         )
