@@ -19,6 +19,8 @@ os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 # Ensure repo root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.common.env_loader import load_environment
+from src.task2.hf_uploader import upload_directory_to_hf
 from src.task2.pipeline.profiles import load_profile_from_yaml, resolve_execution_profile
 from src.task2.pipeline.runner import run_pipeline
 from src.task2.provenance.freeze_tuple import verify_smoke_pass, build_run_manifest
@@ -31,11 +33,20 @@ def main():
     parser.add_argument("--output-dir", default=None, help="Output directory for checkpoints and logs")
     parser.add_argument("--require-smoke-pass", default=None, help="Path to kaggle_smoke_report.json (required for A100)")
     parser.add_argument("--allow-single-gpu", action="store_true", help="Allow running on single GPU")
+    parser.add_argument("--env-file", default=None, help="Path to .env credential file")
+    parser.add_argument("--no-upload-to-hf", action="store_true", help="Skip automatic Hugging Face upload")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
+    # Automatically load environment variables and credentials
+    env_info = load_environment(args.env_file)
+
     print(f"=== LegalQA Task 2 Pipeline Runner ===")
     print(f"Config: {args.config}")
+    if env_info.get("loaded_from_file"):
+        print(f"Loaded credentials from: {env_info['loaded_from_file']}")
+    print(f"Hugging Face Auth: {'CONFIGURED (' + env_info['hf_token_masked'] + ')' if env_info['hf_token_configured'] else 'NOT CONFIGURED'}")
+    print(f"Kaggle Auth: {'CONFIGURED (' + env_info['kaggle_user'] + ')' if env_info['kaggle_configured'] else 'NOT CONFIGURED'}")
 
     if not os.path.exists(args.config):
         print(f"Error: Config file not found: {args.config}")
@@ -86,6 +97,24 @@ def main():
         code_root=str(Path(__file__).resolve().parent.parent),
         allow_single_gpu=args.allow_single_gpu or (gpu_count < 2),
     )
+
+    # Automatic Hugging Face upload if configured
+    hf_cfg = cfg.get("huggingface")
+    if hf_cfg and hf_cfg.get("repo_id") and not args.no_upload_to_hf:
+        repo_id = hf_cfg["repo_id"]
+        private = hf_cfg.get("private", True)
+        print(f"\n=== Auto-Uploading Artifacts to Hugging Face ===")
+        print(f"Target Repo: {repo_id} (private={private})")
+        try:
+            upload_res = upload_directory_to_hf(
+                repo_id=repo_id,
+                folder_path=out_dir,
+                private=private,
+                commit_message=f"feat(release): trained {profile.name} artifacts",
+            )
+            print(f"Hugging Face Upload: {upload_res.get('status')} -> {upload_res.get('repo_url')}")
+        except Exception as e:
+            print(f"Warning: Hugging Face upload failed: {e}", file=sys.stderr)
 
     print(f"\nExecution finished successfully for profile: {profile.name}")
 

@@ -61,4 +61,7 @@ kaggle_dataset/*
 !kaggle_dataset/dataset_manifest.json
 data
 .claude/
+.env
+.env.*
+!.env.example
 

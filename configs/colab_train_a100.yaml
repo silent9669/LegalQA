@@ -29,6 +29,6 @@ generator:
   save_total_limit: 2
 
 huggingface:
-  repo_id: "silent9669/legalqa-qwen2.5-3b-adapter"
+  repo_id: "dangphuc2109/legalqa-qwen2.5-3b-adapter"
   private: true
   upload_run_bundle: true
