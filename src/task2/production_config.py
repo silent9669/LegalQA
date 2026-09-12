@@ -82,12 +82,15 @@ def get_default_production_selection() -> ProductionSelection:
     )
 
 
-def load_production_selection(config_path: str = "configs/production_selection.yaml") -> ProductionSelection:
+def load_production_selection(config_path: Optional[str] = None) -> ProductionSelection:
     """Load and parse production selection YAML into a typed ProductionSelection dataclass.
 
     Enforces valid policy types ('fixed_baseline', 'learned_model', 'direct_candidate')
     and rejects overloading candidate names as policy types.
     """
+    if config_path is None:
+        return get_default_production_selection()
+
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Production selection config not found at: {config_path}")
 

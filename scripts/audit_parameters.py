@@ -30,8 +30,9 @@ DEFAULT_STACK_A_MODELS = {
     "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2": 135168000,
 }
 
+
 def audit_parameter_budget(
-    config_path: str = "configs/models.yaml",
+    config_path: str = "configs/task2/algorithm.yaml",
     stack: Optional[str] = "stack_a",
     adapter_manifest_path: Optional[str] = None,
     extra_adapter_params: int = 0,
@@ -39,21 +40,31 @@ def audit_parameter_budget(
 ) -> Dict[str, Any]:
     """Audit all learned model parameters against the official < 4.0B hard budget."""
     config = load_config_file(config_path)
-    models = config.get("models", [])
+    models = config.get("models", {})
     stacks = config.get("stacks", {})
     total = 0
     breakdown = {}
 
-    if stack and stack in stacks:
+    if isinstance(models, dict) and "generator" in models and "reranker" in models:
+        # Authoritative configs/task2/algorithm.yaml format
+        gen_id = models.get("generator", {}).get("id", "Qwen/Qwen2.5-3B-Instruct")
+        rerank_id = models.get("reranker", {}).get("id", "BAAI/bge-reranker-v2-m3")
+        dense_id = models.get("dense", {}).get("id", "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2")
+
+        for mid in [gen_id, rerank_id, dense_id]:
+            p = DEFAULT_STACK_A_MODELS.get(mid, 0)
+            total += p
+            breakdown[mid] = p
+    elif stack and stack in stacks:
         stack_info = stacks[stack]
         target_model_ids = set(stack_info.get("model_ids", []))
-        for m in models:
+        for m in (models if isinstance(models, list) else []):
             mid = m.get("model_id", "unknown")
             if mid in target_model_ids:
                 p = int(m.get("parameters", 0))
                 total += p
                 breakdown[mid] = p
-    elif models:
+    elif isinstance(models, list) and models:
         for m in models:
             if m.get("loaded_at_inference", True):
                 p = int(m.get("parameters", 0))
@@ -95,67 +106,42 @@ def audit_parameter_budget(
 
 
 def verify_config_consistency(
-    pipeline_path: str = "configs/pipeline.yaml",
-    models_path: str = "configs/models.yaml",
-    production_path: str = "configs/production_selection.yaml",
+    algorithm_path: str = "configs/task2/algorithm.yaml",
 ) -> Dict[str, Any]:
-    """Verify that pipeline.yaml and production_selection.yaml specify valid models present in models.yaml."""
-    pipe_cfg = load_config_file(pipeline_path)
-    mod_cfg = load_config_file(models_path)
+    """Verify that algorithm.yaml specifies approved models under the competition limits."""
+    algo_cfg = load_config_file(algorithm_path)
+    models = algo_cfg.get("models", {})
+    gen_id = models.get("generator", {}).get("id")
+    reranker_id = models.get("reranker", {}).get("id")
+    dense_id = models.get("dense", {}).get("id")
 
-    pipe_dense_a = pipe_cfg.get("retrieval", {}).get("dense", {}).get("stack_a_model") or pipe_cfg.get("retrieval", {}).get("dense_model", "")
-    pipe_dense_b = pipe_cfg.get("retrieval", {}).get("dense", {}).get("stack_b_model", "")
-    pipe_reranker = pipe_cfg.get("reranker", {}).get("model") or pipe_cfg.get("reranking", {}).get("model", "")
-    pipe_gen_a = pipe_cfg.get("generation", {}).get("stack_a_model") or pipe_cfg.get("generation", {}).get("model", "")
-    pipe_gen_b = pipe_cfg.get("generation", {}).get("stack_b_model", "")
-
-    all_models = {m.get("model_id") for m in mod_cfg.get("models", [])}
-
+    approved_models = set(DEFAULT_STACK_A_MODELS.keys())
     consistent = True
     issues = []
 
-    for label, m_id in [
-        ("Dense Stack A", pipe_dense_a),
-        ("Dense Stack B", pipe_dense_b),
-        ("Reranker", pipe_reranker),
-        ("Generator Stack A", pipe_gen_a),
-        ("Generator Stack B", pipe_gen_b),
-    ]:
-        if m_id and m_id not in all_models:
+    for label, mid in [("Generator", gen_id), ("Reranker", reranker_id), ("Dense", dense_id)]:
+        if not mid:
             consistent = False
-            issues.append(f"{label} in pipeline ({m_id}) is not in models.yaml ({all_models})")
-
-    if os.path.exists(production_path):
-        prod_cfg = load_config_file(production_path)
-        prod_dense = prod_cfg.get("retrieval", {}).get("dense", {}).get("model", "")
-        prod_reranker = prod_cfg.get("reranker", {}).get("base_model", "")
-        prod_generator = prod_cfg.get("generator", {}).get("base_model", "")
-        for label, m_id in [
-            ("Production Dense", prod_dense),
-            ("Production Reranker", prod_reranker),
-            ("Production Generator", prod_generator),
-        ]:
-            if m_id and m_id not in all_models:
-                consistent = False
-                issues.append(f"{label} in production_selection ({m_id}) is not in models.yaml ({all_models})")
+            issues.append(f"{label} model ID is missing in {algorithm_path}")
+        elif mid not in approved_models:
+            consistent = False
+            issues.append(f"{label} model ({mid}) is not in approved models list ({approved_models})")
 
     return {
         "is_consistent": consistent,
-        "pipeline_models": {
-            "dense_a": pipe_dense_a,
-            "dense_b": pipe_dense_b,
-            "reranker": pipe_reranker,
-            "generator_a": pipe_gen_a,
-            "generator_b": pipe_gen_b,
+        "algorithm_models": {
+            "generator": gen_id,
+            "reranker": reranker_id,
+            "dense": dense_id,
         },
-        "approved_models": list(all_models),
+        "approved_models": list(approved_models),
         "issues": issues,
     }
 
 
 def main():
-    config_path = "configs/models.yaml"
-    for st in ["stack_a", "stack_b"]:
+    config_path = "configs/task2/algorithm.yaml"
+    for st in ["stack_a"]:
         result = audit_parameter_budget(config_path, stack=st)
         print(f"=== Stack '{st}' Parameter Audit ===")
         print(f"Total learned parameters: {result['total_learned_parameters']:,}")
@@ -165,10 +151,10 @@ def main():
         for k, v in result["breakdown"].items():
             print(f" - {k}: {v:,}")
 
-    consistency = verify_config_consistency()
+    consistency = verify_config_consistency(config_path)
     print("\n=== Config Consistency Check ===")
     if consistency["is_consistent"]:
-        print("PASS: pipeline.yaml matches models.yaml approved models.")
+        print("PASS: algorithm.yaml matches approved models.")
     else:
         print("FAIL: Inconsistencies detected:")
         for iss in consistency["issues"]:

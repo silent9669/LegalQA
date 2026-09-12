@@ -65,8 +65,8 @@ def run_pipeline(
     }
 
     cfg_root = code_root or "."
-    models_cfg = os.path.join(cfg_root, "configs/models.yaml")
-    prod_cfg_path = os.path.join(cfg_root, "configs/production_selection.yaml")
+    models_cfg = os.path.join(cfg_root, "configs/task2/algorithm.yaml")
+    prod_cfg_path = os.path.join(cfg_root, "configs/task2/algorithm.yaml")
 
     data_dir = paths["data_dir"]
     bm25_dir = paths["bm25_dir"]
@@ -271,7 +271,7 @@ def run_pipeline(
     print("\n[Stage 5] Auditing parameter budget for active stack...")
     from scripts.audit_parameters import audit_parameter_budget
     ad_manifest = os.path.join(adapter_path, "generator_manifest.json") if adapter_path else None
-    audit_res = audit_parameter_budget(models_cfg if os.path.exists(models_cfg) else "configs/models.yaml", stack="stack_a", adapter_manifest_path=ad_manifest)
+    audit_res = audit_parameter_budget(models_cfg if os.path.exists(models_cfg) else "configs/task2/algorithm.yaml", stack="stack_a", adapter_manifest_path=ad_manifest)
     print(f"Total Learned Parameters: {audit_res['total_learned_parameters']:,} (limit: {audit_res['limit']:,})")
     if not audit_res["is_compliant"]:
         raise RuntimeError(f"PARAMETER BUDGET EXCEEDED: {audit_res['total_learned_parameters']:,} >= {audit_res['limit']:,}")
@@ -317,7 +317,7 @@ def run_pipeline(
 
             promote_production_selection(
                 report_path=promotion_report_path,
-                config_path=prod_cfg_path if os.path.exists(prod_cfg_path) else "configs/production_selection.yaml",
+                config_path=prod_cfg_path if os.path.exists(prod_cfg_path) else "configs/task2/algorithm.yaml",
                 output_path=promoted_config_path,
             )
 
