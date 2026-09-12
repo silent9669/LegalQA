@@ -188,9 +188,12 @@ def run_gpu_gate(
 
     # 4. Phase 1: Worst-Case 2048-token Probe
     print(f"\n[+] Executing worst-case 2048-token generator probe (3 update steps)...")
-    qa_path = str(Path(data_dir) / "qa_unique.parquet")
-    labels_path = str(Path(data_dir) / "retrieval_labels.parquet")
-    chunks_path = str(Path(data_dir) / "legal_chunks.parquet")
+    data_p = Path(data_dir)
+    if not (data_p / "qa_unique.parquet").exists() and (data_p / "data" / "qa_unique.parquet").exists():
+        data_p = data_p / "data"
+    qa_path = str(data_p / "qa_unique.parquet")
+    labels_path = str(data_p / "retrieval_labels.parquet")
+    chunks_path = str(data_p / "legal_chunks.parquet")
     probe_out = str(out_p / "probe_output")
 
     worst_case_steps = 3 if stage == "kaggle_t4x2" else (5 if stage == "colab_t4" else 2)
