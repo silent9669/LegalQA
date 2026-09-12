@@ -172,7 +172,7 @@ def run_pipeline(
         qlora_out = os.path.join(output_dir, "checkpoints/generator/hf_adapter")
         gen_cfg = GeneratorTrainConfig(
             model_id=model_path,
-            max_seq_len=1024 if is_smoke else 2048,
+            max_seq_len=512 if is_smoke else 2048,
             lora_dropout=0.0,
             activation_offloading=not is_smoke,
             use_liger_fused_ce=True,

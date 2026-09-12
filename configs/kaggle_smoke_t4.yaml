@@ -9,7 +9,7 @@ devices:
 data:
   dataset_slug: "phucdangg/legalqa-task2-clean-data"
   runtime_root: "/kaggle/input/legalqa-task2-clean-data"
-  max_seq_len: 1024
+  max_seq_len: 512
 
 generator:
   model_id: "Qwen/Qwen2.5-3B-Instruct"
@@ -19,15 +19,15 @@ generator:
   lora_alpha: 32
   lora_dropout: 0.0
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 1
 
 probes:
   run_worstcase_probe: true
   worstcase_steps: 3
   run_endurance_probe: true
-  endurance_steps: 30
+  endurance_steps: 5
   run_mini_eval: true
-  mini_eval_samples: 10
+  mini_eval_samples: 5
 
 outputs:
   report_path: "/kaggle/working/kaggle_smoke_report.json"

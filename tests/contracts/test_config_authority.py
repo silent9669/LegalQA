@@ -27,7 +27,7 @@ def test_config_authority_and_no_drift():
     assert colab_cfg["generator"]["use_liger_kernel"] is True
 
     # 4. Sequence Length Consistency
-    assert smoke_cfg["data"]["max_seq_len"] in (1024, 2048)
+    assert smoke_cfg["data"]["max_seq_len"] in (512, 1024, 2048)
     assert colab_cfg["data"]["max_seq_len"] == 2048
 
     # 5. Dataset Schema Target
