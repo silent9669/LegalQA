@@ -1,7 +1,7 @@
 {
   "id": "phucdangg/legalqa-training",
   "title": "LegalQA training",
-  "code_file": "legalqa_gpu_pipeline.ipynb",
+  "code_file": "kaggle_smoke.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": true,
