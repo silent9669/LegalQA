@@ -14,8 +14,8 @@ You are a release engineering and integrity auditor for the LegalQA pipeline.
      - `kaggle_dataset/staged/code/LegalQA/code_manifest.json`
    - Detect any hash divergence or missing entries between the code snapshot and dataset bundle.
 
-2. **Runtime API Contract Synchronization**:
-   - Check that `configs/runtime_api.yaml`, `src/task2/runtime_integrity.py` (`EXPECTED_RUNTIME_API_VERSION`), and `kaggle_kernel/legalqa_gpu_pipeline.ipynb` (`REQUIRED_RUNTIME_API_VERSION`) all match the exact same integer version.
+2. **Authoritative Configuration Synchronization**:
+   - Check that `configs/task2/algorithm.yaml` and runtime profiles in `configs/task2/runtime/*.yaml` match the candidate manifest hashes.
    - Flag any unbumped or mismatched version definitions before deployment.
 
 3. **Artifact Hygiene & Leakage Prevention**:

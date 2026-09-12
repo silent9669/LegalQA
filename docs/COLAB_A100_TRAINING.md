@@ -1,79 +1,96 @@
 # Google Colab A100 Production Training Guide
 
-Authoritative specification for **Google Colab A100 Production Training** (`B2.2 Task 2 — Colab A100 Real Run & Evidence`).
+Authoritative specification for **Gate 4: Google Colab A100 Production Training** (`B2.2 Task 2 — Colab A100 Real Run & Evidence`).
 
 ---
 
 ## 1. Purpose
 
-Google Colab with NVIDIA A100 GPU (40GB or 80GB VRAM) serves as the **production training environment**. A100 compute is expensive and strictly reserved for fully verified, frozen versions that have achieved `PASS` status on the Kaggle Dual-T4 smoke gate.
+Google Colab with NVIDIA A100 GPU (40GB or 80GB VRAM) serves as the **production training environment**. A100 compute is expensive and strictly reserved for fully verified, frozen candidate versions that have achieved `PASS` status on both:
+1. **Gate 2: Kaggle Dual-T4 CUDA Gate** (`kaggle_t4x2_report.json`)
+2. **Gate 3: Google Colab Single-T4 Gate** (`colab_t4_report.json`)
 
 ---
 
 ## 2. Prerequisites & Authorization Gate
 
-Before executing the Colab A100 notebook (`notebooks/colab_a100_train.ipynb`):
-1. **GitHub Commit Frozen**: The exact Git commit SHA must be checked out.
-2. **Kaggle Dataset Manifest Verified**: `phucdangg/legalqa-task2-clean-data` SHA256 hashes must match.
-3. **Kaggle Smoke Pass Attached**: `kaggle_smoke_report.json` must be present and report `"status": "PASS"`.
+Before executing the Colab A100 launcher:
+1. **GitHub Commit Frozen**: Exact Git commit SHA verified.
+2. **GitHub CI PASS**: `scripts/verify_ci_status.py --sha <commit_sha>` reports `PASS`.
+3. **Candidate Manifest Frozen**: `artifacts/candidates/<candidate_id>/candidate_manifest.json` present.
+4. **Prior Gate Reports Attached**:
+   - `artifacts/gates/<candidate_id>/kaggle_t4x2_report.json` = `PASS`
+   - `artifacts/gates/<candidate_id>/colab_t4_report.json` = `PASS` (cryptographically chained to Kaggle report)
 
 ---
 
-## 3. Production Configuration (`configs/colab_train_a100.yaml`)
+## 3. Production Configuration (`configs/task2/runtime/colab_a100.yaml`)
 
-Unlike the Kaggle Dual-T4 smoke profile (which used INT4 quantization to fit into 16GB VRAM), Colab A100 leverages native high-throughput training:
-- **Precision**: Native `bfloat16` (`torch_dtype: bfloat16`)
-- **Kernel**: Liger Fused Linear Cross-Entropy loss enabled
-- **LoRA Parameters**: Rank `r=32`, Alpha `alpha=64`, Dropout `0.05`
-- **Batch Size**: `per_device_train_batch_size: 4`, `gradient_accumulation_steps: 4` (effective batch size = 16)
-- **Epochs**: Full training (3 epochs)
-- **Checkpoints**: Saved per epoch with `save_total_limit: 2` to conserve disk
+- **Hardware**: NVIDIA A100 (Single-GPU)
+- **Precision**: Native `bfloat16` (`compute_dtype: bfloat16`)
+- **Kernel**: Liger Fused Linear Cross-Entropy loss enabled (`loss_type: nll`)
+- **LoRA Parameters**: Rank $r=16$, Alpha $\alpha=32$, Dropout $0.0$ (all 7 projection modules)
+- **Batch Size**: `per_device_train_batch_size: 4`, `gradient_accumulation_steps: 2` (effective batch size = 8)
+- **Training Scope**: All allowed training data (`training_scope: all_allowed_train`, `val_fold: null`)
+- **Epochs**: 3 full epochs
 
 ---
 
 ## 4. Execution Workflow
 
-### Interactive Colab Execution
-Run `notebooks/colab_a100_train.ipynb` cell-by-cell in Google Colab with A100 runtime:
+### Automated CLI Execution (Recommended)
+Run the stage-aware Colab session orchestrator from your local terminal:
 ```bash
-# Cell 5 executes the production runner:
-python scripts/run_pipeline.py \
-  --config configs/colab_train_a100.yaml \
-  --data-dir /content/data/legalqa-task2-clean-data \
-  --output-dir /content/runs/current \
-  --require-smoke-pass kaggle_smoke_report.json \
-  --allow-single-gpu
+python scripts/launch_colab_training.py \
+  --stage a100 \
+  --candidate artifacts/candidates/<candidate_id>/candidate_manifest.json \
+  --kaggle-report artifacts/gates/<candidate_id>/kaggle_t4x2_report.json \
+  --colab-t4-report artifacts/gates/<candidate_id>/colab_t4_report.json
 ```
 
-### Automated Headless / Colab CLI Execution (Recommended)
-Run the automated session orchestrator from your local terminal:
-```bash
-./scripts/launch_colab_training.py --gpu A100
-```
-This automatically verifies local `.env` credentials and `kaggle_smoke_report.json`, provisions the A100 VM, uploads credentials, executes `notebooks/colab_a100_train.ipynb`, uploads all artifacts to Hugging Face, and releases the VM upon completion to prevent credit leakage.
+What the launcher executes:
+1. **Preflight**: Validates `.env` credentials, candidate manifest, and prior gate report hashes.
+2. **Provisioning**: Runs `colab new -s <session> --gpu A100`.
+3. **Upload**: Uploads `run_request.json`, `candidate_manifest.json`, and parent reports to `/content/legalqa_bootstrap/`.
+4. **Remote Entry**: Executes `colab exec -s <session> -f scripts/colab_remote_entry.py` (no `--timeout` passed to CLI).
+5. **Micro-Probe**: Verifies A100 hardware and executes 2 real optimizer steps -> `a100_micro_probe_report.json`.
+6. **Full Training**: Trains Qwen2.5-3B QLoRA on all allowed data (`val_fold=None`).
+7. **Packaging & Release**: Builds audited Run Bundle, computes `checksums.sha256`, and uploads to Hugging Face Hub under `runs/<run_id>/`.
+8. **Download & Verification**: Downloads control artifacts to local `artifacts/gates/<candidate_id>/` and verifies them.
+9. **Teardown**: Executes `colab stop -s <session>` in a `finally` block to prevent credit leakage.
 
 ---
 
-## 5. Artifact Packaging & Hugging Face Upload
+## 5. Standardized Production Run Bundle
 
-Upon completion, the pipeline evaluates the final model against the validation folds, computes official whitespace METEOR scores, and builds the Run Bundle:
+The output bundle is uploaded under `runs/<run_id>/` in Hugging Face repository `dangphuc2109/legalqa-qwen2.5-3b-adapter`:
 
 ```text
-/content/runs/current/
-├── run_manifest.json
-├── config.yaml
+runs/<run_id>/
+├── candidate_manifest.json
+├── production_run_manifest.json
+├── algorithm.resolved.json
+├── runtime.resolved.json
 ├── dataset_manifest.json
-├── kaggle_smoke_report.json
-├── environment.txt
-├── nvidia-smi.txt
-├── train.log
+├── dataset_validation_report.json
+├── gate_reports/
+│   ├── kaggle_t4x2_report.json
+│   ├── colab_t4_report.json
+│   └── a100_micro_probe_report.json
+├── environment/
+│   ├── python.txt
+│   ├── pip-freeze.txt
+│   ├── nvidia-smi.txt
+│   └── runtime.json
+├── logs/
+│   └── train.log
 ├── metrics.json
 ├── trainer_state.json
-├── tensorboard/
-└── final_adapter/
-    ├── adapter_model.safetensors
-    ├── adapter_config.json
-    └── README.md (Model Card)
+├── telemetry.json
+├── final_adapter/
+│   ├── adapter_config.json
+│   ├── adapter_model.safetensors
+│   └── tokenizer files
+├── model_card.md
+└── checksums.sha256
 ```
-
-The notebook uploads this bundle directly to the Hugging Face model repository (`dangphuc2109/legalqa-qwen2.5-3b-adapter`).

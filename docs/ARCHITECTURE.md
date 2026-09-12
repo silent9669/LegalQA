@@ -1,107 +1,143 @@
-# LegalQA Task 2 — Reproducible Architecture Specification
+# LegalQA Task 2 — Five-Gate Reproducible Architecture Specification
 
 Authoritative architecture specification for **LegalQA (Task 2)** in compliance with the **DSC 2026 Reproducible Training Workflow** (`https://dangphuc.notion.site/dscc`).
 
 ---
 
-## 1. System Architecture & Lifecycle
+## 1. System Architecture & Five-Gate Promotion Ladder
 
-```
+```text
 [Official BTC Data]
         │
         ▼
-[Data Owner: Parse/Clean/Normalize]
+[Publish Kaggle Dataset vN] (phucdangg/legalqa-task2-clean-data, pure data)
         │
         ▼
-[Dataset Schema & Integrity Validation] ──(FAIL)──> [Fix Data Bug]
+[Gate 0: Local Verification] ────(FAIL)──> [Fix Code / Config]
+  python scripts/pre_push_check.py --mode full
         │ (PASS)
         ▼
-[Publish Kaggle Dataset vN] (Pure Data Artifacts + Manifest)
-        │
-        ▼
-[GitHub: Notebooks + Code + Configs]
-        │
-        ▼
-[Pre-Push Check Gate / Local CI] ────────(FAIL)──> [Fix Code / Contracts]
+[Gate 1: GitHub CI on Exact SHA] ─(FAIL)──> [Fix CI Matrix]
+  python scripts/verify_ci_status.py --sha <sha>
         │ (PASS)
         ▼
-[Kaggle GPU Dual-T4 CUDA Smoke Gate] ────(FAIL)──> [Fix CUDA/VRAM Bug]
+[Candidate Freeze] ───────────────────────> artifacts/candidates/<candidate_id>/candidate_manifest.json
+  python scripts/freeze_candidate.py
+        │
+        ▼
+[Gate 2: Kaggle Dual-T4 CUDA Gate] ─(FAIL)─> [Fix CUDA/VRAM Bug]
+  scripts/run_gpu_gate.py --stage kaggle_t4x2
+        │ (PASS) ──> kaggle_t4x2_report.json
+        ▼
+[Gate 3: Colab Single-T4 Gate] ───(FAIL)─> [Fix Colab Bootstrap]
+  python scripts/launch_colab_training.py --stage colab-t4 ...
+        │ (PASS) ──> colab_t4_report.json (parent: kaggle_t4x2)
+        ▼
+[Gate 4: Colab A100 Production] ──(FAIL)─> [Fix A100 Micro-Probe]
+  python scripts/launch_colab_training.py --stage a100 ...
         │ (PASS)
-        ▼
-[Freeze Tuple: Dataset Hash + Git SHA + Config Fingerprint + Model Rev]
-        │
-        ▼
-[Lead Approval / Run Authorization]
-        │
-        ▼
-[Google Colab NVIDIA A100 Production Training] (BF16, Full Training)
-        │
-        ▼
-[Official Metric Evaluation: Whitespace METEOR + ROUGE-L]
-        │
-        ▼
-[Hugging Face Release: Model Adapter + Logs + Run Bundle]
+        ├─> A100 Micro-Probe (2 steps) -> a100_micro_probe_report.json
+        ├─> Full Production Training (All allowed data, val_fold=None)
+        ├─> Audited Run Bundle & Checksums Generation
+        └─> Hugging Face Hub Immutable Release: runs/<run_id>/
 ```
 
 ---
 
-## 2. Team Boundaries & Responsibilities
+## 2. Configuration Authority Architecture
+
+Configuration is strictly divided into two orthogonal layers:
+
+1. **Algorithm Contract (`configs/task2/algorithm.yaml`)**:
+   - Contains all score-affecting model and optimization parameters.
+   - Model IDs and revision policies (`generator`, `reranker`, `dense`).
+   - QLoRA rank ($r=16$), alpha ($\alpha=32$), dropout ($0.0$), and target projection modules.
+   - Max sequence length ($2048$ tokens), quantization (`4bit_nf4`), double quantization.
+   - Effective batch size ($8$), learning rate ($1.0\times 10^{-4}$), scheduler (`cosine`), warmup ($0.05$).
+   - Training scope (`all_allowed_train`, `val_fold: null`).
+   - Produces a single cryptographic digest: `algorithm_sha256`.
+
+2. **Runtime Hardware Profiles (`configs/task2/runtime/*.yaml`)**:
+   - `kaggle_t4x2.yaml`: 2x T4 GPUs, generator on `cuda:0`, retrieval on `cuda:1`, FP16, per-device batch 1, grad accum 8.
+   - `colab_t4.yaml`: 1x T4 GPU, single-GPU placement on `cuda:0`, FP16, per-device batch 1, grad accum 8.
+   - `colab_a100.yaml`: 1x A100 GPU, single-GPU placement on `cuda:0`, BF16, per-device batch 4, grad accum 2.
+   - Runtime profiles are forbidden from modifying protected algorithm fields.
+   - Effective batch size invariant ($batch \times accum = 8$) is strictly enforced.
+
+---
+
+## 3. Team Boundaries & Responsibilities
 
 | Role | Scope | Canonical Output |
 | --- | --- | --- |
 | **Data Owner** | Prepares, cleans, validates, and releases the canonical Kaggle dataset. Schema, manifest, foreign-key integrity, and provenance. | Kaggle Dataset `phucdangg/legalqa-task2-clean-data` vN (pure data, zero code bundled). |
-| **Training Owner (Kaggle)** | Maintains GitHub repo and runs the thin smoke launcher on Kaggle Dual-T4 GPUs to prove real CUDA/VRAM/Liger safety. | Git commit SHA + `kaggle_smoke_report.json` = PASS. |
-| **Training Owner (Colab A100)** | Consumes frozen tuple, executes full production training on Google Colab A100, exports Run Bundle. | Trained QLoRA adapter + metrics + TensorBoard logs uploaded to Hugging Face. |
-| **Lead / Integration** | Reviews handoffs, verifies freeze tuples, authorizes A100 consumption, and manages competition submission mapping. | Approved Run ID + audit traceability. |
+| **Release Lead** | Manages local pre-push checks, GitHub CI validation, candidate freezing, and gate report verification. | `candidate_manifest.json` and promotion authorizations. |
+| **Training Owner (Kaggle)** | Executes Kaggle Dual-T4 CUDA gate (worst-case sequence probe, 30-step endurance probe, mini-eval). | `kaggle_t4x2_report.json` with status PASS. |
+| **Training Owner (Colab T4)** | Validates Colab CLI, detached Git checkout, versioned data, and single-GPU execution. | `colab_t4_report.json` chained from Kaggle report. |
+| **Training Owner (Colab A100)** | Runs in-session micro-probe, full all-data production training (`val_fold=None`), and exports audited run bundle. | Trained QLoRA adapter + run bundle uploaded to Hugging Face Hub under `runs/<run_id>/`. |
 
 ---
 
-## 3. Storage Map & Artifact Invariants
+## 4. Immutable Candidate Manifest
 
-| Artifact | Canonical Storage | Invariant |
-| --- | --- | --- |
-| **Canonical Dataset** | Kaggle Dataset | Direct upload to Kaggle. Must contain `dataset_manifest.json` with SHA-256 hashes. Never bundle application code inside dataset. |
-| **Source Code & Notebooks** | GitHub (`silent9669/LegalQA`) | All logic lives in Git. Kaggle pulls notebook from linked GitHub repo. |
-| **CUDA Smoke Gate** | Kaggle Dual-T4 | Executes worst-case sequence length probe, 30-step endurance probe, and mini-eval. Produces `kaggle_smoke_report.json`. |
-| **Production Training** | Google Colab A100 | Executes full training only after smoke PASS. Leverages native BF16 throughput and larger batch sizes. |
-| **Release Artifacts** | Hugging Face Hub | Model adapter checkpoints, `run_manifest.json`, training logs, and metrics. |
-
----
-
-## 4. Freeze Tuple Contract
-
-An A100 training run is authorized only when the following tuple is frozen:
+Frozen by `scripts/freeze_candidate.py`:
 ```text
-RUN_TUPLE:
-├── task: "LegalQA"
-├── kaggle_dataset_slug: "phucdangg/legalqa-task2-clean-data"
-├── kaggle_dataset_version: "vN"
-├── dataset_manifest_sha256: "<64-hex>"
-├── git_repository: "silent9669/LegalQA"
+CandidateManifest:
+├── schema_version: 1
+├── candidate_id: <16-hex>
+├── task: "task2"
+├── git_repository: "https://github.com/silent9669/LegalQA.git"
 ├── git_commit_sha: "<40-hex>"
-├── config_fingerprint: "<64-hex>"
-├── base_model_id: "Qwen/Qwen2.5-3B-Instruct"
-├── base_model_revision: "main"
-└── kaggle_smoke_report_status: "PASS"
+├── dataset:
+│   ├── slug: "phucdangg/legalqa-task2-clean-data"
+│   ├── version: 1
+│   └── manifest_sha256: "<64-hex>"
+├── algorithm_sha256: "<64-hex>"
+├── runtime_profile_sha256:
+│   ├── kaggle_t4x2: "<64-hex>"
+│   ├── colab_t4: "<64-hex>"
+│   └── colab_a100: "<64-hex>"
+├── config_bundle_sha256: "<64-hex>"
+├── models:
+│   ├── generator: {id: "Qwen/Qwen2.5-3B-Instruct", revision: "<sha>"}
+│   ├── reranker: {id: "BAAI/bge-reranker-v2-m3", revision: "<sha>"}
+│   └── dense: {id: "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2", revision: "<sha>"}
+├── dependency_lock_sha256: "<64-hex>"
+├── seed: 42
+└── created_at_utc: "<ISO-8601>"
 ```
 
 ---
 
-## 5. Minimum Run Bundle
+## 5. Standardized Production Run Bundle
 
-Every production run produces a standardized audit bundle:
+Every successful A100 training run produces an audited bundle:
 ```text
-RUN_ID/
-├── run_manifest.json               # Provenance map linking model -> run -> code -> dataset
-├── config.yaml                     # Frozen configuration used for training
-├── dataset_manifest.json           # Cryptographic manifest of consumed data
-├── validation_report.json          # Dataset validation pass evidence
-├── kaggle_smoke_report.json        # Upstream Kaggle smoke pass report
-├── environment.txt                 # Pinned pip environment dump
-├── nvidia-smi.txt                  # Captured A100 GPU hardware telemetry
-├── train.log                       # Training console output
-├── metrics.json                    # Final evaluation scores (METEOR, ROUGE-L)
-├── trainer_state.json              # Checkpoint progression and loss history
-├── tensorboard/                    # Training curves
-└── final_adapter/                  # SafeTensors trained LoRA weights & adapter_config.json
+runs/<run_id>/
+├── candidate_manifest.json
+├── production_run_manifest.json
+├── algorithm.resolved.json
+├── runtime.resolved.json
+├── dataset_manifest.json
+├── dataset_validation_report.json
+├── gate_reports/
+│   ├── kaggle_t4x2_report.json
+│   ├── colab_t4_report.json
+│   └── a100_micro_probe_report.json
+├── environment/
+│   ├── python.txt
+│   ├── pip-freeze.txt
+│   ├── nvidia-smi.txt
+│   └── runtime.json
+├── logs/
+│   └── train.log
+├── metrics.json
+├── trainer_state.json
+├── telemetry.json
+├── final_adapter/
+│   ├── adapter_config.json
+│   ├── adapter_model.safetensors
+│   └── tokenizer files
+├── model_card.md
+└── checksums.sha256
 ```
