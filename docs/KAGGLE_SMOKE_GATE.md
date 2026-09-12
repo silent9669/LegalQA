@@ -31,7 +31,7 @@ The gate must **fail fast** on memory regressions, dependency mismatches, and co
 
 ## 3. Staged Smoke Probes
 
-The smoke notebook (`notebooks/kaggle_smoke_test.ipynb`) executes three deterministic verification probes:
+The smoke notebook (`notebooks/kaggle_smoke.ipynb`) executes three deterministic verification probes:
 
 ### Probe 1: Worst-Case Token Length Probe (3 Steps)
 - Filters training examples for the longest representative input prompts and completions (close to 2048 tokens).
