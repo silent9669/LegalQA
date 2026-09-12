@@ -158,7 +158,37 @@ def main():
         skip_gpu_assert=False,
         parent_report_path=str(parent_report) if parent_report and parent_report.exists() else None,
     )
-    print(f"\n[PASS] Colab remote entry completed {stage} successfully: {report.status}")
+    print(f"\n[PASS] Colab remote entry completed {gate_stage_name} successfully: {report.status}")
+
+    # If stage is A100, micro-probe must PASS before full training
+    if stage in ("a100", "colab_a100"):
+        if report.status != "PASS":
+            raise RuntimeError(f"A100 micro-probe FAILED with status {report.status}. Refusing full training.")
+
+        print("\n" + "=" * 65)
+        print(" [+] A100 Micro-Probe PASSED. Starting Full All-Data Production Train ")
+        print("=" * 65)
+
+        from src.task2.config.loader import load_resolved_config
+        from src.task2.generation.trainer import train_generator_qlora
+        from src.task2.pipeline.profiles import resolve_execution_profile
+
+        algo_path = LEGALQA_DIR / "configs/task2/algorithm.yaml"
+        rt_path = LEGALQA_DIR / "configs/task2/runtime/colab_a100.yaml"
+        resolved_cfg = load_resolved_config(algo_path, rt_path, candidate_id=candidate_id)
+
+        final_train_res = train_generator_qlora(
+            model_name_or_path=resolved_cfg.algorithm.models.generator.id,
+            qa_path=str(Path(dataset_path) / "qa_unique.parquet"),
+            labels_path=str(Path(dataset_path) / "retrieval_labels.parquet"),
+            chunks_path=str(Path(dataset_path) / "legal_chunks.parquet"),
+            output_dir=str(RUN_DIR / "production_training"),
+            resolved_config=resolved_cfg,
+            val_fold=None,  # ALL ALLOWED TRAINING DATA
+            device=resolved_cfg.runtime.devices.get("generator", "cuda:0"),
+            execution_profile="final_train_and_submit",
+        )
+        print(f"\n[PASS] Full production training completed: {final_train_res.get('status')}")
 
 
 if __name__ == "__main__":
