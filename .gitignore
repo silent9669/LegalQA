@@ -59,4 +59,10 @@ logs/
 kaggle_dataset/*
 !kaggle_dataset/dataset-metadata.json
 !kaggle_dataset/dataset_manifest.json
+!kaggle_dataset/validation_report.json
+!kaggle_dataset/public-official.json
+!kaggle_dataset/README.md
+!kaggle_dataset/DATA_STATEMENT.md
+data
+.claude/
 
