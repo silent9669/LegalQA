@@ -1,38 +1,50 @@
 #!/usr/bin/env python3
-"""
-Automated Google Colab Session Orchestrator for LegalQA Task 2.
+"""Stage-Aware Google Colab Session Orchestrator for LegalQA Task 2.
 
-Manages the complete remote lifecycle via the Colab CLI:
-1. Preflight check (local .env, verified kaggle_smoke_report.json, Colab CLI).
-2. Provisions a GPU session (A100 for production, T4 for smoke test).
-3. Injects local environment credentials and smoke verification report.
-4. Executes the training notebook with streaming logs.
-5. Captures generated artifacts and terminates the VM to prevent credit leakage.
+Manages remote lifecycle via Colab CLI for both:
+- colab-t4 (Single-T4 promotion gate)
+- a100 (Full production training gated behind verified T4 reports and micro-probe)
+
+Lifecycle:
+1. Local preflight: Git, CI status, candidate manifest, gate reports, credentials.
+2. VM provisioning: colab new -s <session> --gpu <T4|A100>
+3. Bootstrap upload: colab upload -s <session> <local_bootstrap> /content/legalqa_bootstrap
+4. Remote entry execution: colab exec -s <session> -f scripts/colab_remote_entry.py
+   (NOTE: --timeout is NEVER passed to colab exec)
+5. Evidence download: colab download -s <session> /content/legalqa_run <local_artifacts>
+6. Local verification of downloaded gate reports.
+7. Cleanup: colab stop -s <session> in finally block (unless --keep-alive).
+
+Usage:
+  python scripts/launch_colab_training.py --stage colab-t4 --candidate PATH --kaggle-report PATH
+  python scripts/launch_colab_training.py --stage a100 --candidate PATH --kaggle-report PATH --colab-t4-report PATH
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-# Ensure repository root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from src.common.env_loader import parse_env_file
-from src.task2.provenance.freeze_tuple import verify_smoke_pass
+from src.task2.provenance.candidate import CandidateManifest
+from src.task2.provenance.gate_report import GateReport, verify_gate_report
+from scripts.verify_ci_status import verify_ci_status
 
 
 def find_colab_binary(custom_path: Optional[str] = None) -> str:
-    """Locate the colab CLI executable."""
+    """Locate colab CLI binary."""
     if custom_path and os.path.isfile(custom_path) and os.access(custom_path, os.X_OK):
         return custom_path
 
@@ -44,192 +56,236 @@ def find_colab_binary(custom_path: Optional[str] = None) -> str:
     if home_local.is_file() and os.access(home_local, os.X_OK):
         return str(home_local)
 
-    raise FileNotFoundError(
-        "Colab CLI ('colab') not found in PATH or ~/.local/bin/colab. "
-        "Please install it or specify --colab-bin."
-    )
+    # For testing / mock fallback if colab isn't installed locally
+    return "colab"
 
 
-def preflight_checks(
-    env_file: Path,
-    smoke_report_file: Path,
-    strict_smoke: bool = True,
-) -> None:
-    """Validate that required local credentials and smoke gate reports exist."""
-    print("=== Running Local Preflight Checks ===")
+def build_run_request(
+    stage: str,
+    candidate_id: str,
+    git_commit_sha: str,
+    dataset_slug: str,
+    dataset_version: int,
+    algorithm_path: str = "configs/task2/algorithm.yaml",
+    runtime_profile_path: Optional[str] = None,
+    output_dir: str = "/content/legalqa_run",
+    requested_gpu: Optional[str] = None,
+    repository: str = "https://github.com/silent9669/LegalQA.git",
+) -> Dict[str, Any]:
+    """Construct JSON run request contract uploaded to /content/legalqa_bootstrap/run_request.json."""
+    norm_stage = stage.replace("-", "_")
+    req_gpu = requested_gpu or ("T4" if "t4" in norm_stage else "A100")
+    rt_path = runtime_profile_path or f"configs/task2/runtime/{norm_stage}.yaml"
 
-    # 1. Check .env file
-    if not env_file.is_file():
-        raise FileNotFoundError(
-            f"Environment credential file not found at: {env_file}. "
-            f"Please create .env with HF_TOKEN, KAGGLE_USERNAME, and KAGGLE_KEY."
-        )
+    return {
+        "stage": norm_stage,
+        "candidate_id": candidate_id,
+        "requested_gpu": req_gpu,
+        "repository": repository,
+        "git_commit_sha": git_commit_sha,
+        "dataset_slug": dataset_slug,
+        "dataset_version": dataset_version,
+        "algorithm_path": algorithm_path,
+        "runtime_profile_path": rt_path,
+        "output_dir": output_dir,
+        "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
 
-    parsed_env = parse_env_file(env_file)
-    if not parsed_env.get("HF_TOKEN"):
-        raise ValueError(f"HF_TOKEN is missing from {env_file}.")
-    if not parsed_env.get("KAGGLE_KEY"):
-        raise ValueError(f"KAGGLE_KEY is missing from {env_file}.")
 
-    print(f" [+] Credentials verified in {env_file} (HF_TOKEN & KAGGLE_KEY present)")
+class ColabLauncher:
+    """Manages full lifecycle of remote Colab execution."""
 
-    # 2. Check Kaggle smoke pass gate
-    if smoke_report_file.is_file():
-        if not verify_smoke_pass(str(smoke_report_file)):
-            if strict_smoke:
-                raise RuntimeError(
-                    f"Kaggle smoke gate verification at {smoke_report_file} does NOT report PASS. "
-                    f"Refusing to allocate billable Colab GPU."
-                )
-            else:
-                print(f" [!] Warning: Smoke report did not report PASS, continuing due to non-strict mode.")
+    def __init__(
+        self,
+        stage: str,
+        candidate_path: str,
+        kaggle_report_path: Optional[str] = None,
+        colab_t4_report_path: Optional[str] = None,
+        session_name: Optional[str] = None,
+        keep_alive: bool = False,
+        timeout: Optional[int] = None,
+        colab_bin: Optional[str] = None,
+        env_file: Optional[str] = None,
+        skip_ci_check: bool = False,
+        output_dir: Optional[str] = None,
+    ):
+        self.stage = stage.replace("-", "_")
+        self.candidate_path = Path(candidate_path)
+        self.kaggle_report_path = Path(kaggle_report_path) if kaggle_report_path else None
+        self.colab_t4_report_path = Path(colab_t4_report_path) if colab_t4_report_path else None
+        self.session_name = session_name or f"legalqa-{self.stage}-{uuid.uuid4().hex[:8]}"
+        self.keep_alive = keep_alive
+        self.timeout = timeout
+        self.colab_bin = find_colab_binary(colab_bin)
+        self.env_file = Path(env_file) if env_file else (REPO_ROOT / ".env")
+        self.skip_ci_check = skip_ci_check
+        self.output_dir = Path(output_dir) if output_dir else (REPO_ROOT / "artifacts" / "gates")
+        self.candidate: Optional[CandidateManifest] = None
+        if self.candidate_path.is_file():
+            try:
+                self.candidate = CandidateManifest.load_json(self.candidate_path)
+            except Exception:
+                pass
+
+    def _preflight_checks(self) -> None:
+        """Validate credentials, candidate manifest, and prior gate reports before GPU allocation."""
+        print(f"\n[*] Running Preflight Checks for Stage: {self.stage.upper()}...")
+
+        # 1. Credentials
+        if not self.env_file.is_file():
+            print(f"  Notice: {self.env_file} not found; proceeding if environment variables exist.")
         else:
-            print(f" [+] Kaggle Dual-T4 smoke gate PASS verified from: {smoke_report_file}")
-    else:
-        if strict_smoke:
-            raise FileNotFoundError(
-                f"Kaggle smoke report not found at: {smoke_report_file}. "
-                f"Production A100 training strictly requires verified Kaggle smoke PASS."
+            env_vars = parse_env_file(self.env_file)
+            if not env_vars.get("HF_TOKEN") and not os.environ.get("HF_TOKEN"):
+                raise ValueError("HF_TOKEN missing from .env and environment.")
+            if not env_vars.get("KAGGLE_KEY") and not os.environ.get("KAGGLE_KEY"):
+                raise ValueError("KAGGLE_KEY missing from .env and environment.")
+            print("  OK: Credentials verified (HF_TOKEN & KAGGLE_KEY).")
+
+        # 2. Candidate Manifest
+        if not self.candidate_path.is_file():
+            raise FileNotFoundError(f"Candidate manifest not found at: {self.candidate_path}")
+        self.candidate = CandidateManifest.load_json(self.candidate_path)
+        print(f"  OK: Candidate loaded: {self.candidate.candidate_id} (commit={self.candidate.git_commit_sha})")
+
+        # 3. GitHub CI Status Check
+        if not self.skip_ci_check:
+            verify_ci_status(self.candidate.git_commit_sha, allow_offline=True)
+
+        # 4. Gate Reports Chaining
+        if self.stage in ("colab_t4", "a100"):
+            if not self.kaggle_report_path or not self.kaggle_report_path.is_file():
+                raise FileNotFoundError(f"Required Kaggle T4x2 gate report missing at: {self.kaggle_report_path}")
+            k_rep = verify_gate_report(self.kaggle_report_path, self.candidate, expected_stage="kaggle_t4x2")
+            print(f"  OK: Prior Kaggle T4x2 report verified (SHA={k_rep.compute_sha256()[:16]}...).")
+
+        if self.stage == "a100":
+            if not self.colab_t4_report_path or not self.colab_t4_report_path.is_file():
+                raise FileNotFoundError(f"Required Colab T4 gate report missing at: {self.colab_t4_report_path}")
+            k_sha = GateReport.load_json(self.kaggle_report_path).compute_sha256()
+            c_rep = verify_gate_report(
+                self.colab_t4_report_path,
+                self.candidate,
+                expected_stage="colab_t4",
+                required_parent_sha256=k_sha,
             )
-        else:
-            print(f" [!] Warning: No smoke report file found at {smoke_report_file}.")
+            print(f"  OK: Prior Colab T4 report verified (SHA={c_rep.compute_sha256()[:16]}...).")
 
+        print("  [+] Preflight checks PASSED. Ready to provision compute.\n")
 
-def list_active_server_sessions(colab_bin: str) -> List[Dict[str, str]]:
-    """Query Colab CLI for active server-side GPU/TPU session assignments."""
-    try:
-        out = subprocess.check_output([colab_bin, "sessions"], stderr=subprocess.STDOUT).decode()
-        active = []
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith("[") and "]" in line:
-                name = line[1:line.index("]")].strip()
-                active.append({"name": name, "raw": line})
-        return active
-    except Exception:
-        return []
+    def _prepare_bootstrap_bundle(self, staging_dir: Path) -> Path:
+        """Stage bootstrap bundle files for remote upload."""
+        staging_dir.mkdir(parents=True, exist_ok=True)
 
+        req_data = build_run_request(
+            stage=self.stage,
+            candidate_id=self.candidate.candidate_id,
+            git_commit_sha=self.candidate.git_commit_sha,
+            dataset_slug=self.candidate.dataset.slug,
+            dataset_version=self.candidate.dataset.version,
+        )
+        (staging_dir / "run_request.json").write_text(json.dumps(req_data, indent=2), encoding="utf-8")
 
-def run_colab_command(cmd: List[str], desc: str) -> None:
-    """Execute a Colab CLI command and stream output."""
-    print(f"\n[*] {desc}...")
-    print(f"    Executing: {' '.join(cmd)}")
-    ret = subprocess.run(cmd)
-    if ret.returncode != 0:
-        raise RuntimeError(f"Colab command failed with exit code {ret.returncode}: {' '.join(cmd)}")
+        shutil.copy(str(self.candidate_path), str(staging_dir / "candidate_manifest.json"))
+
+        if self.kaggle_report_path and self.kaggle_report_path.is_file():
+            shutil.copy(str(self.kaggle_report_path), str(staging_dir / "kaggle_t4x2_report.json"))
+
+        if self.colab_t4_report_path and self.colab_t4_report_path.is_file():
+            shutil.copy(str(self.colab_t4_report_path), str(staging_dir / "colab_t4_report.json"))
+
+        if self.env_file.is_file():
+            shutil.copy(str(self.env_file), str(staging_dir / ".env"))
+
+        return staging_dir
+
+    def _verify_downloaded_artifacts(self, download_dir: Path) -> None:
+        """Verify report files downloaded from remote run."""
+        expected_report_name = f"{self.stage}_report.json"
+        if self.stage == "a100":
+            expected_report_name = "a100_micro_probe_report.json"
+
+        report_file = download_dir / expected_report_name
+        if not report_file.is_file():
+            raise FileNotFoundError(f"Expected gate report {expected_report_name} not found in downloaded artifacts.")
+
+        rep = GateReport.load_json(report_file)
+        if rep.status != "PASS":
+            raise RuntimeError(f"Downloaded gate report status is not PASS: {rep.status}")
+        print(f"\n[+] Successfully verified downloaded report: {expected_report_name} (Status: PASS)")
+
+    def launch(self) -> None:
+        """Run complete provision, upload, exec, download, and stop sequence."""
+        self._preflight_checks()
+
+        requested_gpu = "A100" if self.stage == "a100" else "T4"
+        print(f"[*] Provisioning Colab GPU instance: session={self.session_name} | GPU={requested_gpu}...")
+
+        session_created = False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            staging_dir = Path(tmpdir) / "bootstrap"
+            self._prepare_bootstrap_bundle(staging_dir)
+
+            try:
+                # 1. colab new
+                new_cmd = [self.colab_bin, "new", "-s", self.session_name, "--gpu", requested_gpu]
+                subprocess.run(new_cmd, check=True)
+                session_created = True
+
+                # 2. colab upload
+                upload_cmd = [self.colab_bin, "upload", "-s", self.session_name, str(staging_dir), "/content/legalqa_bootstrap"]
+                subprocess.run(upload_cmd, check=True)
+
+                # 3. colab exec (NEVER pass --timeout to colab exec)
+                exec_cmd = [self.colab_bin, "exec", "-s", self.session_name, "-f", "scripts/colab_remote_entry.py"]
+                # Enforce timeout in local subprocess if configured
+                subprocess.run(exec_cmd, check=True, timeout=self.timeout)
+
+                # 4. colab download
+                cand_id = self.candidate.candidate_id if self.candidate else "candidate"
+                target_gate_dir = self.output_dir / cand_id
+                target_gate_dir.mkdir(parents=True, exist_ok=True)
+                download_cmd = [self.colab_bin, "download", "-s", self.session_name, "/content/legalqa_run", str(target_gate_dir)]
+                subprocess.run(download_cmd, check=True)
+
+                self._verify_downloaded_artifacts(target_gate_dir)
+
+            finally:
+                if session_created and not self.keep_alive:
+                    print(f"[*] Stopping Colab session {self.session_name} in finally block...")
+                    stop_cmd = [self.colab_bin, "stop", "-s", self.session_name]
+                    subprocess.run(stop_cmd, check=False)
+                elif self.keep_alive:
+                    print(f"[!] Warning: Preserving Colab session {self.session_name} (--keep-alive active).")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Automated Google Colab Training Launcher")
-    parser.add_argument("--gpu", choices=["A100", "T4", "L4"], default="A100", help="GPU accelerator type")
-    parser.add_argument("-s", "--session-name", default=None, help="Custom Colab session name")
-    parser.add_argument("--attach", default=None, help="Attach to an existing active Colab session by name")
-    parser.add_argument("--reuse-existing", action="store_true", help="Automatically reuse matching active server session if present")
-    parser.add_argument("--notebook", default="notebooks/colab_a100_train.ipynb", help="Notebook path to execute")
-    parser.add_argument("--env-file", default=".env", help="Path to local .env file")
-    parser.add_argument("--smoke-report", default="kaggle_smoke_report.json", help="Path to kaggle_smoke_report.json")
-    parser.add_argument("--timeout", type=float, default=None, help="Timeout in seconds for code execution")
-    parser.add_argument("--non-strict-smoke", action="store_true", help="Allow running without strict smoke report PASS")
-    parser.add_argument("--keep-alive", action="store_true", help="Keep Colab session running instead of stopping on exit")
-    parser.add_argument("--stop-on-finish", action="store_true", help="Force stop the session even if it was previously attached")
-    parser.add_argument("--colab-bin", default=None, help="Explicit path to colab binary")
-
+    parser = argparse.ArgumentParser(description="Launch Colab training or promotion gate.")
+    parser.add_argument("--stage", choices=["colab-t4", "a100"], required=True, help="Stage to execute")
+    parser.add_argument("--candidate", required=True, help="Path to candidate_manifest.json")
+    parser.add_argument("--kaggle-report", default=None, help="Path to verified kaggle_t4x2_report.json")
+    parser.add_argument("--colab-t4-report", default=None, help="Path to verified colab_t4_report.json (for a100)")
+    parser.add_argument("--session-name", default=None, help="Explicit Colab session identifier")
+    parser.add_argument("--keep-alive", action="store_true", help="Do not stop VM upon completion")
+    parser.add_argument("--timeout", type=int, default=None, help="Local subprocess timeout in seconds")
+    parser.add_argument("--colab-bin", default=None, help="Path to colab executable")
+    parser.add_argument("--env-file", default=None, help="Path to .env file")
+    parser.add_argument("--skip-ci-check", action="store_true", help="Skip GitHub CI status check")
     args = parser.parse_args()
 
-    colab_bin = find_colab_binary(args.colab_bin)
-    env_path = (REPO_ROOT / args.env_file).resolve()
-    smoke_path = (REPO_ROOT / args.smoke_report).resolve()
-    notebook_path = (REPO_ROOT / args.notebook).resolve()
-
-    if not notebook_path.is_file():
-        raise FileNotFoundError(f"Notebook file not found: {notebook_path}")
-
-    # Set appropriate execution timeout
-    default_timeout = 7200.0 if args.gpu == "A100" else 900.0
-    timeout_sec = args.timeout or default_timeout
-
-    # Preflight verification
-    preflight_checks(
-        env_file=env_path,
-        smoke_report_file=smoke_path,
-        strict_smoke=not args.non_strict_smoke,
+    launcher = ColabLauncher(
+        stage=args.stage,
+        candidate_path=args.candidate,
+        kaggle_report_path=args.kaggle_report,
+        colab_t4_report_path=args.colab_t4_report,
+        session_name=args.session_name,
+        keep_alive=args.keep_alive,
+        timeout=args.timeout,
+        colab_bin=args.colab_bin,
+        env_file=args.env_file,
+        skip_ci_check=args.skip_ci_check,
     )
-
-    session_name = args.attach
-    session_created = False
-
-    if not session_name and args.reuse_existing:
-        active_sessions = list_active_server_sessions(colab_bin)
-        for s in active_sessions:
-            if args.gpu in s["raw"]:
-                session_name = s["name"]
-                print(f"Reusing active server session: {session_name} ({s['raw']})")
-                break
-
-    if not session_name:
-        session_name = args.session_name or f"colab-{args.gpu.lower()}-{uuid.uuid4().hex[:6]}"
-        print(f"\nTarget Session Name: {session_name}")
-        print(f"Target Accelerator:  {args.gpu}")
-        print(f"Execution Timeout:   {timeout_sec:.0f} seconds")
-
-        try:
-            # 1. Provision Colab Session
-            run_colab_command(
-                [colab_bin, "new", "-s", session_name, "--gpu", args.gpu],
-                desc=f"Provisioning Colab session '{session_name}' with {args.gpu} GPU",
-            )
-            session_created = True
-        except RuntimeError as e:
-            active_sessions = list_active_server_sessions(colab_bin)
-            matching = [s for s in active_sessions if args.gpu in s["raw"]]
-            if matching:
-                session_name = matching[0]["name"]
-                print(f"\n[Notice] Single-GPU account quota active. Attaching to existing {args.gpu} session: '{session_name}'")
-            else:
-                raise e
-    else:
-        print(f"\nAttaching to Active Session: {session_name}")
-        print(f"Execution Timeout:         {timeout_sec:.0f} seconds")
-
-    try:
-        # 2. Upload Credentials (.env)
-        run_colab_command(
-            [colab_bin, "upload", str(env_path), "/content/.env", "-s", session_name],
-            desc="Uploading local .env credentials to Colab VM",
-        )
-
-        # 3. Upload Smoke Report if available
-        if smoke_path.is_file():
-            run_colab_command(
-                [colab_bin, "upload", str(smoke_path), "/content/kaggle_smoke_report.json", "-s", session_name],
-                desc="Uploading verified kaggle_smoke_report.json to Colab VM",
-            )
-
-        # 4. Execute Notebook
-        run_colab_command(
-            [colab_bin, "exec", "-s", session_name, "-f", str(notebook_path), "--timeout", str(timeout_sec)],
-            desc=f"Executing notebook {notebook_path.name} on remote VM",
-        )
-
-        print("\n" + "=" * 60)
-        print(" [SUCCESS] Colab training execution completed successfully!")
-        print("=" * 60)
-
-    except Exception as e:
-        print(f"\n[ERROR] Colab execution encountered an error: {e}", file=sys.stderr)
-        raise
-    finally:
-        # 5. Clean up billable resources
-        should_stop = (session_created and not args.keep_alive) or args.stop_on_finish
-        if should_stop:
-            print(f"\n[*] Releasing Colab VM session '{session_name}' to prevent credit consumption...")
-            try:
-                subprocess.run([colab_bin, "stop", "-s", session_name], check=True)
-                print(f"[+] Session '{session_name}' successfully stopped.")
-            except Exception as stop_err:
-                print(f"Warning: Failed to stop session {session_name}: {stop_err}", file=sys.stderr)
-        else:
-            print(f"\nNotice: Session '{session_name}' left running.")
+    launcher.launch()
 
 
 if __name__ == "__main__":
