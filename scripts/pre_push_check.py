@@ -173,6 +173,7 @@ def run_tests(mode: str) -> None:
             "tests/contracts/test_no_legacy_config_references.py",
             "tests/contracts/test_dependency_lock.py",
             "tests/provenance",
+            "tests/launchers",
             "tests/notebooks",
             "tests/unit/test_generation_config.py",
         ]
@@ -183,6 +184,7 @@ def run_tests(mode: str) -> None:
             "tests/unit",
             "tests/integration",
             "tests/provenance",
+            "tests/launchers",
         ]
         if (REPO_ROOT / "kaggle_dataset" / "qa_unique.parquet").exists():
             test_paths.append("tests/dataset")

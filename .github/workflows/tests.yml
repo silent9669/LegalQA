@@ -200,4 +200,5 @@ jobs:
             tests/contracts/test_security.py \
             tests/contracts/test_no_legacy_config_references.py \
             tests/provenance \
+            tests/launchers \
             -v
