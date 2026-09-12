@@ -257,10 +257,14 @@ def evaluate_checkpoint(
 
     # 3. Load Dense
     r_dev = retrieval_device or "cuda:1"
+    g_dev = gen_device or "cuda:0"
+    # On single-GPU setups where generator and retrieval share the same device (e.g. single T4),
+    # keep dense corpus embeddings in CPU mmap to preserve all GPU VRAM for the neural generator
+    dense_dev = "cpu" if (r_dev == g_dev and r_dev.startswith("cuda")) else r_dev
     dense = DenseRetriever.load_index(
         dense_dir,
         corpus_path=chunks_path,
-        device=r_dev,
+        device=dense_dev,
         expected_model_name=dense_model,
         expected_dtype="float16",
         final_mode=fail_on_fallback,
@@ -275,7 +279,10 @@ def evaluate_checkpoint(
     # 6. Load Generator (if configured)
     generator: Optional[QwenGenerator] = None
     if generator_model:
-        g_dev = gen_device or "cuda:0"
+        if torch is not None and torch.cuda.is_available():
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
         generator = QwenGenerator.load(
             model_path=generator_model,
             adapter_path=adapter_path,
