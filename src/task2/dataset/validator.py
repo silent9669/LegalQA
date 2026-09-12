@@ -147,23 +147,35 @@ def validate_dataset(data_dir: str, schema_path: str = "configs/dataset_schema.y
     if os.path.exists(manifest_path):
         try:
             with open(manifest_path, "r", encoding="utf-8") as mf:
-                manifest = json.load(jf := mf)
+                manifest = json.load(mf)
             files_meta = manifest.get("files", {})
-            mismatch_files = []
-            for fname, meta in files_meta.items():
-                expected_sha = meta.get("sha256")
-                fpath = os.path.join(data_dir, fname)
-                if os.path.exists(fpath) and expected_sha:
-                    actual_sha = compute_sha256(fpath)
-                    if actual_sha != expected_sha:
-                        mismatch_files.append((fname, expected_sha, actual_sha))
-
-            if mismatch_files:
+            if not files_meta:
                 report["status"] = "FAIL"
-                report["errors"].append(f"Manifest SHA256 mismatch for files: {mismatch_files}")
+                report["errors"].append("dataset_manifest.json contains empty or missing 'files' dictionary")
             else:
-                report["manifest_verified"] = True
+                missing_files = []
+                mismatch_files = []
+                for fname, meta in files_meta.items():
+                    expected_sha = meta.get("sha256")
+                    fpath = os.path.join(data_dir, fname)
+                    if not os.path.exists(fpath):
+                        missing_files.append(fname)
+                    elif expected_sha:
+                        actual_sha = compute_sha256(fpath)
+                        if actual_sha != expected_sha:
+                            mismatch_files.append((fname, expected_sha, actual_sha))
+
+                if missing_files or mismatch_files:
+                    report["status"] = "FAIL"
+                    report["manifest_verified"] = False
+                    if missing_files:
+                        report["errors"].append(f"Manifest-listed files missing in dataset directory: {missing_files}")
+                    if mismatch_files:
+                        report["errors"].append(f"Manifest SHA256 mismatch for files: {mismatch_files}")
+                else:
+                    report["manifest_verified"] = True
         except Exception as e:
-            report["warnings"].append(f"Could not verify dataset_manifest.json: {e}")
+            report["status"] = "FAIL"
+            report["errors"].append(f"Could not parse or verify dataset_manifest.json: {e}")
 
     return report

@@ -2,7 +2,9 @@ import os
 import glob
 import json
 import pytest
+import yaml
 import pandas as pd
+from pathlib import Path
 from src.task2.dataset.validator import validate_dataset, compute_sha256
 
 DATASET_DIR = "kaggle_dataset"
@@ -72,3 +74,43 @@ def test_manifest_checksums_match_actual_bytes(dataset_data):
         expected_sha = meta["sha256"]
         actual_sha = compute_sha256(fpath)
         assert actual_sha == expected_sha, f"SHA mismatch for {fname}"
+
+
+def test_validator_fails_when_manifest_file_is_missing(tmp_path):
+    """Synthetic fixture: manifest specifies missing_table.parquet which is absent."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    # Create dummy schema
+    schema = {
+        "schema_version": "2.0.0",
+        "tables": {
+            "test_table": {
+                "required_file": "existing_table.parquet",
+                "required_columns": {"id": "string"},
+            }
+        }
+    }
+    schema_path = tmp_path / "schema.yaml"
+    schema_path.write_text(yaml.dump(schema))
+
+    # Create existing table
+    df = pd.DataFrame({"id": ["1", "2"]})
+    existing_file = data_dir / "existing_table.parquet"
+    df.to_parquet(existing_file)
+    existing_sha = compute_sha256(str(existing_file))
+
+    # Manifest lists existing_table and missing_table
+    manifest = {
+        "schema_version": "2.0.0",
+        "files": {
+            "existing_table.parquet": {"sha256": existing_sha},
+            "missing_table.parquet": {"sha256": "abcdef123456"},
+        }
+    }
+    (data_dir / "dataset_manifest.json").write_text(json.dumps(manifest))
+
+    report = validate_dataset(str(data_dir), str(schema_path))
+    assert report["status"] == "FAIL", "Validator must FAIL when manifest-listed file is missing"
+    assert report["manifest_verified"] is False
+    assert any("missing_table.parquet" in err for err in report["errors"])
