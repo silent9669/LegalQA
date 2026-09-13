@@ -214,9 +214,12 @@ class ColabLauncher:
             raise RuntimeError(f"Downloaded gate report status is not PASS: {rep.status}")
         print(f"\n[+] Successfully verified downloaded report: {expected_report_name} (Status: PASS)")
 
-    def launch(self) -> None:
+    def launch(self, preflight_only: bool = False) -> None:
         """Run complete provision, upload, exec, download, and stop sequence."""
         self._preflight_checks()
+        if preflight_only:
+            print("[+] Preflight checks completed successfully (--preflight-only specified). Exiting without provisioning VM.")
+            return
 
         requested_gpu = "A100" if self.stage == "a100" else "T4"
         print(f"[*] Provisioning Colab GPU instance: session={self.session_name} | GPU={requested_gpu}...")
@@ -319,6 +322,7 @@ def main():
     parser.add_argument("--colab-bin", default=None, help="Path to colab executable")
     parser.add_argument("--env-file", default=None, help="Path to .env file")
     parser.add_argument("--skip-ci-check", action="store_true", help="Skip GitHub CI status check")
+    parser.add_argument("--preflight-only", action="store_true", help="Perform only preflight checks and exit without provisioning VM")
     args = parser.parse_args()
 
     candidate_path = args.candidate
@@ -361,7 +365,7 @@ def main():
         env_file=args.env_file,
         skip_ci_check=args.skip_ci_check,
     )
-    launcher.launch()
+    launcher.launch(preflight_only=args.preflight_only)
 
 
 if __name__ == "__main__":
