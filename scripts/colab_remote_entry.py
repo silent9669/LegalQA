@@ -18,6 +18,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -68,9 +70,19 @@ def get_detected_gpu_names() -> List[str]:
     return []
 
 
+def _heartbeat_worker(stop_event: threading.Event) -> None:
+    """Periodically emit progress heartbeat so websocket kernel client does not time out during long quiet steps."""
+    while not stop_event.is_set():
+        stop_event.wait(10.0)
+        if not stop_event.is_set():
+            sys.stdout.write("[heartbeat] Remote execution active...\n")
+            sys.stdout.flush()
+
+
 def run_command(cmd: List[str], cwd: Optional[Path] = None) -> str:
     """Run a shell command with real-time output streaming."""
     print(f"[*] Running: {' '.join(cmd)}")
+    sys.stdout.flush()
     res = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True)
     if res.returncode != 0:
         print(res.stderr, file=sys.stderr)
@@ -82,7 +94,19 @@ def main():
     print("=" * 65)
     print("      LegalQA Colab Remote Entrypoint — Stage Execution       ")
     print("=" * 65)
+    sys.stdout.flush()
 
+    stop_heartbeat = threading.Event()
+    heartbeat_thread = threading.Thread(target=_heartbeat_worker, args=(stop_heartbeat,), daemon=True)
+    heartbeat_thread.start()
+
+    try:
+        _main_exec()
+    finally:
+        stop_heartbeat.set()
+
+
+def _main_exec():
     bootstrap_dir = BOOTSTRAP_DIR
     if not (bootstrap_dir / "run_request.json").exists() and Path("/content/run_request.json").exists():
         bootstrap_dir = Path("/content")
@@ -137,7 +161,7 @@ def main():
         run_command([
             sys.executable, "-m", "pip", "install", "-q",
             "-c", str(constraints_file),
-            "transformers", "peft", "accelerate", "datasets", "trl", "liger-kernel", "bitsandbytes"
+            "transformers", "peft", "accelerate", "datasets", "trl", "liger-kernel", "bitsandbytes", "kaggle", "kagglehub"
         ])
 
     # 3b. Load credentials from uploaded bootstrap .env
@@ -170,14 +194,27 @@ def main():
     data_target = DATA_DIR / dataset_slug.split("/")[-1]
     data_target.mkdir(parents=True, exist_ok=True)
     print(f"[+] Downloading versioned dataset: {dataset_slug} version {dataset_version}...")
+    sys.stdout.flush()
+    dataset_path = None
     try:
         import kagglehub
-        downloaded_path = kagglehub.dataset_download(f"{dataset_slug}/{dataset_version}")
+        handle = f"{dataset_slug}/versions/{dataset_version}"
+        downloaded_path = kagglehub.dataset_download(handle)
         print(f"  OK: Downloaded to {downloaded_path}")
         dataset_path = downloaded_path
     except Exception as e:
-        print(f"  Notice: kagglehub versioned download fallback: {e}")
-        dataset_path = str(data_target)
+        print(f"  Notice: kagglehub versioned download fallback ({e}); attempting kaggle CLI...")
+        sys.stdout.flush()
+
+    if not dataset_path or not (Path(dataset_path) / "qa_unique.parquet").exists():
+        try:
+            run_command(["kaggle", "datasets", "download", "-d", dataset_slug, "-p", str(data_target), "--unzip"])
+            dataset_path = str(data_target)
+            print(f"  OK: Downloaded via kaggle CLI to {dataset_path}")
+        except Exception as e2:
+            print(f"  Notice: kaggle CLI download notice: {e2}")
+            dataset_path = str(data_target)
+    sys.stdout.flush()
 
     # 5. Execute Stage via run_gpu_gate
     RUN_DIR.mkdir(parents=True, exist_ok=True)
