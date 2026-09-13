@@ -47,6 +47,7 @@ except ImportError:
             return data
 
 from src.common.security import assert_no_secrets_in_workspace
+from src.common.env_loader import load_environment
 from src.task2.config.schema import ResolvedTask2Config
 from src.task2.generator import QwenGenerator
 from src.task2.generation.config import GeneratorTrainConfig, validate_generator_config_for_profile
@@ -237,10 +238,16 @@ def train_generator_qlora(
     if device.startswith("cuda") and torch is not None and torch.cuda.is_available():
         torch.cuda.set_device(device)
 
-    # 4. Load tokenizer
+    # 4. Load environment credentials and tokenizer
+    load_environment()
+    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    tok_kwargs: Dict[str, Any] = {"trust_remote_code": True}
+    if hf_token:
+        tok_kwargs["token"] = hf_token
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_name_or_path,
-        trust_remote_code=True,
+        **tok_kwargs,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -304,6 +311,9 @@ def train_generator_qlora(
         model_kwargs["attn_implementation"] = "sdpa"
     else:
         model_kwargs["device_map"] = {"": device}
+
+    if hf_token:
+        model_kwargs["token"] = hf_token
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,

@@ -88,6 +88,31 @@ def load_environment(
     except Exception:
         pass
 
+    # Kaggle secrets fallback
+    try:
+        from kaggle_secrets import UserSecretsClient  # type: ignore
+        secrets_client = UserSecretsClient()
+        if "HF_TOKEN" not in os.environ:
+            tok = (
+                secrets_client.get_secret("HF_TOKEN")
+                or secrets_client.get_secret("HUGGINGFACE_TOKEN")
+                or secrets_client.get_secret("huggingface_token")
+            )
+            if tok:
+                os.environ["HF_TOKEN"] = str(tok)
+
+        if "KAGGLE_KEY" not in os.environ:
+            kkey = secrets_client.get_secret("KAGGLE_KEY") or secrets_client.get_secret("KAGGLE_API_TOKEN")
+            if kkey:
+                os.environ["KAGGLE_KEY"] = str(kkey)
+
+        if "KAGGLE_USERNAME" not in os.environ:
+            kuser = secrets_client.get_secret("KAGGLE_USERNAME")
+            if kuser:
+                os.environ["KAGGLE_USERNAME"] = str(kuser)
+    except Exception:
+        pass
+
     # Synchronize HF token aliases
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if hf_token:
