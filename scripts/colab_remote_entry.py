@@ -83,7 +83,11 @@ def main():
     print("      LegalQA Colab Remote Entrypoint — Stage Execution       ")
     print("=" * 65)
 
-    request_file = BOOTSTRAP_DIR / "run_request.json"
+    bootstrap_dir = BOOTSTRAP_DIR
+    if not (bootstrap_dir / "run_request.json").exists() and Path("/content/run_request.json").exists():
+        bootstrap_dir = Path("/content")
+
+    request_file = bootstrap_dir / "run_request.json"
     if not request_file.exists():
         # Fallback for local simulation / testing
         request_file = Path("run_request.json")
@@ -137,7 +141,7 @@ def main():
         ])
 
     # 3b. Load credentials from uploaded bootstrap .env
-    env_file = BOOTSTRAP_DIR / ".env"
+    env_file = bootstrap_dir / ".env"
     if env_file.exists():
         with open(env_file, "r", encoding="utf-8") as f:
             for line in f:
@@ -177,15 +181,15 @@ def main():
 
     # 5. Execute Stage via run_gpu_gate
     RUN_DIR.mkdir(parents=True, exist_ok=True)
-    candidate_manifest_path = BOOTSTRAP_DIR / "candidate_manifest.json"
+    candidate_manifest_path = bootstrap_dir / "candidate_manifest.json"
     if not candidate_manifest_path.exists():
         candidate_manifest_path = LEGALQA_DIR / f"artifacts/candidates/{candidate_id}/candidate_manifest.json"
 
     parent_report = None
     if stage == "colab_t4":
-        parent_report = BOOTSTRAP_DIR / "kaggle_t4x2_report.json"
+        parent_report = bootstrap_dir / "kaggle_t4x2_report.json"
     elif stage in ("a100", "colab_a100"):
-        parent_report = BOOTSTRAP_DIR / "colab_t4_report.json"
+        parent_report = bootstrap_dir / "colab_t4_report.json"
 
     from scripts.run_gpu_gate import run_gpu_gate
     gate_stage_name = "colab_t4" if stage == "colab_t4" else "a100_micro_probe"

@@ -235,10 +235,10 @@ class ColabLauncher:
                 subprocess.run(new_cmd, check=True)
                 session_created = True
 
-                # 2. colab upload (upload each staged file individually)
+                # 2. colab upload (upload each staged file to /content)
                 for file_p in sorted(staging_dir.iterdir()):
                     if file_p.is_file():
-                        remote_target = f"/content/legalqa_bootstrap/{file_p.name}"
+                        remote_target = f"/content/{file_p.name}"
                         upload_cmd = [self.colab_bin, "upload", "-s", self.session_name, str(file_p), remote_target]
                         subprocess.run(upload_cmd, check=True)
 
