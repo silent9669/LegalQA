@@ -13,7 +13,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PYTHON_BIN=""
-if [ -x ".venv-ml/bin/python" ]; then
+if [ -x ".venv311/bin/python" ]; then
+    PYTHON_BIN=".venv311/bin/python"
+elif [ -x ".venv-ml/bin/python" ]; then
     PYTHON_BIN=".venv-ml/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"

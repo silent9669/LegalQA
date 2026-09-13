@@ -286,12 +286,33 @@ class ColabLauncher:
                     print(f"[!] Warning: Preserving Colab session {self.session_name} (--keep-alive active).")
 
 
+def find_latest_verified_candidate() -> Optional[Path]:
+    """Find latest candidate manifest that has complete verified gate reports."""
+    candidates_dir = REPO_ROOT / "artifacts" / "candidates"
+    if not candidates_dir.is_dir():
+        return None
+    cands = sorted(candidates_dir.glob("*/candidate_manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # Prefer candidate with both kaggle and colab_t4 reports
+    for c in cands:
+        cand_id = c.parent.name
+        gates_dir = REPO_ROOT / "artifacts" / "gates" / cand_id
+        if (gates_dir / "kaggle_t4x2_report.json").is_file() and (gates_dir / "colab_t4_report.json").is_file():
+            return c
+    # Fallback to candidate with kaggle report
+    for c in cands:
+        cand_id = c.parent.name
+        gates_dir = REPO_ROOT / "artifacts" / "gates" / cand_id
+        if (gates_dir / "kaggle_t4x2_report.json").is_file() or (gates_dir / "kaggle_smoke_report.json").is_file():
+            return c
+    return cands[0] if cands else None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Launch Colab training or promotion gate.")
-    parser.add_argument("--stage", choices=["colab-t4", "a100"], required=True, help="Stage to execute")
-    parser.add_argument("--candidate", required=True, help="Path to candidate_manifest.json")
-    parser.add_argument("--kaggle-report", default=None, help="Path to verified kaggle_t4x2_report.json")
-    parser.add_argument("--colab-t4-report", default=None, help="Path to verified colab_t4_report.json (for a100)")
+    parser.add_argument("--stage", choices=["colab-t4", "a100"], default="a100", help="Stage to execute (default: a100)")
+    parser.add_argument("--candidate", default=None, help="Path to candidate_manifest.json (auto-detected if omitted)")
+    parser.add_argument("--kaggle-report", default=None, help="Path to verified kaggle_t4x2_report.json (auto-detected if omitted)")
+    parser.add_argument("--colab-t4-report", default=None, help="Path to verified colab_t4_report.json (for a100, auto-detected if omitted)")
     parser.add_argument("--session-name", default=None, help="Explicit Colab session identifier")
     parser.add_argument("--keep-alive", action="store_true", help="Do not stop VM upon completion")
     parser.add_argument("--timeout", type=int, default=None, help="Local subprocess timeout in seconds")
@@ -300,11 +321,39 @@ def main():
     parser.add_argument("--skip-ci-check", action="store_true", help="Skip GitHub CI status check")
     args = parser.parse_args()
 
+    candidate_path = args.candidate
+    if not candidate_path:
+        cand_p = find_latest_verified_candidate()
+        if not cand_p:
+            parser.error("No candidate manifest provided and none found in artifacts/candidates/")
+        candidate_path = str(cand_p)
+        print(f"[*] Auto-detected latest candidate manifest: {candidate_path}")
+
+    cand_id = Path(candidate_path).parent.name
+    cand_gates_dir = REPO_ROOT / "artifacts" / "gates" / cand_id
+
+    kaggle_report = args.kaggle_report
+    if not kaggle_report:
+        if (cand_gates_dir / "kaggle_t4x2_report.json").is_file():
+            kaggle_report = str(cand_gates_dir / "kaggle_t4x2_report.json")
+        elif (cand_gates_dir / "kaggle_smoke_report.json").is_file():
+            kaggle_report = str(cand_gates_dir / "kaggle_smoke_report.json")
+        elif (REPO_ROOT / "kaggle_smoke_report.json").is_file():
+            kaggle_report = str(REPO_ROOT / "kaggle_smoke_report.json")
+        if kaggle_report:
+            print(f"[*] Auto-detected Kaggle gate report: {kaggle_report}")
+
+    colab_t4_report = args.colab_t4_report
+    if not colab_t4_report and args.stage == "a100":
+        if (cand_gates_dir / "colab_t4_report.json").is_file():
+            colab_t4_report = str(cand_gates_dir / "colab_t4_report.json")
+            print(f"[*] Auto-detected Colab T4 gate report: {colab_t4_report}")
+
     launcher = ColabLauncher(
         stage=args.stage,
-        candidate_path=args.candidate,
-        kaggle_report_path=args.kaggle_report,
-        colab_t4_report_path=args.colab_t4_report,
+        candidate_path=candidate_path,
+        kaggle_report_path=kaggle_report,
+        colab_t4_report_path=colab_t4_report,
         session_name=args.session_name,
         keep_alive=args.keep_alive,
         timeout=args.timeout,
