@@ -164,19 +164,13 @@ def _main_exec():
             "transformers", "peft", "accelerate", "datasets", "trl", "liger-kernel", "bitsandbytes", "kaggle", "kagglehub"
         ])
 
-    # 3b. Load credentials from uploaded bootstrap .env
+    # 3b. Load credentials from uploaded bootstrap .env or system environment
+    from src.common.env_loader import load_environment
     env_file = bootstrap_dir / ".env"
-    if env_file.exists():
-        with open(env_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip("'").strip('"')
-                    if k:
-                        os.environ[k] = v
-        print("  OK: Credentials configured from uploaded .env")
+    env_info = load_environment(env_file=str(env_file) if env_file.exists() else None)
+    print(f"  OK: Credentials loaded via env_loader (source: {env_info.get('loaded_from_file') or 'environment/secrets'}).")
+    print(f"  OK: Hugging Face Auth: {'CONFIGURED (' + env_info['hf_token_masked'] + ')' if env_info['hf_token_configured'] else 'NOT CONFIGURED'}")
+    print(f"  OK: Kaggle Auth: {'CONFIGURED (' + env_info['kaggle_user'] + ')' if env_info['kaggle_configured'] else 'NOT CONFIGURED'}")
 
     # Set up ~/.kaggle/kaggle.json if present
     if os.environ.get("KAGGLE_USERNAME") and os.environ.get("KAGGLE_KEY"):
@@ -283,12 +277,19 @@ def _main_exec():
         run_id = f"run_{cand_manifest.candidate_id}_{timestamp_str}"
         bundle_dir = RUN_DIR / run_id
 
+        k_rep_p = (bootstrap_dir / "kaggle_t4x2_report.json") if (bootstrap_dir / "kaggle_t4x2_report.json").exists() else (BOOTSTRAP_DIR / "kaggle_t4x2_report.json")
+        c_rep_p = (bootstrap_dir / "colab_t4_report.json") if (bootstrap_dir / "colab_t4_report.json").exists() else (BOOTSTRAP_DIR / "colab_t4_report.json")
+        if not k_rep_p.exists() and (LEGALQA_DIR / f"artifacts/gates/{cand_manifest.candidate_id}/kaggle_t4x2_report.json").exists():
+            k_rep_p = LEGALQA_DIR / f"artifacts/gates/{cand_manifest.candidate_id}/kaggle_t4x2_report.json"
+        if not c_rep_p.exists() and (LEGALQA_DIR / f"artifacts/gates/{cand_manifest.candidate_id}/colab_t4_report.json").exists():
+            c_rep_p = LEGALQA_DIR / f"artifacts/gates/{cand_manifest.candidate_id}/colab_t4_report.json"
+
         build_production_run_bundle(
             run_id=run_id,
             candidate=cand_manifest,
             adapter_source_dir=RUN_DIR / "production_training",
-            kaggle_report_path=BOOTSTRAP_DIR / "kaggle_t4x2_report.json",
-            colab_t4_report_path=BOOTSTRAP_DIR / "colab_t4_report.json",
+            kaggle_report_path=k_rep_p,
+            colab_t4_report_path=c_rep_p,
             a100_micro_probe_report_path=RUN_DIR / "a100_micro_probe_report.json",
             train_log_path=RUN_DIR / "a100_micro_probe.log",
             output_dir=bundle_dir,

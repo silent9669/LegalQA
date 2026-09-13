@@ -55,7 +55,17 @@ def load_environment(
         cwd.parent / ".env",
         Path("/content/.env"),
         Path("/content/LegalQA/.env"),
+        Path("/kaggle/working/.env"),
+        Path("/kaggle/working/LegalQA/.env"),
+        Path("/kaggle/input/.env"),
     ])
+    # Search for mounted dataset .env on Kaggle if present
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.is_dir():
+        try:
+            candidates.extend(list(kaggle_input.glob("*/.env")))
+        except Exception:
+            pass
 
     loaded_from: Optional[str] = None
     for cand in candidates:
@@ -72,7 +82,7 @@ def load_environment(
         from google.colab import userdata  # type: ignore
 
         if "HF_TOKEN" not in os.environ:
-            tok = userdata.get("HF_TOKEN") or userdata.get("HUGGINGFACE_TOKEN")
+            tok = userdata.get("HF_TOKEN") or userdata.get("HUGGINGFACE_TOKEN") or userdata.get("HF_TOKEN_WRITE")
             if tok:
                 os.environ["HF_TOKEN"] = str(tok)
 
@@ -97,6 +107,7 @@ def load_environment(
                 secrets_client.get_secret("HF_TOKEN")
                 or secrets_client.get_secret("HUGGINGFACE_TOKEN")
                 or secrets_client.get_secret("huggingface_token")
+                or secrets_client.get_secret("HF_TOKEN_WRITE")
             )
             if tok:
                 os.environ["HF_TOKEN"] = str(tok)
@@ -114,7 +125,12 @@ def load_environment(
         pass
 
     # Synchronize HF token aliases
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    hf_token = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HF_TOKEN_WRITE")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or os.environ.get("HF_TOKEN_READ")
+    )
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
@@ -123,6 +139,12 @@ def load_environment(
             huggingface_hub.login(token=hf_token, add_to_git_credential=False)
         except Exception:
             pass
+
+    # Synchronize Kaggle key aliases
+    k_key = os.environ.get("KAGGLE_KEY") or os.environ.get("KAGGLE_API_TOKEN")
+    if k_key:
+        os.environ["KAGGLE_KEY"] = k_key
+        os.environ["KAGGLE_API_TOKEN"] = k_key
 
     # Configure Kaggle credentials file if KAGGLE_USERNAME and KAGGLE_KEY exist
     kaggle_configured = False
