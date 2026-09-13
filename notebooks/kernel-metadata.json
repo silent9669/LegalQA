@@ -10,7 +10,8 @@
   "enable_internet": true,
   "machine_shape": "NvidiaTeslaT4",
   "dataset_sources": [
-    "phucdangg/legalqa-task2-clean-data"
+    "phucdangg/legalqa-task2-clean-data",
+    "phucdangg/legalqa-candidate"
   ],
   "competition_sources": [],
   "kernel_sources": [],
