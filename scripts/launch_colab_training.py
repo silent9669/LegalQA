@@ -244,8 +244,10 @@ class ColabLauncher:
 
                 # 3. colab exec (NEVER pass --timeout to colab exec)
                 exec_cmd = [self.colab_bin, "exec", "-s", self.session_name, "-f", "scripts/colab_remote_entry.py"]
-                # Enforce timeout in local subprocess if configured
-                subprocess.run(exec_cmd, check=True, timeout=self.timeout)
+                # Enforce timeout in local subprocess if configured and prevent 30s kernel client timeout via REQUEST_TIMEOUT
+                sub_env = os.environ.copy()
+                sub_env["REQUEST_TIMEOUT"] = str(int(self.timeout or 86400))
+                subprocess.run(exec_cmd, check=True, timeout=self.timeout, env=sub_env)
 
                 # 4. colab download (download key control artifacts individually)
                 cand_id = self.candidate.candidate_id if self.candidate else "candidate"

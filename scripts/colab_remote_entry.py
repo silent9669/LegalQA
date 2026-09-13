@@ -208,7 +208,7 @@ def _main_exec():
 
     if not dataset_path or not (Path(dataset_path) / "qa_unique.parquet").exists():
         try:
-            run_command(["kaggle", "datasets", "download", "-d", dataset_slug, "-p", str(data_target), "--unzip"])
+            run_command([sys.executable, "-m", "kaggle", "datasets", "download", "-d", dataset_slug, "-p", str(data_target), "--unzip"])
             dataset_path = str(data_target)
             print(f"  OK: Downloaded via kaggle CLI to {dataset_path}")
         except Exception as e2:
