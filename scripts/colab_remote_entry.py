@@ -21,6 +21,19 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Safe GPU allocator and framework defaults
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", ".05")
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
+os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
+
 BOOTSTRAP_DIR = Path("/content/legalqa_bootstrap")
 LEGALQA_DIR = Path("/content/LegalQA")
 DATA_DIR = Path("/content/data")
@@ -122,6 +135,32 @@ def main():
             "-c", str(constraints_file),
             "transformers", "peft", "accelerate", "datasets", "trl", "liger-kernel", "bitsandbytes"
         ])
+
+    # 3b. Load credentials from uploaded bootstrap .env
+    env_file = BOOTSTRAP_DIR / ".env"
+    if env_file.exists():
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'").strip('"')
+                    if k:
+                        os.environ[k] = v
+        print("  OK: Credentials configured from uploaded .env")
+
+    # Set up ~/.kaggle/kaggle.json if present
+    if os.environ.get("KAGGLE_USERNAME") and os.environ.get("KAGGLE_KEY"):
+        kaggle_dir = Path.home() / ".kaggle"
+        kaggle_dir.mkdir(parents=True, exist_ok=True)
+        kaggle_json = kaggle_dir / "kaggle.json"
+        kaggle_json.write_text(json.dumps({
+            "username": os.environ["KAGGLE_USERNAME"],
+            "key": os.environ["KAGGLE_KEY"],
+        }), encoding="utf-8")
+        kaggle_json.chmod(0o600)
+        print("  OK: Kaggle credentials file configured.")
 
     # 4. Download Kaggle Dataset (Versioned)
     data_target = DATA_DIR / dataset_slug.split("/")[-1]
