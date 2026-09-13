@@ -316,7 +316,7 @@ def _main_exec():
             bundle_dir=bundle_dir,
             repo_id="dangphuc2109/legalqa-qwen2.5-3b-adapter",
             run_id=run_id,
-            private=True,
+            private=False,  # Repo policy is public; the only secret is HF_TOKEN itself (never committed).
         )
         print(f"\n[PASS] Released to Hugging Face: {upload_res.get('repo_url')}")
 

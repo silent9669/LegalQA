@@ -30,5 +30,5 @@ generator:
 
 huggingface:
   repo_id: "dangphuc2109/legalqa-qwen2.5-3b-adapter"
-  private: true
+  private: false
   upload_run_bundle: true

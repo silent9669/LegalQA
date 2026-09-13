@@ -118,7 +118,7 @@ def main():
     hf_cfg = cfg.get("huggingface")
     if hf_cfg and hf_cfg.get("repo_id") and not args.no_upload_to_hf:
         repo_id = hf_cfg["repo_id"]
-        private = hf_cfg.get("private", True)
+        private = hf_cfg.get("private", False)
         print(f"\n=== Auto-Uploading Run Bundle to Hugging Face ===")
         print(f"Target Repo: {repo_id} (private={private})")
         try:

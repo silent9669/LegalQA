@@ -21,7 +21,7 @@ def upload_directory_to_hf(
     repo_id: str,
     folder_path: str | Path,
     path_in_repo: Optional[str] = None,
-    private: bool = True,
+    private: bool = False,  # Repo policy is public; the only secret is HF_TOKEN itself (never committed).
     repo_type: str = "model",
     commit_message: Optional[str] = None,
     token: Optional[str] = None,
@@ -99,7 +99,7 @@ def upload_run_bundle_to_hf(
     bundle_dir: Union[Path, str],
     repo_id: str = DEFAULT_HF_REPO,
     run_id: Optional[str] = None,
-    private: bool = True,
+    private: bool = False,  # Repo policy is public; the only secret is HF_TOKEN itself (never committed).
     token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Upload an immutable audited run bundle under runs/<run_id>/ in Hugging Face Hub."""
