@@ -38,6 +38,8 @@ def test_colab_cli_command_sequence(tmp_path):
         keep_alive=False,
     )
 
+    (tmp_path / "run_request.json").write_text("{}")
+
     with patch("subprocess.run", side_effect=mock_subprocess_run), \
          patch("subprocess.check_output", return_value=b"colab version 0.1.0"), \
          patch.object(launcher, "_preflight_checks", return_value=None), \

@@ -224,7 +224,10 @@ class ColabLauncher:
         session_created = False
         with tempfile.TemporaryDirectory() as tmpdir:
             staging_dir = Path(tmpdir) / "bootstrap"
-            self._prepare_bootstrap_bundle(staging_dir)
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            res_staging = self._prepare_bootstrap_bundle(staging_dir)
+            if res_staging and Path(res_staging).is_dir():
+                staging_dir = Path(res_staging)
 
             try:
                 # 1. colab new
@@ -232,21 +235,43 @@ class ColabLauncher:
                 subprocess.run(new_cmd, check=True)
                 session_created = True
 
-                # 2. colab upload
-                upload_cmd = [self.colab_bin, "upload", "-s", self.session_name, str(staging_dir), "/content/legalqa_bootstrap"]
-                subprocess.run(upload_cmd, check=True)
+                # 2. colab upload (upload each staged file individually)
+                for file_p in sorted(staging_dir.iterdir()):
+                    if file_p.is_file():
+                        remote_target = f"/content/legalqa_bootstrap/{file_p.name}"
+                        upload_cmd = [self.colab_bin, "upload", "-s", self.session_name, str(file_p), remote_target]
+                        subprocess.run(upload_cmd, check=True)
 
                 # 3. colab exec (NEVER pass --timeout to colab exec)
                 exec_cmd = [self.colab_bin, "exec", "-s", self.session_name, "-f", "scripts/colab_remote_entry.py"]
                 # Enforce timeout in local subprocess if configured
                 subprocess.run(exec_cmd, check=True, timeout=self.timeout)
 
-                # 4. colab download
+                # 4. colab download (download key control artifacts individually)
                 cand_id = self.candidate.candidate_id if self.candidate else "candidate"
                 target_gate_dir = self.output_dir / cand_id
                 target_gate_dir.mkdir(parents=True, exist_ok=True)
-                download_cmd = [self.colab_bin, "download", "-s", self.session_name, "/content/legalqa_run", str(target_gate_dir)]
-                subprocess.run(download_cmd, check=True)
+
+                remote_files = [f"{self.stage}_report.json", f"{self.stage}.log", f"{self.stage}_telemetry.json"]
+                if self.stage in ("a100", "colab_a100"):
+                    remote_files = [
+                        "a100_micro_probe_report.json",
+                        "a100_micro_probe.log",
+                        "telemetry.json",
+                        "production_run_manifest.json",
+                        "metrics.json",
+                        "checksums.sha256",
+                    ]
+
+                for rf in remote_files:
+                    remote_file_path = f"/content/legalqa_run/{rf}"
+                    local_dest = str(target_gate_dir / rf)
+                    dl_cmd = [self.colab_bin, "download", "-s", self.session_name, remote_file_path, local_dest]
+                    try:
+                        subprocess.run(dl_cmd, check=True)
+                        print(f"  Downloaded: {rf}")
+                    except Exception as e:
+                        print(f"  Notice: Download of {rf} skipped or not produced: {e}")
 
                 self._verify_downloaded_artifacts(target_gate_dir)
 
