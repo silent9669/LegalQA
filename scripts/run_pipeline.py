@@ -28,7 +28,7 @@ from src.task2.path_resolver import resolve_runtime_paths
 
 def main():
     parser = argparse.ArgumentParser(description="LegalQA Task 2 Pipeline Execution Entrypoint")
-    parser.add_argument("--config", default="configs/kaggle_smoke_t4.yaml", help="Path to profile configuration YAML")
+    parser.add_argument("--config", default="configs/task2/runtime/kaggle_t4x2.yaml", help="Path to profile configuration YAML (authoritative runtime profile; legacy flat configs are frozen for backward compatibility only)")
     parser.add_argument("--data-dir", default=None, help="Explicit dataset directory path")
     parser.add_argument("--output-dir", default=None, help="Output directory for checkpoints and logs")
     parser.add_argument("--require-smoke-pass", default=None, help="Path to kaggle_smoke_report.json (required for A100)")

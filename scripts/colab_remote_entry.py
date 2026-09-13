@@ -284,6 +284,8 @@ def _main_exec():
         if not c_rep_p.exists() and (LEGALQA_DIR / f"artifacts/gates/{cand_manifest.candidate_id}/colab_t4_report.json").exists():
             c_rep_p = LEGALQA_DIR / f"artifacts/gates/{cand_manifest.candidate_id}/colab_t4_report.json"
 
+        # Metrics: traceable to measured micro-probe + production trainer output.
+        # NEVER hardcode evaluation scores here — Lead approval and audit depend on real values.
         build_production_run_bundle(
             run_id=run_id,
             candidate=cand_manifest,
@@ -293,7 +295,15 @@ def _main_exec():
             a100_micro_probe_report_path=RUN_DIR / "a100_micro_probe_report.json",
             train_log_path=RUN_DIR / "a100_micro_probe.log",
             output_dir=bundle_dir,
-            metrics={"meteor": 0.495, "rouge_l": 0.531},
+            metrics={
+                "micro_probe_meteor": float(report.metrics.meteor),
+                "micro_probe_rouge_l": float(report.metrics.rouge_l),
+                "micro_probe_optimizer_steps": int(report.metrics.optimizer_steps),
+                "production_optimizer_steps": int(final_train_res.get("optimizer_steps", 0)),
+                "production_dataset_size": int(final_train_res.get("dataset_size", 0)),
+                "production_backend": str(final_train_res.get("backend", "liger_fused_linear_ce")),
+                "production_strict_reload": str(final_train_res.get("strict_reload", "unknown")),
+            },
             optimizer_steps=final_train_res.get("optimizer_steps", 300),
             training_sample_count=final_train_res.get("dataset_size", 2400),
         )

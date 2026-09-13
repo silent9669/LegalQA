@@ -94,3 +94,20 @@ runs/<run_id>/
 ├── model_card.md
 └── checksums.sha256
 ```
+
+---
+
+## 6. Provenance Store (gitignored artifacts)
+
+`artifacts/candidates/`, `artifacts/gates/`, `*.parquet`, and `*_output.ipynb` are gitignored by design (heavy binaries must never enter git). The promotable evidence therefore lives in two places:
+
+1. **Hugging Face** `dangphuc2109/legalqa-qwen2.5-3b-adapter` under `runs/<run_id>/` — immutable release containing `candidate_manifest.json`, all three gate reports, resolved configs, metrics, and checksums (Lead approval source of truth).
+2. **Local run host** `artifacts/gates/<candidate_id>/` — staging copy downloaded by `launch_colab_training.py` and verified with `verify_gate_report` before promotion.
+
+The root `kaggle_smoke_report.json` is a legacy stub kept for backward compatibility only and is NOT promotable evidence. Never approve an A100 run from it; require the `artifacts/gates/<candidate_id>/kaggle_t4x2_report.json` + `colab_t4_report.json` chain for the exact frozen candidate.
+
+## 7. Notebook Roles
+
+- `notebooks/kaggle_smoke.ipynb` — Kaggle Dual-T4 CUDA gate launcher (Gate 2).
+- `notebooks/colab_a100_train.ipynb` — canonical A100 production training notebook (Gate 4). Uses authoritative `configs/task2/algorithm.yaml` + `configs/task2/runtime/colab_a100.yaml` and the single HF target `src/task2/hf_uploader.py::DEFAULT_HF_REPO`. Legacy flat configs (`configs/kaggle_smoke_t4.yaml`, `configs/colab_train_a100.yaml`) are frozen for compatibility only.
+- `Colab_A100_Master_Pipeline.ipynb` — INFERENCE-ONLY Drive pipeline (retrieval + merged-bf16 generation). Not a training path; do not spend training credit from it.
