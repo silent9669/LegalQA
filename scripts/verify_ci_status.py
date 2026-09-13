@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.request
 from typing import Dict, List, Optional
@@ -33,6 +34,14 @@ def fetch_github_check_runs(commit_sha: str, repo: str = DEFAULT_REPO, token: Op
     req.add_header("User-Agent", "LegalQA-Gatekeeper")
 
     gh_token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not gh_token:
+        try:
+            gh_out = subprocess.check_output(["gh", "auth", "token"], text=True).strip()
+            if gh_out:
+                gh_token = gh_out
+        except Exception:
+            pass
+
     if gh_token:
         req.add_header("Authorization", f"Bearer {gh_token}")
 
