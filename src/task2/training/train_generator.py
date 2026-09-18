@@ -257,10 +257,24 @@ def run_qlora_training(
     is_final_checkpoint: Optional[bool] = None,
     fail_on_error: bool = True,
     ce_chunk_size: int = 32,
+    resolved_config: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Execute QLoRA fine-tuning on GPU 0 using modern TRL prompt-completion SFT with strict reload verification."""
     print(f"=== Starting QLoRA Generator Fine-Tuning (Base: {base_model_id} | Path: {model_name_or_path}) ===")
     assert_no_secrets_in_workspace(Path.cwd())
+
+    if resolved_config is not None:
+        # Candidate recipe is authoritative: algorithm sets the sequence
+        # budget, epochs, LR and adapter shape; runtime sets the microbatch.
+        algo = resolved_config.algorithm
+        rt = resolved_config.runtime
+        max_seq_len = int(algo.generator.max_seq_len)
+        epochs = int(algo.generator.num_train_epochs)
+        lr = float(algo.generator.learning_rate)
+        batch_size = int(rt.generator_runtime.per_device_train_batch_size)
+        grad_accum = int(rt.generator_runtime.gradient_accumulation_steps)
+        base_model_id = algo.models.generator.id
+        model_name_or_path = model_name_or_path or base_model_id
 
     try:
         import torch

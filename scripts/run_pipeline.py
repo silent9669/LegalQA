@@ -114,9 +114,15 @@ def main():
         allow_single_gpu=args.allow_single_gpu or (gpu_count < 2),
     )
 
-    # Automatic Hugging Face upload if configured
+    # Automatic Hugging Face upload if configured.
+    # Release is an explicit, receipt-producing stage (scripts/release_verified.py):
+    # smoke/probe profiles can never upload from here.
     hf_cfg = cfg.get("huggingface")
-    if hf_cfg and hf_cfg.get("repo_id") and not args.no_upload_to_hf:
+    is_smoke_profile = any(tag in profile.name for tag in ("smoke", "probe", "screen"))
+    if is_smoke_profile and hf_cfg and hf_cfg.get("repo_id") and not args.no_upload_to_hf:
+        print(f"Refusing auto-upload for smoke/profile '{profile.name}': smoke cannot upload. "
+              f"Use scripts/release_verified.py after explicit authorization.")
+    elif hf_cfg and hf_cfg.get("repo_id") and not args.no_upload_to_hf:
         repo_id = hf_cfg["repo_id"]
         private = hf_cfg.get("private", False)
         print(f"\n=== Auto-Uploading Run Bundle to Hugging Face ===")

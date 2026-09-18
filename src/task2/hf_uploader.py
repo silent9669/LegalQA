@@ -31,6 +31,13 @@ def upload_directory_to_hf(
     if not folder.is_dir():
         raise FileNotFoundError(f"Upload directory does not exist: {folder}")
 
+    # 0. Immutable-path guard: release uploads never overwrite a
+    # latest/best pointer; they land in a per-run directory.
+    if path_in_repo is not None:
+        from src.task2.provenance.release_receipt import require_immutable_path
+
+        path_in_repo = require_immutable_path(path_in_repo)
+
     # 1. Preflight secret scan - fail-closed on any leaked credentials
     assert_no_secrets_in_workspace(folder, exclude_tests=False)
 
@@ -83,6 +90,8 @@ def upload_directory_to_hf(
     repo_url = f"https://huggingface.co/{repo_id}"
     print(f"[SUCCESS] Upload complete! Commit SHA: {commit_sha} -> {repo_url}")
 
+    from src.task2.provenance.checksums import compute_directory_checksums
+
     return {
         "status": "SUCCESS",
         "repo_id": repo_id,
@@ -92,6 +101,7 @@ def upload_directory_to_hf(
         "commit_info": str(commit_info),
         "source_folder": str(folder),
         "path_in_repo": path_in_repo,
+        "local_digests": compute_directory_checksums(folder),
     }
 
 

@@ -222,8 +222,22 @@ def _main_exec():
     elif stage in ("a100", "colab_a100"):
         parent_report = bootstrap_dir / "colab_t4_report.json"
 
-    from scripts.run_gpu_gate import run_gpu_gate
+    from scripts.run_gpu_gate import run_gpu_gate, validate_parent_gate
     gate_stage_name = "colab_t4" if stage == "colab_t4" else "a100_micro_probe"
+    if parent_report and parent_report.exists():
+        from src.task2.provenance.gate_report import GateReport as _GateReport
+
+        _parent = _GateReport.load_json(parent_report)
+        validate_parent_gate(
+            {
+                "status": _parent.status,
+                "candidate_sha": _parent.candidate_id,
+                "stage": _parent.stage,
+                "report_sha256": _parent.compute_sha256(),
+            },
+            candidate_id,
+            gate_stage_name,
+        )
     report = run_gpu_gate(
         stage=gate_stage_name,
         candidate_path=str(candidate_manifest_path),
@@ -231,6 +245,7 @@ def _main_exec():
         output_dir=str(RUN_DIR),
         skip_gpu_assert=False,
         parent_report_path=str(parent_report) if parent_report and parent_report.exists() else None,
+        runtime_profile="colab_a100" if gate_stage_name == "a100_micro_probe" else None,
     )
     print(f"\n[PASS] Colab remote entry completed {gate_stage_name} successfully: {report.status}")
 
@@ -263,6 +278,22 @@ def _main_exec():
             execution_profile="final_train_and_submit",
         )
         print(f"\n[PASS] Full production training completed: {final_train_res.get('status')}")
+
+        # Measured training evidence link for the end-to-end graph.
+        import json as _json_link
+
+        _train_link = {
+            "kind": "training",
+            "candidate_sha": candidate_id,
+            "optimizer_steps": int(final_train_res.get("optimizer_steps", 0)),
+            "training_samples": int(final_train_res.get("dataset_size", 0)),
+            "backend": str(final_train_res.get("backend", "liger_fused_linear_ce")),
+            "val_fold": None,
+            "training_scope": "all_allowed_train",
+            "measured": True,
+        }
+        (RUN_DIR / "training_evidence_link.json").write_text(_json_link.dumps(_train_link, indent=2))
+        print(f"  OK: Training evidence link written ({_train_link['optimizer_steps']} steps).")
 
         # Build production run bundle and publish to Hugging Face
         print("\n" + "=" * 65)

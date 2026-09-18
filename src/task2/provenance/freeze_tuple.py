@@ -71,3 +71,28 @@ def build_run_manifest(
         "metrics": metrics,
         "huggingface_repo": hf_repo,
     }
+
+
+def extend_freeze_record(
+    base: Dict[str, Any],
+    runtime_sha256: str = "",
+    index_sha256: str = "",
+    scorer_sha256: str = "",
+) -> Dict[str, Any]:
+    """Add release evidence to a freeze record without changing existing fields.
+
+    Existing keys keep their exact meaning; runtime, index, and scorer
+    identities are additive. Empty values raise (no silent gaps).
+    """
+    for name, value in (
+        ("runtime_sha256", runtime_sha256),
+        ("index_sha256", index_sha256),
+        ("scorer_sha256", scorer_sha256),
+    ):
+        if not value or len(str(value)) != 64:
+            raise ValueError(f"extend_freeze_record requires 64-hex {name}")
+    extended = dict(base)
+    extended["runtime_sha256"] = runtime_sha256
+    extended["index_sha256"] = index_sha256
+    extended["scorer_sha256"] = scorer_sha256
+    return extended

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -90,6 +91,7 @@ class QAMemory:
 
             rec_info = {
                 "qa_id": qa_id,
+                "qa_group_id": hashlib.sha256(f"qagroup:{q_norm}".encode("utf-8")).hexdigest()[:16],
                 "question_raw": q_raw,
                 "question_norm": q_norm,
                 "answer_raw": ans_raw,
@@ -218,15 +220,40 @@ class QAMemory:
         """Retrieve nearest QA pair as style/length exemplar without entity filtering."""
         return self.lookup_fuzzy(question, threshold=0.50, require_entity_match=False)
 
-    def filter_fold(self, val_qa_ids: Set[str], val_questions: Optional[Set[str]] = None) -> QAMemory:
-        """Return a new QAMemory instance strictly excluding all validation records to guarantee zero leakage."""
+    def filter_fold(
+        self,
+        val_qa_ids: Set[str],
+        val_questions: Optional[Set[str]] = None,
+        val_group_ids: Optional[Set[str]] = None,
+    ) -> QAMemory:
+        """Return a new QAMemory instance strictly excluding all validation records to guarantee zero leakage.
+
+        Exclusion covers legacy QA ids, normalized questions, AND canonical
+        qa_group_ids, so held-out groups cannot leak through memory lookup,
+        fuzzy reuse, or style exemplars.
+        """
         val_qa_ids_str = {str(k).strip() for k in val_qa_ids}
         val_q_norm = {normalize_question(q) for q in val_questions} if val_questions else set()
+        val_groups = {str(g).strip() for g in val_group_ids} if val_group_ids else set()
+
+        def _group_of(rec: Dict[str, Any]) -> str:
+            return str(rec.get("qa_group_id", "") or "").strip()
+
+        if val_groups:
+            # A held-out group must also vanish from the normalized-question
+            # map, or fuzzy/exemplar lookup would leak it via question text.
+            for rec in self.records:
+                if _group_of(rec) in val_groups and rec.get("question_norm"):
+                    val_q_norm.add(rec["question_norm"])
+            for qa_id, rec in self.id_to_record.items():
+                if _group_of(rec) in val_groups:
+                    val_qa_ids_str.add(str(qa_id).strip())
 
         filtered_records = [
             r for r in self.records
             if str(r.get("qa_id") or r.get("id", "")).strip() not in val_qa_ids_str
             and r.get("question_norm") not in val_q_norm
+            and (not val_groups or _group_of(r) not in val_groups)
         ]
 
         filtered_id_map = {
@@ -236,15 +263,20 @@ class QAMemory:
         filtered_id_to_rec = {
             k: v for k, v in self.id_to_record.items()
             if k not in val_qa_ids_str and v.get("question_norm") not in val_q_norm
+            and (not val_groups or str(v.get("qa_group_id", "") or "").strip() not in val_groups)
         }
         filtered_q_map = {
             k: v for k, v in self.question_to_answer.items()
             if k not in val_q_norm
         }
 
-        filtered_df = self.df[
-            (~self.df["qa_id"].astype(str).isin(val_qa_ids_str)) & (~self.df["question_norm"].isin(val_q_norm))
-        ] if not self.df.empty else self.df
+        if not self.df.empty:
+            mask = (~self.df["qa_id"].astype(str).isin(val_qa_ids_str)) & (~self.df["question_norm"].isin(val_q_norm))
+            if val_groups and "qa_group_id" in self.df.columns:
+                mask = mask & (~self.df["qa_group_id"].astype(str).isin(val_groups))
+            filtered_df = self.df[mask]
+        else:
+            filtered_df = self.df
 
         return QAMemory(
             filtered_id_map,
@@ -254,6 +286,10 @@ class QAMemory:
             records=filtered_records,
             id_to_record=filtered_id_to_rec,
         )
+
+    def filter_groups(self, excluded_group_ids: Set[str]) -> QAMemory:
+        """Exclude whole canonical groups (the split exclusion boundary)."""
+        return self.filter_fold(set(), None, set(excluded_group_ids))
 
     def save(self, json_path: str, parquet_path: Optional[str] = None) -> None:
         os.makedirs(os.path.dirname(json_path), exist_ok=True)

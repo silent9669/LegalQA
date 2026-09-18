@@ -16,6 +16,10 @@ class EvidencePacker:
         self.article_to_chunks: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self.doc_to_articles: Dict[str, Set[str]] = defaultdict(set)
         self.chunk_by_id: Dict[str, Dict[str, Any]] = {}
+        # One-to-many chunk map: a legacy chunk id may own several physical
+        # fragments. chunk_by_id keeps last-seen for backward compatibility;
+        # chunks_by_id preserves every fragment in order.
+        self.chunks_by_id: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for c in all_chunks:
             cid = str(c.get("chunk_id", "")).strip()
@@ -24,6 +28,7 @@ class EvidencePacker:
 
             if cid:
                 self.chunk_by_id[cid] = c
+                self.chunks_by_id[cid].append(c)
 
             if p_art:
                 self.article_to_chunks[p_art].append(c)
@@ -36,6 +41,10 @@ class EvidencePacker:
                 int(x.get("start_char") or 0),
                 int(re.findall(r'\d+', str(x.get("clause_number", "0")))[0]) if re.findall(r'\d+', str(x.get("clause_number", "0"))) else 0,
             ))
+
+    def texts_for_chunk(self, chunk_id: str) -> List[str]:
+        """Return EVERY fragment text for a chunk id, in corpus order."""
+        return [str(c.get("text_raw", "") or "") for c in self.chunks_by_id.get(str(chunk_id).strip(), [])]
 
     def pack_evidence(
         self,

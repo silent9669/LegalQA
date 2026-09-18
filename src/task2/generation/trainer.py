@@ -167,28 +167,10 @@ def train_generator_qlora(
         rt = resolved_config.runtime
         target_dev = device if device != "cuda:0" else rt.devices.get("generator", device)
         device = target_dev
-        config = GeneratorTrainConfig(
-            model_id=algo.models.generator.id,
-            max_seq_len=algo.generator.max_seq_len,
-            batch_size=rt.generator_runtime.per_device_train_batch_size,
-            grad_accum=rt.generator_runtime.gradient_accumulation_steps,
-            learning_rate=algo.generator.learning_rate,
-            lora_r=algo.generator.lora_r,
-            lora_alpha=algo.generator.lora_alpha,
-            lora_dropout=algo.generator.lora_dropout,
-            target_modules=tuple(algo.generator.target_modules),
-            activation_offloading=rt.generator_runtime.activation_offloading,
-            use_liger_fused_ce=algo.generator.use_liger_fused_ce,
-            device=target_dev,
-            quantization=algo.generator.quantization,
-            double_quant=algo.generator.double_quant,
-            compute_dtype=rt.generator_runtime.compute_dtype,
-            optimizer="paged_adamw_8bit",
-            gradient_checkpointing=algo.generator.gradient_checkpointing,
-            completion_only_loss=algo.generator.completion_only_loss,
-            trainer_n_gpu=1,
-        )
-        epochs = algo.generator.num_train_epochs
+        from src.task2.training.context_builder import recipe_epochs, recipe_to_train_config
+
+        config = recipe_to_train_config(resolved_config, device=target_dev)
+        epochs = recipe_epochs(resolved_config)
         seed = algo.seed
         if val_fold == 0 and algo.final_training.val_fold is None and (execution_profile == "final_train_and_submit" or rt.production):
             val_fold = None

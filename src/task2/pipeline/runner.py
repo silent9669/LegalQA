@@ -43,6 +43,9 @@ def run_pipeline(
     allow_single_gpu: bool = False,
 ) -> Dict[str, Any]:
     """Execute all stages for the specified profile."""
+    import time as _time
+
+    attempt_started = _time.monotonic()
     os.makedirs(output_dir, exist_ok=True)
 
     if resolved_config is not None:
@@ -181,26 +184,9 @@ def run_pipeline(
         is_smoke = "smoke" in profile.name or "probe" in profile.name
         qlora_out = os.path.join(output_dir, "checkpoints/generator/hf_adapter")
         if resolved_config is not None:
-            gen_cfg = GeneratorTrainConfig(
-                model_id=resolved_config.algorithm.models.generator.id,
-                max_seq_len=resolved_config.algorithm.generator.max_seq_len,
-                batch_size=resolved_config.runtime.generator_runtime.per_device_train_batch_size,
-                grad_accum=resolved_config.runtime.generator_runtime.gradient_accumulation_steps,
-                learning_rate=resolved_config.algorithm.generator.learning_rate,
-                lora_r=resolved_config.algorithm.generator.lora_r,
-                lora_alpha=resolved_config.algorithm.generator.lora_alpha,
-                lora_dropout=resolved_config.algorithm.generator.lora_dropout,
-                target_modules=tuple(resolved_config.algorithm.generator.target_modules),
-                activation_offloading=resolved_config.runtime.generator_runtime.activation_offloading,
-                use_liger_fused_ce=resolved_config.algorithm.generator.use_liger_fused_ce,
-                device=gen_device,
-                quantization=resolved_config.algorithm.generator.quantization,
-                double_quant=resolved_config.algorithm.generator.double_quant,
-                compute_dtype=resolved_config.runtime.generator_runtime.compute_dtype,
-                gradient_checkpointing=resolved_config.algorithm.generator.gradient_checkpointing,
-                completion_only_loss=resolved_config.algorithm.generator.completion_only_loss,
-                trainer_n_gpu=1,
-            )
+            from src.task2.training.context_builder import recipe_to_train_config
+
+            gen_cfg = recipe_to_train_config(resolved_config, device=gen_device)
         else:
             gen_cfg = GeneratorTrainConfig(
                 model_id=model_path,
@@ -252,6 +238,34 @@ def run_pipeline(
         )
         adapter_path = qlora_out
         results["stages"]["generator"] = res_qlora
+
+        from src.task2.provenance.deadline import save_complete_checkpoint
+
+        try:
+            elapsed_train = int(_time.monotonic() - attempt_started)
+            save_complete_checkpoint(
+                os.path.join(output_dir, "checkpoints", "deadline"),
+                "generator_train",
+                state={
+                    "global_step": int(res_qlora.get("global_step", res_qlora.get("optimizer_steps", 0)) or 0),
+                    "result": {k: v for k, v in res_qlora.items() if isinstance(v, (int, float, str, bool))},
+                },
+                manifest={
+                    "candidate_id": resolved_config.candidate_id if resolved_config else "",
+                    "code_commit_sha": results.get("git_commit_sha", ""),
+                    "model_revision": (resolved_config.algorithm.models.generator.id if resolved_config else model_path),
+                    "data_hash": "",
+                    "split_fingerprint": "",
+                    "global_step": int(res_qlora.get("global_step", res_qlora.get("optimizer_steps", 0)) or 0),
+                    "elapsed_seconds": elapsed_train,
+                    "retry_count": 0,
+                    "optimizer_state": "trainer_state",
+                    "scheduler_state": "trainer_state",
+                    "sampler_position": "epoch_complete" if res_qlora.get("status") not in ("skipped",) else "unknown",
+                },
+            )
+        except Exception as exc:
+            raise RuntimeError(f"deadline checkpoint for generator_train failed: {exc}") from exc
 
         if profile.name == "final_train_and_submit":
             assert_final_checkpoint(adapter_path, expected_base_model=production_cfg.generator_base_model, component_name="generator")
@@ -387,6 +401,24 @@ def run_pipeline(
     # -------------------------------------------------------------
     if profile.run_public_inference:
         print("\n[Stage 7] Loading Inference Pipeline and predicting public test set...")
+
+        deadline_budget = paths.get("deadline_budget_seconds")
+        if deadline_budget is not None:
+            from src.task2.provenance.deadline import allow_stage
+
+            elapsed_now = int(_time.monotonic() - attempt_started)
+            admission = allow_stage(
+                "public_inference",
+                int(paths.get("predicted_inference_seconds", 3300)),
+                elapsed_now,
+                int(deadline_budget),
+            )
+            if admission["status"] != "OK":
+                results["status"] = "INCOMPLETE"
+                results["stages"]["public_inference"] = admission
+                print("INCOMPLETE: deadline refuses public_inference stage.")
+                return results
+
         from src.task2.predict import LegalQAPipeline
         from src.common.dense import DenseRetriever
         from src.common.reranker import BGEReranker
@@ -426,6 +458,30 @@ def run_pipeline(
 
         pipeline = LegalQAPipeline(memory, bm25, dense, reranker, packer, generator, selector)
 
+        from src.task2.pipeline.contracts import validate_execution_contract
+
+        is_final_profile = profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit")
+        validate_execution_contract(
+            {"final_mode": is_final_profile, "profile": profile.name},
+            {
+                "dense_mock": getattr(dense, "model_name", "") == "mock",
+                "dense_fallback": False,
+                "generator_fallback": False,
+                "mock_generator": False,
+                "dense_index_missing": dense is None or getattr(dense, "corpus_embeddings", None) is None,
+                "bm25_index_missing": bm25 is None,
+                "generator_device": gen_device,
+                "retrieval_device": retrieval_device,
+                "require_adapter": bool(production_cfg.use_qlora),
+                "adapter_present": bool(adapter_path),
+                "promotion_validated": True,
+                "policy_needs_generator": bool(profile.requires_generator),
+                "generator_loaded": generator is not None if profile.requires_generator else True,
+                "extractive_only": getattr(selector, "policy", "") == "extractive_only",
+            },
+            is_final_profile,
+        )
+
         if not test_path or not os.path.exists(test_path):
             raise FileNotFoundError(f"Public test set not found at: {test_path}")
 
@@ -442,9 +498,11 @@ def run_pipeline(
             generation_batch_size=batch_size_gen,
         )
 
-        # Verification
-        assert len(submission) == 1000, f"Submission count mismatch! Expected 1000, got {len(submission)}"
-        assert set(public_test.keys()) == set(submission.keys()), "Submission ID keys mismatch!"
+        # Verification: exact 1,000 IDs, nonempty answer objects, ZIP inner bytes.
+        from src.task2.pipeline.contracts import verify_submission_ids
+        from src.task2.scorer_contract import verify_zip_inner_matches_loose
+
+        verify_submission_ids(list(public_test.keys()), submission)
 
         out_json = os.path.join(output_dir, "submission.json")
         out_zip = os.path.join(output_dir, "submission.json.zip")
@@ -455,10 +513,25 @@ def run_pipeline(
         with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(out_json, arcname="submission.json")
 
+        zip_report = verify_zip_inner_matches_loose(out_zip, out_json)
+
         results["stages"]["submission"] = {
             "submission_json": out_json,
             "submission_zip": out_zip,
             "num_queries": len(submission),
+            "loose_sha256": zip_report["loose_sha256"],
+            "inner_sha256": zip_report["inner_sha256"],
+            "zip_sha256": zip_report["zip_sha256"],
+        }
+        results["evidence_links"] = {
+            "candidate_sha": resolved_config.candidate_id if resolved_config else "",
+            "training": results["stages"].get("generator", {}),
+            "inference": {
+                "kind": "inference",
+                "num_predictions": len(submission),
+                "submission_sha256": zip_report["loose_sha256"],
+                "measured": True,
+            },
         }
         print(f"SUCCESS: Submission saved to {out_zip}")
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from src.common.hashing import sha256_file
@@ -102,4 +105,57 @@ def assert_final_checkpoint(
             f"Expected '{expected_base_model}', found '{base_m}'."
         )
 
+    return manifest
+
+
+def save_checkpoint_manifest(checkpoint_dir: str, manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Atomically write a checkpoint manifest with file digests (same authority).
+
+    Files listed under manifest["files"] (relative paths) are hashed from
+    disk and their digests embedded; verify_checkpoint_manifest re-checks
+    them. Temp-then-rename: no partial manifest is ever visible.
+    """
+    target_dir = Path(checkpoint_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    record = dict(manifest)
+    digests = {}
+    for rel in manifest.get("files", []) or []:
+        candidate = target_dir / rel
+        if not candidate.is_file():
+            raise FileNotFoundError(f"checkpoint file listed in manifest is missing: {rel}")
+        digests[rel] = sha256_file(str(candidate))
+    record["file_digests"] = digests
+    payload = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    record["manifest_sha256"] = hashlib.sha256(payload).hexdigest()
+    final_path = target_dir / "manifest.json"
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-manifest-", dir=str(target_dir))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp_name, str(final_path))
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return record
+
+
+def verify_checkpoint_manifest(checkpoint_dir: str) -> Dict[str, Any]:
+    """Verify manifest completeness: required keys, file presence + digests."""
+    manifest_path = os.path.join(checkpoint_dir, "manifest.json")
+    if not os.path.isfile(manifest_path):
+        raise FileNotFoundError(f"Checkpoint manifest not found in: {checkpoint_dir}")
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    for rel, expected in (manifest.get("file_digests") or {}).items():
+        candidate = os.path.join(checkpoint_dir, rel)
+        if not os.path.isfile(candidate):
+            raise FileNotFoundError(f"Checkpoint file missing: {rel}")
+        actual = sha256_file(candidate)
+        if actual != expected:
+            raise ValueError(f"Checkpoint file digest mismatch for {rel}")
     return manifest

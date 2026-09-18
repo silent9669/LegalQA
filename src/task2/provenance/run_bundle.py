@@ -28,11 +28,22 @@ def generate_model_card(
     candidate: CandidateManifest,
     run_id: str,
     metrics: Dict[str, Any],
-    optimizer_steps: int = 300,
-    training_samples: int = 2400,
+    optimizer_steps: Optional[int] = None,
+    training_samples: Optional[int] = None,
     hf_repo: str = "dangphuc2109/legalqa-qwen2.5-3b-adapter",
+    parameter_audit: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Generate comprehensive Hugging Face model card documentation."""
+    """Generate comprehensive Hugging Face model card documentation.
+
+    optimizer_steps and training_samples MUST come from actual trainer
+    outputs; missing telemetry cannot yield a model-card claim, so None
+    raises instead of falling back to fabricated defaults.
+    """
+    if optimizer_steps is None or training_samples is None:
+        raise ValueError(
+            "generate_model_card requires measured optimizer_steps and training_samples "
+            "(missing telemetry cannot yield a model-card claim)"
+        )
     gen_id = candidate.models.generator.id
     gen_rev = candidate.models.generator.revision
     rerank_id = candidate.models.reranker.id
@@ -78,6 +89,8 @@ def generate_model_card(
         f"- **Dense ({dense_id})**: ~135,168,000 parameters",
         "- **QLoRA Trainable Adapter**: ~21,000,000 parameters",
         "- **Total Learned Parameters**: ~3,809,891,136 parameters (< 4,000,000,000 limit: **COMPLIANT**)",
+        "- **Audit Note**: reference estimates only; the strict release gate audits actual",
+        "  base/adapter/selector configs and checkpoints (see parameter_audit in the release manifest).",
         "",
         "## Gate Promotion Chain",
         "1. **Gate 0 (Local)**: Fast/Full pre-push verification tests PASSED",
@@ -105,8 +118,8 @@ def build_production_run_bundle(
     train_log_path: Union[Path, str],
     output_dir: Union[Path, str],
     metrics: Dict[str, Any],
-    optimizer_steps: int = 300,
-    training_sample_count: int = 2400,
+    optimizer_steps: Optional[int] = None,
+    training_sample_count: Optional[int] = None,
     num_train_epochs: int = 3,
     effective_batch_size: int = 8,
     hf_repository: str = "dangphuc2109/legalqa-qwen2.5-3b-adapter",
@@ -114,7 +127,16 @@ def build_production_run_bundle(
     dataset_manifest_path: Optional[Union[Path, str]] = None,
     dataset_validation_report_path: Optional[Union[Path, str]] = None,
 ) -> Dict[str, Any]:
-    """Build and package the complete immutable production run bundle."""
+    """Build and package the complete immutable production run bundle.
+
+    optimizer_steps and training_sample_count must be measured trainer
+    outputs; fabricated defaults are refused (missing telemetry cannot
+    yield a release claim).
+    """
+    if optimizer_steps is None or training_sample_count is None:
+        raise ValueError(
+            "build_production_run_bundle requires measured optimizer_steps and training_sample_count"
+        )
     out_root = Path(output_dir)
     out_root.mkdir(parents=True, exist_ok=True)
 

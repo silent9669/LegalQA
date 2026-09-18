@@ -13,6 +13,12 @@ APPROVED_TARGET_MODULES: Tuple[str, ...] = (
     "down_proj",
 )
 
+# Candidate-approved sequence budgets. 2048 is the legacy production budget;
+# 3072 is the gated candidate budget (Task T1: promote only after measured
+# VRAM/throughput/dev-score evidence and a new candidate gate). Anything else
+# fails closed in strict profiles.
+APPROVED_SEQUENCE_POLICIES: Tuple[int, ...] = (2048, 3072)
+
 
 @dataclass(frozen=True)
 class GeneratorTrainConfig:
@@ -53,9 +59,9 @@ def validate_generator_config_for_profile(config: GeneratorTrainConfig, profile:
     }
 
     if profile in strict_profiles:
-        if config.max_seq_len != 2048:
+        if config.max_seq_len not in APPROVED_SEQUENCE_POLICIES:
             raise ValueError(
-                f"Production profile '{profile}' requires max_seq_len=2048, got {config.max_seq_len}"
+                f"Production profile '{profile}' requires max_seq_len in {list(APPROVED_SEQUENCE_POLICIES)}, got {config.max_seq_len}"
             )
         if config.lora_r != 16:
             raise ValueError(

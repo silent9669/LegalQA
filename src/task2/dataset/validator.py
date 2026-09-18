@@ -2,7 +2,8 @@ import os
 import glob
 import hashlib
 import json
-from typing import Dict, Any, List, Optional
+from collections import defaultdict
+from typing import Dict, Any, List, Optional, Set, Tuple
 import yaml
 import pandas as pd
 
@@ -179,3 +180,55 @@ def validate_dataset(data_dir: str, schema_path: str = "configs/dataset_schema.y
             report["errors"].append(f"Could not parse or verify dataset_manifest.json: {e}")
 
     return report
+
+
+def audit_fold_group_isolation(
+    qa_ids: List[str],
+    question_norms: List[str],
+    folds: List[int],
+) -> Dict[str, Any]:
+    """Audit that no normalized-question group crosses stored folds.
+
+    Returns a report with num_groups, cross_fold_groups and a boolean
+    ``has_leakage``. Pure audit: never reassigns folds.
+    """
+    group_folds: Dict[str, Set[int]] = defaultdict(set)
+    for qa_id, q_norm, fold in zip(qa_ids, question_norms, folds):
+        group_folds[str(q_norm)].add(int(fold))
+    cross = sorted(g for g, fs in group_folds.items() if len(fs) > 1)
+    return {
+        "num_groups": len(group_folds),
+        "num_rows": len(qa_ids),
+        "cross_fold_groups": cross,
+        "has_leakage": bool(cross),
+    }
+
+
+def validate_canonical_splits(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate group isolation across assigned splits.
+
+    Every row must carry qa_group_id and split; no group may appear in more
+    than one split. Raises ValueError on leakage, missing keys, or empty
+    splits.
+    """
+    if not rows:
+        raise ValueError("validate_canonical_splits: no rows to validate")
+    group_splits: Dict[str, Set[str]] = defaultdict(set)
+    for row in rows:
+        gid = row.get("qa_group_id")
+        split = row.get("split")
+        if not gid or not split:
+            raise ValueError("validate_canonical_splits: every row requires qa_group_id and split")
+        group_splits[str(gid)].add(str(split))
+    leaking = sorted(g for g, ss in group_splits.items() if len(ss) > 1)
+    if leaking:
+        raise ValueError(f"group leakage across splits: {leaking[:5]}")
+    by_split: Dict[str, int] = defaultdict(int)
+    for row in rows:
+        by_split[str(row["split"])] += 1
+    return {
+        "status": "PASS",
+        "num_rows": len(rows),
+        "num_groups": len(group_splits),
+        "examples_by_split": dict(sorted(by_split.items())),
+    }

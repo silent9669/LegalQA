@@ -205,4 +205,6 @@ def test_build_bundle_fails_on_secret_leak(tmp_path):
             train_log_path=leaky_log,
             output_dir=output_bundle_dir,
             metrics={"meteor": 0.495},
+            optimizer_steps=300,
+            training_sample_count=2400,
         )

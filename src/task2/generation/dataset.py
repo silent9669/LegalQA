@@ -9,6 +9,39 @@ import pandas as pd
 from src.task2.generator import format_qwen_chat_prompt
 
 
+def build_chunk_rows(
+    rows: List[Dict[str, Any]],
+    needed_ids: set,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Filter chunk rows to needed ids WITHOUT collapsing repeated chunk ids.
+
+    Every physical row whose chunk_id is needed is kept in its original
+    relative order, including repeated ids with distinct text. Never
+    ``dict(zip(...))`` collapse: one legacy chunk id maps to a LIST of
+    source rows. Returns (kept_rows, report) with missing-id accounting.
+    """
+    wanted = {str(v).strip() for v in needed_ids if str(v).strip()}
+    kept: List[Dict[str, Any]] = []
+    found_ids: set = set()
+    for row in rows:
+        cid = str(row.get("chunk_id", "") or "").strip()
+        if cid and cid in wanted:
+            kept.append(row)
+            found_ids.add(cid)
+    missing_ids = sorted(wanted - found_ids)
+    distinct_kept = {str(r.get("chunk_id", "") or "").strip() for r in kept}
+    report = {
+        "input_rows": len(rows),
+        "needed_ids": len(wanted),
+        "kept_rows": len(kept),
+        "distinct_kept_ids": len(distinct_kept),
+        "extra_rows_from_repeated_ids": len(kept) - len(distinct_kept),
+        "missing_ids": missing_ids,
+        "num_missing_ids": len(missing_ids),
+    }
+    return kept, report
+
+
 @dataclass
 class SFTExample:
     """Structured SFT training example with token diagnostics."""
@@ -228,10 +261,10 @@ def build_grounded_training_examples(
                         qa_to_pos_chunk_ids[qid].append(cid)
                     needed_chunk_ids.add(cid)
 
-    # 3. Read chunks with selective projection
-    chunk_map: Dict[str, str] = {}
+    # 3. Read chunks with selective projection, preserving repeated chunk ids.
+    chunk_text_lists: Dict[str, List[str]] = {}
     if chunks_path and os.path.exists(chunks_path):
-        read_success = False
+        df_chunks = None
         if needed_chunk_ids:
             try:
                 import pyarrow.dataset as ds
@@ -241,25 +274,33 @@ def build_grounded_training_examples(
                     filter=ds.field("chunk_id").isin(list(needed_chunk_ids)),
                 )
                 df_chunks = table.to_pandas()
-                chunk_map = dict(zip(df_chunks["chunk_id"].astype(str), df_chunks["text_raw"]))
-                read_success = True
             except Exception:
-                read_success = False
+                df_chunks = None
 
-        if not read_success:
+        if df_chunks is None:
             try:
                 df_chunks = pd.read_parquet(chunks_path, columns=["chunk_id", "text_raw"])
             except Exception:
                 df_chunks = pd.read_parquet(chunks_path)
 
-            if "chunk_id" in df_chunks.columns and "text_raw" in df_chunks.columns:
-                if needed_chunk_ids and len(needed_chunk_ids) < len(df_chunks):
-                    df_chunks = df_chunks[df_chunks["chunk_id"].astype(str).isin(needed_chunk_ids)]
-                chunk_map = dict(zip(df_chunks["chunk_id"].astype(str), df_chunks["text_raw"]))
+            if "chunk_id" in df_chunks.columns and needed_chunk_ids and len(needed_chunk_ids) < len(df_chunks):
+                df_chunks = df_chunks[df_chunks["chunk_id"].astype(str).isin(needed_chunk_ids)]
+
+        if df_chunks is not None and "chunk_id" in df_chunks.columns and "text_raw" in df_chunks.columns:
+            raw_rows = [
+                {"chunk_id": str(cid), "text_raw": text}
+                for cid, text in zip(df_chunks["chunk_id"].astype(str), df_chunks["text_raw"])
+            ]
+            kept_rows, _ = build_chunk_rows(raw_rows, needed_chunk_ids)
+            for row in kept_rows:
+                chunk_text_lists.setdefault(row["chunk_id"], []).append(row["text_raw"])
 
     qa_to_pos_evidence: Dict[str, List[str]] = {}
     for qid, cids in qa_to_pos_chunk_ids.items():
-        qa_to_pos_evidence[qid] = [chunk_map[c] for c in cids if c in chunk_map]
+        pieces: List[str] = []
+        for c in cids:
+            pieces.extend(chunk_text_lists.get(c, []))
+        qa_to_pos_evidence[qid] = pieces
 
     examples: List[Dict[str, Any]] = []
     sft_objects: List[SFTExample] = []

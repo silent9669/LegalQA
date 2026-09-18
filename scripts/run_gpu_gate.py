@@ -69,6 +69,122 @@ from src.task2.provenance.gate_report import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# Promotion DAG: CI PASS -> kaggle_t4x2 -> colab_t4 -> a100_micro_probe.
+# The retained Colab T4 gate stays until a tested replacement DAG proves
+# equivalence; no stage may be bypassed, forged, reused across candidates,
+# or relabelled as final evidence.
+GATE_DAG: tuple = ("kaggle_t4x2", "colab_t4", "a100_micro_probe")
+GATE_PARENT: Dict[str, Optional[str]] = {
+    "kaggle_t4x2": None,
+    "colab_t4": "kaggle_t4x2",
+    "a100_micro_probe": "colab_t4",
+}
+# Stage -> default runtime profile. The A100 micro-probe stage runs under
+# the colab_a100 profile by default; modal_a100 is selected explicitly via
+# runtime_profile (same candidate, declared runtime difference).
+STAGE_RUNTIME_PROFILE: Dict[str, str] = {
+    "kaggle_t4x2": "kaggle_t4x2",
+    "colab_t4": "colab_t4",
+    "a100_micro_probe": "colab_a100",
+}
+ALLOWED_A100_PROFILES = ("colab_a100", "modal_a100")
+
+
+def build_gate_request(
+    candidate: Dict[str, Any],
+    stage: str,
+    parent_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Bind a gate request to one candidate SHA and its parent evidence.
+
+    The request carries the candidate, algorithm, dataset, scorer and
+    runtime identities; the runtime/hardware hash travels separately from
+    the algorithm hash so Modal and Colab A100 runs stay comparable without
+    claiming identical bundles.
+    """
+    if stage not in GATE_DAG:
+        raise ValueError(f"unknown gate stage: {stage}")
+    for key in ("candidate_sha", "algorithm_sha256", "dataset_sha256", "scorer_sha256"):
+        if not candidate.get(key):
+            raise ValueError(f"gate request candidate missing identity field: {key}")
+    required_parent = GATE_PARENT[stage]
+    if required_parent is None and parent_report is not None:
+        raise ValueError(f"gate stage {stage} takes no parent report")
+    if required_parent is not None and parent_report is None:
+        raise ValueError(f"gate stage {stage} requires parent {required_parent} report")
+    return {
+        "stage": stage,
+        "candidate_sha": candidate["candidate_sha"],
+        "algorithm_sha256": candidate["algorithm_sha256"],
+        "dataset_sha256": candidate["dataset_sha256"],
+        "scorer_sha256": candidate["scorer_sha256"],
+        "runtime_profile": candidate.get("runtime_profile", stage),
+        "runtime_sha256": candidate.get("runtime_sha256", ""),
+        "required_parent_stage": required_parent,
+        "parent_report_sha256": (parent_report or {}).get("report_sha256"),
+    }
+
+
+def validate_parent_gate(
+    report: Optional[Dict[str, Any]],
+    expected_sha: str,
+    stage: str,
+) -> None:
+    """Validate that a parent gate report authorizes the requested stage.
+
+    Raises ValueError (mentioning "candidate" on identity mismatch) for a
+    missing/invalid parent, a wrong candidate, or an undeclared runtime.
+    """
+    if stage not in GATE_DAG:
+        raise ValueError(f"unknown gate stage: {stage}")
+    required_parent = GATE_PARENT[stage]
+    if required_parent is None:
+        if report is not None:
+            raise ValueError(f"gate stage {stage} takes no parent report")
+        return
+    if not isinstance(report, dict):
+        raise ValueError(f"gate stage {stage} requires a parent {required_parent} PASS report")
+    if report.get("status") != "PASS":
+        raise ValueError(f"parent gate {report.get('stage')} status is not PASS: {report.get('status')}")
+    if report.get("candidate_sha") != expected_sha:
+        raise ValueError(
+            f"parent gate candidate mismatch for stage {stage}: expected {expected_sha}, "
+            f"got {report.get('candidate_sha')}"
+        )
+    if report.get("stage") != required_parent:
+        raise ValueError(
+            f"parent gate stage mismatch for {stage}: required {required_parent}, got {report.get('stage')}"
+        )
+    if not report.get("report_sha256"):
+        raise ValueError(f"parent gate report lacks report_sha256 for stage {stage}")
+
+
+def run_platform_stage(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute one platform gate stage as a thin shared-runner call.
+
+    Platform adapters (Kaggle/Colab/Modal) build the request with
+    build_gate_request and call this helper; they never fork the algorithm.
+    Returns the gate report as a plain dict.
+    """
+    stage = request.get("stage")
+    if stage not in GATE_DAG:
+        raise ValueError(f"unknown gate stage: {stage}")
+    candidate_path = request.get("candidate_path")
+    data_dir = request.get("data_dir", "/kaggle/input/legalqa-task2-clean-data")
+    output_dir = request.get("output_dir", "/kaggle/working")
+    if not candidate_path:
+        raise ValueError("platform stage request missing candidate_path")
+    report = run_gpu_gate(
+        stage=stage,
+        candidate_path=str(candidate_path),
+        data_dir=str(data_dir),
+        output_dir=str(output_dir),
+        skip_gpu_assert=bool(request.get("skip_gpu_assert", False)),
+        parent_report_path=request.get("parent_report_path"),
+        runtime_profile=request.get("runtime_profile"),
+    )
+    return report.to_dict()
+
 
 def capture_environment_telemetry() -> Dict[str, Any]:
     """Capture system, CUDA, and package environment details."""
@@ -100,8 +216,16 @@ def run_gpu_gate(
     output_dir: str = "/kaggle/working",
     skip_gpu_assert: bool = False,
     parent_report_path: Optional[str] = None,
+    runtime_profile: Optional[str] = None,
 ) -> GateReport:
-    """Execute all phases of the specified GPU gate and emit verified report."""
+    """Execute all phases of the specified GPU gate and emit verified report.
+
+    runtime_profile selects the runtime YAML for the stage (default from
+    STAGE_RUNTIME_PROFILE). The A100 micro-probe accepts colab_a100 or
+    modal_a100; both declare the same candidate with different runtime
+    hashes.
+    """
+    gate_t0 = time.monotonic()
     start_time_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
     out_p = Path(output_dir)
     out_p.mkdir(parents=True, exist_ok=True)
@@ -173,19 +297,22 @@ def run_gpu_gate(
 
     # 3c. Config Resolution and Verification
     algo_path = REPO_ROOT / "configs" / "task2" / "algorithm.yaml"
-    rt_path = REPO_ROOT / "configs" / "task2" / "runtime" / f"{stage}.yaml"
+    profile_name = runtime_profile or STAGE_RUNTIME_PROFILE.get(stage, stage)
+    if stage == "a100_micro_probe" and profile_name not in ALLOWED_A100_PROFILES:
+        raise ValueError(f"a100_micro_probe requires runtime_profile in {ALLOWED_A100_PROFILES}, got {profile_name}")
+    rt_path = REPO_ROOT / "configs" / "task2" / "runtime" / f"{profile_name}.yaml"
     resolved_cfg = load_resolved_config(algo_path, rt_path, candidate_id=candidate.candidate_id)
 
     if resolved_cfg.algorithm_sha256 != candidate.algorithm_sha256:
         raise ValueError(
             f"Algorithm hash mismatch! Expected {candidate.algorithm_sha256}, got {resolved_cfg.algorithm_sha256}"
         )
-    expected_rt_sha = getattr(candidate.runtime_profile_sha256, stage, None)
+    expected_rt_sha = getattr(candidate.runtime_profile_sha256, profile_name, None)
     if expected_rt_sha and resolved_cfg.runtime_sha256 != expected_rt_sha:
         raise ValueError(
-            f"Runtime profile hash mismatch for {stage}! Expected {expected_rt_sha}, got {resolved_cfg.runtime_sha256}"
+            f"Runtime profile hash mismatch for {profile_name}! Expected {expected_rt_sha}, got {resolved_cfg.runtime_sha256}"
         )
-    print("  OK: Authoritative configuration and cryptographic digests verified.")
+    print(f"  OK: Authoritative configuration and cryptographic digests verified (profile={profile_name}).")
 
     # 3d. Parent Gate Verification
     parent_ref: Optional[GateParentRef] = None
@@ -350,6 +477,24 @@ def run_gpu_gate(
     }
     telemetry_path.write_text(json.dumps(telemetry_data, indent=2), encoding="utf-8")
 
+    # Evidence link for the end-to-end graph (measured gate telemetry only;
+    # the mini-eval scores are smoke placeholders, never offline metrics).
+    evidence_link = {
+        "kind": "gate",
+        "stage": stage,
+        "status": "PASS",
+        "candidate_sha": candidate.candidate_id,
+        "report_sha256": report.compute_sha256(),
+        "runtime_profile": profile_name,
+        "runtime_sha256": resolved_cfg.runtime_sha256,
+        "gpu_names": gpu_names,
+        "wall_seconds": int(time.monotonic() - gate_t0),
+        "optimizer_steps": worst_steps_done + int(endurance_steps),
+        "offline_metrics": None,
+        "measured": True,
+    }
+    (out_p / f"{stage}_evidence_link.json").write_text(json.dumps(evidence_link, indent=2), encoding="utf-8")
+
     print(f"=======================================================")
     print(f" [PASS] GPU GATE {stage.upper()} PASSED SUCCESSFULLY! ")
     print(f"=======================================================\n")
@@ -364,6 +509,8 @@ def main():
     parser.add_argument("--output-dir", default="/kaggle/working", help="Output directory for reports and logs")
     parser.add_argument("--skip-gpu-assert", action="store_true", help="Skip strict GPU count/hardware checks (CPU mode)")
     parser.add_argument("--parent-report", default=None, help="Path to required parent gate report")
+    parser.add_argument("--runtime-profile", default=None,
+                        help="Runtime profile override (a100_micro_probe: colab_a100|modal_a100)")
     args = parser.parse_args()
 
     run_gpu_gate(
@@ -373,6 +520,7 @@ def main():
         output_dir=args.output_dir,
         skip_gpu_assert=args.skip_gpu_assert,
         parent_report_path=args.parent_report,
+        runtime_profile=args.runtime_profile,
     )
 
 

@@ -13,7 +13,7 @@ def mock_secret_scan():
 
 def test_screen_fold0_rejects_altered_max_seq_len():
     cfg = GeneratorTrainConfig(model_id="Qwen/Qwen2.5-3B-Instruct", max_seq_len=1024, device="cuda:0")
-    with pytest.raises(ValueError, match="requires max_seq_len=2048"):
+    with pytest.raises(ValueError, match="requires max_seq_len in"):
         train_generator_qlora(
             model_name_or_path="Qwen/Qwen2.5-3B-Instruct",
             qa_path="mock",

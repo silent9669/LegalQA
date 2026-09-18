@@ -30,6 +30,35 @@ def compute_chunk_ids_hash(doc_ids: List[str]) -> str:
     return h.hexdigest()
 
 
+def compute_text_hash(text: str) -> str:
+    """SHA256 over one corpus text (order-map leaf)."""
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
+
+def compute_embedding_order_hash(row_keys: List[str]) -> str:
+    """Hash the exact ordered embedding row map.
+
+    Each key is "row_index:chunk_id:text_hash". Equal array shapes never
+    prove equivalence; only this order hash binds content, order, and
+    provenance. Any permutation, drop, or text change alters the digest.
+    """
+    h = hashlib.sha256()
+    for key in row_keys:
+        h.update(str(key).encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def build_embedding_row_keys(corpus: List[Dict[str, Any]]) -> List[str]:
+    """Build ordered physical-row keys for an embedding-aligned corpus."""
+    keys = []
+    for index, row in enumerate(corpus):
+        cid = str(row.get("chunk_id", index))
+        text = str(row.get("text_raw", ""))
+        keys.append(f"{index}:{cid}:{compute_text_hash(text)}")
+    return keys
+
+
 class DenseRetriever:
     """Dense Retriever with exact GPU FP16 top-K search, row verification, and multi-model support."""
 
@@ -250,6 +279,8 @@ class DenseRetriever:
                 emb_sha = hashlib.sha256(f.read()).hexdigest()
 
         doc_ids_sha = compute_chunk_ids_hash(self.doc_ids)
+        row_keys = build_embedding_row_keys(self.corpus)
+        order_hash = compute_embedding_order_hash(row_keys)
 
         meta = {
             "model_id": self.model_name,
@@ -261,6 +292,7 @@ class DenseRetriever:
             "corpus_rows": len(self.corpus),
             "doc_ids": self.doc_ids,
             "chunk_ids_sha256": doc_ids_sha,
+            "embedding_order_sha256": order_hash,
             "embeddings_sha256": emb_sha,
         }
 
@@ -357,6 +389,16 @@ class DenseRetriever:
                         if final_mode:
                             raise ValueError("FINAL_PIPELINE_ERROR: Dense chunk_ids_sha256 mismatch against manifest.")
                         print("Warning: chunk_id alignment differs from manifest. Verify corpus integrity.", file=sys.stderr)
+                saved_order_sha = meta.get("embedding_order_sha256", "") if os.path.exists(meta_path) else ""
+                if saved_order_sha:
+                    curr_order = compute_embedding_order_hash(build_embedding_row_keys(retriever.corpus))
+                    if curr_order != saved_order_sha:
+                        if final_mode:
+                            raise ValueError(
+                                "FINAL_PIPELINE_ERROR: Dense embedding_order_sha256 mismatch: corpus order/content "
+                                "differs from the indexed map (permutation or text change rejected)."
+                            )
+                        print("Warning: embedding order/content differs from manifest. Verify corpus integrity.", file=sys.stderr)
 
         retriever._sync_gpu_tensor()
         return retriever

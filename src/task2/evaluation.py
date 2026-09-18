@@ -161,6 +161,39 @@ def write_promotion_report(
     }
 
 
+def screen_evidence_link(
+    summary: Dict[str, Any],
+    *,
+    candidate_sha: str,
+    split_fingerprint: str,
+    checkpoint: str,
+) -> Dict[str, Any]:
+    """Build an offline-metrics evidence link from a screen summary.
+
+    Uses the best deployable candidate family score with its checkpoint and
+    split provenance. Oracle families are never deployable evidence: if the
+    summary's best family is oracle-only, this raises instead of emitting a
+    link that could be mistaken for a production claim.
+    """
+    family_scores = summary.get("candidate_family_meteors", {})
+    deployable = {k: v for k, v in family_scores.items() if k not in ("selected", "oracle_best")}
+    if not deployable:
+        raise ValueError("screen summary has no deployable candidate family for evidence")
+    best_name = max(deployable, key=lambda k: deployable[k])
+    if not candidate_sha or not split_fingerprint or not checkpoint:
+        raise ValueError("screen evidence link requires candidate_sha, split_fingerprint, and checkpoint")
+    return {
+        "kind": "offline_metrics",
+        "candidate_sha": candidate_sha,
+        "meteor": float(deployable[best_name]),
+        "rouge": float(summary.get("candidate_family_rouges", {}).get(best_name, 0.0)),
+        "best_family": best_name,
+        "checkpoint": checkpoint,
+        "split_fingerprint": split_fingerprint,
+        "measured": True,
+    }
+
+
 def evaluate_checkpoint(
     qa_path: str = "artifacts/task2/data/qa_unique.parquet",
     fold_path: str = "artifacts/task2/data/fold_assignments.parquet",
