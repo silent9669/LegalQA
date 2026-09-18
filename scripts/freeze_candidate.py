@@ -33,9 +33,12 @@ from src.task2.provenance.candidate import (
 from src.task2.provenance.checksums import compute_file_sha256
 
 KNOWN_MODEL_REVISIONS = {
-    "Qwen/Qwen2.5-3B-Instruct": "d8a1c8901eb4284d720235adcf8849767f40d7e4",
-    "BAAI/bge-reranker-v2-m3": "278e2e28328135817d69932cb4ad12d7c58e5d32",
-    "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2": "c356b6aa96e00cb1b6a12b48a1c0d4530058b884",
+    # Verified live 2026-09-19 via huggingface_hub model_info AND matching
+    # local HF cache snapshots. The previous pins (d8a1c890/278e2e28/c356b6aa)
+    # returned 404 upstream and were never real pins.
+    "Qwen/Qwen2.5-3B-Instruct": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+    "BAAI/bge-reranker-v2-m3": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2": "99a2963b2f51fa7a570a3e7f550d7993b9de90a8",
 }
 
 

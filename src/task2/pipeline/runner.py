@@ -106,8 +106,12 @@ def run_pipeline(
         expected_model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
         expected_dtype="float16",
         final_mode=True,
+        verify_self_consistency=True,
     )
+    consistency = getattr(probe_dense, "self_consistency_report", {})
     print(f"Dense DEk21 probe successful: {probe_dense.corpus_embeddings.shape} on {retrieval_device}")
+    if consistency:
+        print(f"Dense self-consistency: {consistency}")
     del probe_dense
     cleanup_cuda_stage(devices=(0, 1))
 
@@ -490,12 +494,13 @@ def run_pipeline(
 
         items_to_predict = [{"id": str(qid), "question": str(item.get("question", "")).strip()} for qid, item in public_test.items()]
         batch_size_gen = 4 if torch.cuda.is_available() else 1
-        submission = pipeline.predict_batch(
+        submission, provenance = pipeline.predict_batch(
             items=items_to_predict,
             max_new_tokens=production_cfg.max_new_tokens,
             retrieval_batch_size=32,
             reranker_batch_size=32,
             generation_batch_size=batch_size_gen,
+            return_provenance=True,
         )
 
         # Verification: exact 1,000 IDs, nonempty answer objects, ZIP inner bytes.
@@ -515,6 +520,10 @@ def run_pipeline(
 
         zip_report = verify_zip_inner_matches_loose(out_zip, out_json)
 
+        provenance_path = os.path.join(output_dir, "submission_provenance.json")
+        with open(provenance_path, "w", encoding="utf-8") as f:
+            json.dump(provenance, f, ensure_ascii=False, indent=2)
+
         results["stages"]["submission"] = {
             "submission_json": out_json,
             "submission_zip": out_zip,
@@ -522,6 +531,8 @@ def run_pipeline(
             "loose_sha256": zip_report["loose_sha256"],
             "inner_sha256": zip_report["inner_sha256"],
             "zip_sha256": zip_report["zip_sha256"],
+            "provenance_path": provenance_path,
+            "provenance_counts": provenance["counts"],
         }
         results["evidence_links"] = {
             "candidate_sha": resolved_config.candidate_id if resolved_config else "",

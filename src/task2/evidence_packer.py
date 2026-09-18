@@ -9,6 +9,32 @@ from typing import Any, Dict, List, Optional, Set
 from src.common.normalize import clean_legal_text, prettify_doc_title
 
 
+def _article_key(chunk: Dict[str, Any]) -> str:
+    return str(chunk.get("parent_article_id") or chunk.get("chunk_id") or "")
+
+
+def diversify_chunks(chunks: List[Dict[str, Any]], max_parts_per_article: int = 2) -> List[Dict[str, Any]]:
+    """Cap fragments per parent article, preserving rank order."""
+    if max_parts_per_article < 1:
+        raise ValueError("max_parts_per_article must be >= 1")
+    seen: Dict[str, int] = defaultdict(int)
+    out: List[Dict[str, Any]] = []
+    for chunk in chunks:
+        key = _article_key(chunk)
+        if seen[key] < max_parts_per_article:
+            seen[key] += 1
+            out.append(chunk)
+    return out
+
+
+def reorder_lost_in_middle(items: List[Any]) -> List[Any]:
+    """Reorder ranked items head/tail (even ranks first, odd ranks reversed last)."""
+    head, tail = [], []
+    for i, item in enumerate(items):
+        (head if i % 2 == 0 else tail).append(item)
+    return head + tail[::-1]
+
+
 class EvidencePacker:
     """Packs structured statutory units (documents, articles, clauses) into multi-granularity candidate evidence."""
 
@@ -45,6 +71,26 @@ class EvidencePacker:
     def texts_for_chunk(self, chunk_id: str) -> List[str]:
         """Return EVERY fragment text for a chunk id, in corpus order."""
         return [str(c.get("text_raw", "") or "") for c in self.chunks_by_id.get(str(chunk_id).strip(), [])]
+
+    def prepare_seeds(
+        self,
+        chunks: List[Dict[str, Any]],
+        diversify: bool = False,
+        lost_in_middle: bool = False,
+        max_parts_per_article: int = 2,
+    ) -> List[Dict[str, Any]]:
+        """Order ranked chunks for context packing (opt-in transforms).
+
+        Both transforms default off, preserving legacy ordering. Diversify
+        caps fragments per parent article; lost-in-middle reorders even ranks
+        to the head and odd ranks reversed to the tail.
+        """
+        seeds = list(chunks)
+        if diversify:
+            seeds = diversify_chunks(seeds, max_parts_per_article=max_parts_per_article)
+        if lost_in_middle:
+            seeds = reorder_lost_in_middle(seeds)
+        return seeds
 
     def pack_evidence(
         self,

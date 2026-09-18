@@ -59,6 +59,65 @@ def build_embedding_row_keys(corpus: List[Dict[str, Any]]) -> List[str]:
     return keys
 
 
+def duplicate_text_pairs(
+    corpus: List[Dict[str, Any]],
+    max_pairs: int = 400,
+) -> List[tuple]:
+    """Find (pos_a, pos_b) pairs sharing a chunk id with identical text.
+
+    Query-free alignment probes: identical strings must embed near-identically
+    under any deterministic encoder, so these pairs test index↔corpus
+    alignment without loading any model weights.
+    """
+    by_id: Dict[str, List[tuple]] = {}
+    for pos, row in enumerate(corpus):
+        by_id.setdefault(str(row.get("chunk_id", pos)), []).append((pos, str(row.get("text_raw", ""))))
+    pairs = []
+    for cid, members in by_id.items():
+        if len(members) < 2:
+            continue
+        first_pos, first_text = members[0]
+        for other_pos, other_text in members[1:]:
+            if other_text == first_text:
+                pairs.append((first_pos, other_pos))
+                if len(pairs) >= max_pairs:
+                    return pairs
+    return pairs
+
+
+def embedding_self_consistency(
+    embeddings: Any,
+    pairs: List[tuple],
+    threshold: float = 0.95,
+) -> Dict[str, Any]:
+    """Score index↔corpus alignment via identical-text pair cosines.
+
+    Returns mean/p5/pass-rate diagnostics plus a boolean ``aligned`` verdict.
+    A correctly aligned deterministic index scores ≈1.0 on every pair; a
+    permuted or foreign-content matrix scores near zero. No encoder needed.
+    """
+    import numpy as np
+
+    if not pairs:
+        return {"num_pairs": 0, "aligned": False, "reason": "no identical-text pairs"}
+    sims = []
+    for pos_a, pos_b in pairs:
+        vec_a = np.asarray(embeddings[pos_a], dtype=np.float64)
+        vec_b = np.asarray(embeddings[pos_b], dtype=np.float64)
+        denom = float(np.linalg.norm(vec_a) * np.linalg.norm(vec_b))
+        sims.append(float(vec_a @ vec_b / denom) if denom > 0 else 0.0)
+    sims_np = np.array(sims)
+    pass_rate = float((sims_np >= threshold).mean())
+    return {
+        "num_pairs": len(pairs),
+        "threshold": threshold,
+        "mean_cosine": round(float(sims_np.mean()), 4),
+        "p5_cosine": round(float(np.percentile(sims_np, 5)), 4),
+        "pass_rate": round(pass_rate, 4),
+        "aligned": bool(pass_rate >= 0.95),
+    }
+
+
 class DenseRetriever:
     """Dense Retriever with exact GPU FP16 top-K search, row verification, and multi-model support."""
 
@@ -313,8 +372,16 @@ class DenseRetriever:
         expected_model_name: Optional[str] = None,
         expected_dtype: Optional[str] = None,
         verify_embeddings_hash: bool = False,
+        verify_self_consistency: bool = False,
+        consistency_pairs: int = 400,
     ) -> DenseRetriever:
-        """Load precomputed embeddings from disk using mmap and verify row alignment and hash integrity."""
+        """Load precomputed embeddings from disk using mmap and verify row alignment and hash integrity.
+
+        With verify_self_consistency=True (and a corpus), identical-text
+        duplicate pairs must score cosine ≥ 0.95, proving the matrix actually
+        encodes this corpus in this order. A permuted or foreign matrix fails
+        here instead of silently poisoning retrieval; final_mode raises.
+        """
         meta_path = os.path.join(index_dir, "dense_manifest.json")
         if not os.path.exists(meta_path):
             meta_path = os.path.join(index_dir, "dek21_manifest.json")
@@ -399,6 +466,19 @@ class DenseRetriever:
                                 "differs from the indexed map (permutation or text change rejected)."
                             )
                         print("Warning: embedding order/content differs from manifest. Verify corpus integrity.", file=sys.stderr)
+                if verify_self_consistency and retriever.corpus_embeddings is not None:
+                    pairs = duplicate_text_pairs(retriever.corpus, max_pairs=consistency_pairs)
+                    consistency = embedding_self_consistency(retriever.corpus_embeddings, pairs)
+                    if not consistency.get("aligned"):
+                        message = (
+                            "FINAL_PIPELINE_ERROR: Dense index failed self-consistency: "
+                            f"{consistency}. The embedding matrix does not encode this corpus "
+                            "in this order — rebuild the index cold, never use it for retrieval."
+                        )
+                        if final_mode:
+                            raise ValueError(message)
+                        print(f"Warning: {message}", file=sys.stderr)
+                    retriever.self_consistency_report = consistency
 
         retriever._sync_gpu_tensor()
         return retriever

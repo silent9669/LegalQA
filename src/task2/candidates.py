@@ -88,6 +88,42 @@ def deduplicate_repetitive_lines(text: str) -> str:
     return "\n".join(cleaned_lines)
 
 
+def collapse_loops(text: str, min_p: int = 3, max_p: int = 30) -> str:
+    """Collapse token-level generation loops: 3+ consecutive repeats keep one copy.
+
+    A repeated phrase appearing exactly twice is left alone (it may be a
+    legitimate restatement); three or more back-to-back copies are degenerate
+    decoder loops. Operates per whitespace-separated token sequence.
+    """
+    if not text:
+        return ""
+    tokens = text.split()
+    if len(tokens) < min_p * 3:
+        return text
+    out: List[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        collapsed = False
+        for p in range(min_p, max_p + 1):
+            if i + p * 3 > n:
+                break
+            block = tokens[i : i + p]
+            if tokens[i + p : i + 2 * p] != block or tokens[i + 2 * p : i + 3 * p] != block:
+                continue
+            j = i + 3 * p
+            while tokens[j : j + p] == block:
+                j += p
+            out.extend(block)
+            i = j
+            collapsed = True
+            break
+        if not collapsed:
+            out.append(tokens[i])
+            i += 1
+    return " ".join(out)
+
+
 def snap_facts_to_evidence(generated_text: str, evidence_text: str) -> str:
     """Snap dates and factual entities in generated text to verbatim statutory evidence forms."""
     if not generated_text:
@@ -157,6 +193,7 @@ def generate_candidate_ensemble(
     clean_ev = clean_statutory_text(evidence)
     header = build_citation_header(doc_name, art_num, clause_num)
 
+    gen_ans = collapse_loops(gen_ans) if gen_ans else ""
     snapped = snap_facts_to_evidence(gen_ans, clean_ev) if gen_ans else ""
     focused_ext = clean_ev[:800] if clean_ev else ""
     stitched_ext = f"{header}\n{clean_ev[:1500]}" if clean_ev else header

@@ -196,24 +196,42 @@ class CandidateSelector:
         features: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Select best candidate answer given question and test-time features."""
+        answer, _ = self.select_with_source(
+            candidates,
+            question=question,
+            evidence=evidence,
+            retrieval_meta=retrieval_meta,
+            features=features,
+        )
+        return answer
+
+    def select_with_source(
+        self,
+        candidates: Dict[str, str],
+        question: str = "",
+        evidence: str = "",
+        retrieval_meta: Optional[Dict[str, Any]] = None,
+        features: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str]:
+        """Select best candidate, returning (answer, winning source key)."""
         if not candidates:
-            return ""
+            return "", "empty"
 
         # 1. Exact Memory is highest priority
         if candidates.get("exact_memory"):
-            return candidates["exact_memory"].strip()
+            return candidates["exact_memory"].strip(), "exact_memory"
 
         # 2. High-confidence Similar QA memory
         if candidates.get("fuzzy_memory") and features and features.get("is_direct_reuse"):
-            return candidates["fuzzy_memory"].strip()
+            return candidates["fuzzy_memory"].strip(), "fuzzy_memory"
 
         # 3. Guardrail fixed baseline policy
         if self.policy == "fixed_baseline":
             if self.best_fixed_candidate in candidates:
-                return candidates[self.best_fixed_candidate].strip()
+                return candidates[self.best_fixed_candidate].strip(), self.best_fixed_candidate
             for fallback_key in ["stitched_extract", "focused_extract", "focused_complete_clause", "strategy_f_1000", "generated", "snapped"]:
                 if fallback_key in candidates and candidates[fallback_key].strip():
-                    return candidates[fallback_key].strip()
+                    return candidates[fallback_key].strip(), fallback_key
 
         # 4. Learned Model Selection
         if self.policy == "learned_model" and self.model is not None and len(candidates) > 1:
@@ -231,14 +249,15 @@ class CandidateSelector:
             X_test = pd.DataFrame(feat_rows)[self.feature_names].values
             predicted_scores = self.model.predict(X_test)
             best_idx = int(np.argmax(predicted_scores))
-            return candidates[cand_keys[best_idx]].strip()
+            return candidates[cand_keys[best_idx]].strip(), cand_keys[best_idx]
 
         # Default fallback
         for k in ["stitched_extract", "focused_extract", "focused_complete_clause", "strategy_f_1000", "generated"]:
             if k in candidates and candidates[k].strip():
-                return candidates[k].strip()
+                return candidates[k].strip(), k
 
-        return next(iter(candidates.values())).strip()
+        first_key = next(iter(candidates))
+        return candidates[first_key].strip(), first_key
 
     def save(self, output_path: str) -> None:
         """Save selector policy and model weights."""

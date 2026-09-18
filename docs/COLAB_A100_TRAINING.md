@@ -110,4 +110,5 @@ The root `kaggle_smoke_report.json` is a legacy stub kept for backward compatibi
 
 - `notebooks/kaggle_smoke.ipynb` — Kaggle Dual-T4 CUDA gate launcher (Gate 2).
 - `notebooks/colab_a100_train.ipynb` — canonical A100 production training notebook (Gate 4). Uses authoritative `configs/task2/algorithm.yaml` + `configs/task2/runtime/colab_a100.yaml` and the single HF target `src/task2/hf_uploader.py::DEFAULT_HF_REPO`. Legacy flat configs (`configs/kaggle_smoke_t4.yaml`, `configs/colab_train_a100.yaml`) are frozen for compatibility only.
-- `Colab_A100_Master_Pipeline.ipynb` — INFERENCE-ONLY Drive pipeline (retrieval + merged-bf16 generation). Not a training path; do not spend training credit from it.
+- `Colab_A100_Master_Pipeline.ipynb` — removed 2026-09-19 (superseded inference-only
+  notebook; recover via git history). Canonical paths are the two notebooks above.

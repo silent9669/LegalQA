@@ -36,6 +36,12 @@ def main():
     parser.add_argument("--env-file", default=None, help="Path to .env credential file")
     parser.add_argument("--no-upload-to-hf", action="store_true", help="Skip automatic Hugging Face upload")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--ensure-dense-index", action="store_true",
+                        help="Check the staged dense index and cold-rebuild it (pinned revision) when misaligned")
+    parser.add_argument("--dense-revision", default=None,
+                        help="Immutable 40-hex dense encoder commit (required with --ensure-dense-index)")
+    parser.add_argument("--dense-model", default="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+                        help="Dense encoder model id for a cold rebuild")
     args = parser.parse_args()
 
     # Automatically load environment variables and credentials
@@ -99,6 +105,44 @@ def main():
     if out_dir.endswith(".json"):
         out_dir = os.path.dirname(out_dir)
     os.makedirs(out_dir, exist_ok=True)
+
+    # Explicit dense-index gate: reuse the staged index only when aligned,
+    # else cold rebuild into the writable run directory (the downloaded
+    # dataset copy is never mutated).
+    if args.ensure_dense_index:
+        if not args.dense_revision:
+            print("Error: --ensure-dense-index requires --dense-revision (immutable 40-hex commit).")
+            sys.exit(2)
+        from scripts.rebuild_dense_index import (
+            build_verified_index,
+            check_dense_alignment,
+            require_pinned_revision,
+        )
+        require_pinned_revision(args.dense_revision)
+        dense_out = os.path.join(out_dir, "indexes", "dek21")
+        chunks_path = os.path.join(paths.get("data_dir", ""), "legal_chunks.parquet")
+        if not os.path.isfile(chunks_path):
+            print(f"Error: corpus not found for dense ensure: {chunks_path}")
+            sys.exit(2)
+        staged = paths.get("dek21_dir", "")
+        alignment = check_dense_alignment(staged, chunks_path) if os.path.isdir(staged) else {"status": "missing", "aligned": False}
+        if alignment.get("aligned"):
+            ensure_report = dict(alignment, action="reused", index_dir=staged)
+            print(f"Dense index aligned, reuse: {staged}")
+        else:
+            print(f"Dense index unusable ({alignment.get('status')}); cold rebuilding into {dense_out}...")
+            ensure_report = build_verified_index(
+                corpus_path=chunks_path,
+                out_dir=dense_out,
+                model_id=args.dense_model,
+                revision=args.dense_revision,
+                device=gen_device,
+            )
+            ensure_report["action"] = "rebuilt"
+            paths["dek21_dir"] = dense_out
+        with open(os.path.join(out_dir, "dense_ensure_report.json"), "w", encoding="utf-8") as f:
+            json.dump(ensure_report, f, ensure_ascii=False, indent=2)
+        print(f"Dense index ensure: {ensure_report.get('action')}")
 
     print(f"Output Directory: {out_dir}")
     print(f"Executing profile '{profile.name}'...")
