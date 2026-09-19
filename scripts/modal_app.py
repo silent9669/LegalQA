@@ -26,10 +26,22 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-if Path("/root/LegalQA").is_dir():
-    REPO_ROOT = Path("/root/LegalQA")
-else:
-    REPO_ROOT = Path(__file__).resolve().parent.parent
+def _repo_root() -> Path:
+    """Resolve the repo root without crashing on unreadable system paths.
+
+    Path.is_dir() raises PermissionError (not False) when a parent directory
+    is not listable, e.g. /root on CI runners. Fail open to the file-relative
+    root in that case.
+    """
+    try:
+        if Path("/root/LegalQA").is_dir():
+            return Path("/root/LegalQA")
+    except OSError:
+        pass
+    return Path(__file__).resolve().parent.parent
+
+
+REPO_ROOT = _repo_root()
 sys.path.insert(0, str(REPO_ROOT))
 
 try:
@@ -50,10 +62,13 @@ def read_pin_file(name: str) -> List[str]:
     """Parse a local requirements/constraints file into pip specifiers."""
     target = REPO_ROOT / name
     if not target.is_file():
-        alt = Path("/root/LegalQA") / name
-        if alt.is_file():
-            target = alt
-        else:
+        try:
+            alt = Path("/root/LegalQA") / name
+            if alt.is_file():
+                target = alt
+            else:
+                return []
+        except OSError:
             return []
     specs = []
     for line in target.read_text(encoding="utf-8").splitlines():

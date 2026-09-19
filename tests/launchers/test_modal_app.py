@@ -119,3 +119,25 @@ def test_modal_fingerprint_counts_and_hashes(tmp_path):
     empty.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="nonempty"):
         modal_app_module.test_file_fingerprint(empty)
+
+
+def test_repo_root_survives_unreadable_system_paths():
+    """CI runners cannot stat /root: module import must fall back, not raise."""
+    import types
+    from pathlib import Path
+    from unittest import mock
+
+    real_is_dir = Path.is_dir
+
+    def guarded_is_dir(self):
+        if str(self) == "/root/LegalQA" or str(self).startswith("/root/"):
+            raise PermissionError(13, "Permission denied")
+        return real_is_dir(self)
+
+    with mock.patch.object(Path, "is_dir", autospec=True, side_effect=lambda self: guarded_is_dir(self)):
+        mod_code = Path("scripts/modal_app.py").read_text(encoding="utf-8")
+        fake_mod = types.ModuleType("scripts.modal_app_noroot")
+        fake_mod.__dict__["__file__"] = str(Path("scripts/modal_app.py").resolve())
+        exec(compile(mod_code, "scripts/modal_app.py", "exec"), fake_mod.__dict__)
+        assert fake_mod.REPO_ROOT == Path("scripts/modal_app.py").resolve().parent.parent
+        assert fake_mod.read_pin_file("constraints-gpu.txt") != []
