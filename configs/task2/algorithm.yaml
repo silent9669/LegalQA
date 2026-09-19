@@ -31,10 +31,29 @@ generator:
   lr_scheduler_type: cosine
   warmup_ratio: 0.05
   effective_batch_size: 8
-  num_train_epochs: 3
+  num_train_epochs: 1
   completion_only_loss: true
   use_liger_fused_ce: true
   gradient_checkpointing: true
+
+# Retrieval recipe (score-affecting; hashed into the candidate).
+# Prescribed by fix/03 (Modal scale-down): legal-reference arm + weighted
+# RRF + article diversification. Acronym expansion and lost-in-middle stay
+# off pending A/B evidence. One full epoch per fix/02 timing envelope.
+retrieval:
+  rrf_k: 60
+  candidate_pool: 50
+  use_legal_reference: true
+  use_acronyms: false
+  use_weighted_rrf: true
+  diversify_context: true
+  lost_in_middle: false
+  max_parts_per_article: 2
+  w_bm25_plain: 0.55
+  w_dense_plain: 0.45
+  w_bm25_lex: 0.40
+  w_dense_lex: 0.27
+  w_lexref_lex: 0.33
 
 final_training:
   training_scope: all_allowed_train

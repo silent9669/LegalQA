@@ -6,7 +6,6 @@ from src.common.query_rewrite import (
     expand_acronyms,
     has_legal_reference,
     rewrite_query_for_retrieval,
-    rrf_weights,
 )
 
 
@@ -23,12 +22,6 @@ def test_has_legal_reference_detection():
     assert has_legal_reference("Theo Điều 17 Nghị định 100/2019?")
     assert has_legal_reference("khoản 2 điểm a")
     assert not has_legal_reference("mức phạt là gì?")
-
-
-def test_weighted_policy_keyed_on_original_query():
-    assert rrf_weights("Theo Điều 17?") == {"bm25": 1.2, "dense": 0.8}
-    assert rrf_weights("mức phạt là gì?") == {"bm25": 1.0, "dense": 1.0}
-    assert rrf_weights("Theo Điều 17?", use_weighted=False) == {"bm25": 1.0, "dense": 1.0}
 
 
 def test_rewrite_is_identity_when_experiment_off():

@@ -10,6 +10,22 @@ except ImportError:
     torch = None
 
 
+def _is_oom(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return "out of memory" in message or "cuda oom" in message or "cublas" in message and "memory" in message
+
+
+def _free_cuda() -> None:
+    try:
+        import gc
+
+        gc.collect()
+        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 class BGEReranker:
     def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3", device: Optional[str] = None):
         self.model_name = model_name
@@ -63,6 +79,19 @@ class BGEReranker:
             item["rank"] = rank
         return scored[:top_k]
 
+    def _predict_with_oom_backoff(self, pairs: List[List[str]], batch_size: int) -> List[float]:
+        """Score pairs, halving the batch on CUDA OOM (order-preserving)."""
+        current = max(1, int(batch_size))
+        while True:
+            try:
+                return list(self.model.predict(pairs, batch_size=current, show_progress_bar=False))
+            except Exception as exc:
+                if current <= 1 or not _is_oom(exc):
+                    raise
+                current //= 2
+                _free_cuda()
+                print(f"rerank OOM at batch {current * 2}; retrying at {current}", file=sys.stderr)
+
     def rerank_batch(
         self,
         queries: List[str],
@@ -94,7 +123,7 @@ class BGEReranker:
         if not pairs:
             return [[] for _ in queries]
 
-        scores = self.model.predict(pairs, batch_size=effective_batch_size, show_progress_bar=False)
+        scores = self._predict_with_oom_backoff(pairs, effective_batch_size)
 
         scored_by_query: List[List[Dict[str, Any]]] = [[] for _ in queries]
         for (q_idx, c_idx), score_val in zip(mapping, scores):

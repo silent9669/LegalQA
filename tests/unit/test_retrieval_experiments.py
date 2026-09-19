@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from src.common.legal_reference import build_legal_reference_index
 from src.task2.evidence_packer import diversify_chunks, reorder_lost_in_middle
 from src.task2.predict import LegalQAPipeline
@@ -42,8 +44,22 @@ def test_weighted_rrf_and_acronym_rewrite_opt_in():
     pipe = _pipeline()
     trace = pipe.retrieve_and_rerank("NLĐ?", use_acronyms=True, use_weighted_rrf=True)
     assert trace["retrieval_meta"]["query_rewritten"] is True
+    # Legacy defaults: weighted lex-query over two arms renormalizes to uniform.
     trace2 = pipe.retrieve_and_rerank("Theo Điều 17?", use_weighted_rrf=True)
-    assert trace2["retrieval_meta"]["rrf_weights"] == [0.6, 0.4]
+    assert trace2["retrieval_meta"]["rrf_weights"] == [0.5, 0.5]
+    # Doc-prescribed weights flow from the candidate config.
+    doc_pipe = LegalQAPipeline.build_mock(
+        retrieval_options={"use_weighted_rrf": True},
+        retrieval_weights={"w_bm25_plain": 0.55, "w_dense_plain": 0.45,
+                           "w_bm25_lex": 0.40, "w_dense_lex": 0.27, "w_lexref_lex": 0.33},
+    )
+    trace3 = doc_pipe.retrieve_and_rerank("Theo Điều 17?")
+    # Lex row (0.40, 0.27) restricted to two arms, renormalized.
+    assert trace3["retrieval_meta"]["rrf_weights"] == pytest.approx([0.40 / 0.67, 0.27 / 0.67])
+    # Direct helper: lex triple restricted to present arms, renormalized.
+    assert doc_pipe.rrf_arm_weights(["bm25", "dense", "lexref"], True) == pytest.approx([0.40, 0.27, 0.33])
+    with pytest.raises(ValueError, match="unknown retrieval weights"):
+        LegalQAPipeline.build_mock(retrieval_weights={"nope": 1.0})
 
 
 def test_unknown_retrieval_option_fails_closed():

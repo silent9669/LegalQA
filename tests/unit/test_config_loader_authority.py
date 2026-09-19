@@ -231,3 +231,55 @@ def test_validate_against_config_binds_selected_runtime():
     # Same candidate must reject a different platform runtime (undeclared hash differs)
     with pytest.raises(ValueError):
         m.validate_against_config(cfg_colab)
+
+
+def test_retrieval_recipe_parses_with_weight_invariants(tmp_path):
+    cfg = load_resolved_config("configs/task2/algorithm.yaml", "configs/task2/runtime/kaggle_t4x2.yaml")
+    retrieval = cfg.algorithm.retrieval
+    assert retrieval.rrf_k == 60 and retrieval.candidate_pool == 50
+    assert abs(retrieval.w_bm25_plain + retrieval.w_dense_plain - 1.0) < 1e-9
+    assert abs(retrieval.w_bm25_lex + retrieval.w_dense_lex + retrieval.w_lexref_lex - 1.0) < 1e-9
+
+
+def test_retrieval_weights_must_sum_to_one(tmp_path):
+    import copy
+
+    base = yaml.safe_load(open("configs/task2/algorithm.yaml"))
+    bad = copy.deepcopy(base)
+    bad["retrieval"]["w_bm25_plain"] = 0.9
+    algo_p = tmp_path / "algo.yaml"
+    algo_p.write_text(yaml.dump(bad), encoding="utf-8")
+    with pytest.raises(ValueError, match="sum to 1"):
+        load_resolved_config(algo_p, "configs/task2/runtime/kaggle_t4x2.yaml")
+
+
+def test_runtime_cannot_override_retrieval_section(tmp_path):
+    import copy
+
+    base = yaml.safe_load(open("configs/task2/runtime/kaggle_t4x2.yaml"))
+    bad = copy.deepcopy(base)
+    bad["retrieval"] = {"w_bm25_plain": 1.0}
+    rt_p = tmp_path / "rt.yaml"
+    rt_p.write_text(yaml.dump(bad), encoding="utf-8")
+    with pytest.raises(ValueError, match="Protected field or unknown runtime key"):
+        load_resolved_config("configs/task2/algorithm.yaml", rt_p)
+
+
+def test_inference_batch_defaults_and_modal_scale(tmp_path):
+    kaggle = load_resolved_config("configs/task2/algorithm.yaml", "configs/task2/runtime/kaggle_t4x2.yaml")
+    assert kaggle.runtime.inference.generation_batch_size == 4
+    assert kaggle.runtime.inference.reranker_batch_size == 32
+    modal = load_resolved_config("configs/task2/algorithm.yaml", "configs/task2/runtime/modal_a100.yaml")
+    assert modal.runtime.inference.generation_batch_size == 16
+    assert modal.runtime.inference.reranker_batch_size == 128
+    bad_rt = {
+        "profile_name": "x", "required_gpu_count": 1, "required_gpu_name_contains": "T4",
+        "devices": {"generator": "cuda:0", "retrieval": "cuda:0"},
+        "generator_runtime": {"compute_dtype": "float16", "per_device_train_batch_size": 1,
+                              "gradient_accumulation_steps": 8, "activation_offloading": True},
+        "inference": {"generation_batch_size": 0, "reranker_batch_size": 32, "retrieval_batch_size": 32},
+    }
+    rt_p = tmp_path / "rt.yaml"
+    rt_p.write_text(yaml.dump(bad_rt), encoding="utf-8")
+    with pytest.raises(ValueError, match="positive"):
+        load_resolved_config("configs/task2/algorithm.yaml", rt_p)

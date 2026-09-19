@@ -8,6 +8,7 @@ pytest>=8.0.0
 scikit-learn>=1.4.0
 nltk>=3.8.1
 rouge-score>=0.1.2
+modal>=1.5
 
 # Sparse Retrieval & NLP
 bm25s>=0.3.0

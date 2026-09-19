@@ -69,3 +69,41 @@ def test_incomplete_graph_fails_checklist_not_silently():
     assert checklist["overall"] == "FAIL"
     with pytest.raises(ValueError, match="receipt"):
         validate_evidence_graph(graph)
+
+
+def test_inference_accepts_public_and_private_counts():
+    base = [r for r in _full_reports() if r["kind"] != "inference"]
+    for count in (1000, 1918):
+        link = {"kind": "inference", "candidate_sha": CAND, "num_predictions": count,
+                "expected_count": count, "submission_sha256": "d" * 64, "measured": True}
+        graph = join_evidence_reports(base + [link])
+        assert graph["inference"]["num_predictions"] == count
+    bad = {"kind": "inference", "candidate_sha": CAND, "num_predictions": 999,
+           "expected_count": 1000, "submission_sha256": "d" * 64, "measured": True}
+    with pytest.raises(ValueError, match="count mismatch"):
+        join_evidence_reports(base + [bad])
+    zero = {"kind": "inference", "candidate_sha": CAND, "num_predictions": 0,
+            "submission_sha256": "d" * 64, "measured": True}
+    with pytest.raises(ValueError, match="positive prediction count"):
+        join_evidence_reports(base + [zero])
+
+
+@pytest.mark.parametrize("query_count", [1000, 1918, 500])
+def test_inference_supports_public_private_and_nonzero_queries(query_count):
+    reports = _full_reports()
+    for r in reports:
+        if r["kind"] == "inference":
+            r["num_predictions"] = query_count
+    graph = join_evidence_reports(reports)
+    validate_evidence_graph(graph)
+    checklist = final_run_checklist(graph)
+    assert checklist["overall"] == "PASS"
+    assert all(c["status"] == "PASS" for c in checklist["checks"])
+
+
+def test_inference_rejects_zero_or_negative_predictions():
+    reports = _full_reports()
+    zero_inf = [dict(r, num_predictions=0) if r["kind"] == "inference" else r for r in reports]
+    with pytest.raises(ValueError, match="prediction"):
+        join_evidence_reports(zero_inf)
+

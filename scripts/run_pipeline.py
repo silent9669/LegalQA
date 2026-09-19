@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--config", default="configs/task2/runtime/kaggle_t4x2.yaml", help="Path to profile configuration YAML (authoritative runtime profile; legacy flat configs are frozen for backward compatibility only)")
     parser.add_argument("--data-dir", default=None, help="Explicit dataset directory path")
     parser.add_argument("--output-dir", default=None, help="Output directory for checkpoints and logs")
+    parser.add_argument("--test-path", default=None, help="Path to test set JSON (default: checks private-official.json then public-official.json in data directory)")
     parser.add_argument("--require-smoke-pass", default=None, help="Path to kaggle_smoke_report.json (required for A100)")
     parser.add_argument("--allow-single-gpu", action="store_true", help="Allow running on single GPU")
     parser.add_argument("--env-file", default=None, help="Path to .env credential file")
@@ -95,11 +96,26 @@ def main():
     base_data = args.data_dir or cfg.get("data", {}).get("runtime_root", "/kaggle/input")
     paths = resolve_runtime_paths(base_data, strict=False)
 
-    if "public_test_path" not in paths:
-        candidate_test = os.path.join(paths.get("data_dir", ""), "public-official.json")
-        if not os.path.exists(candidate_test):
-            candidate_test = os.path.join(paths.get("runtime_root", ""), "public-official.json")
-        paths["public_test_path"] = candidate_test
+    if args.test_path:
+        test_path = os.path.abspath(args.test_path)
+    else:
+        candidate_private = os.path.join(paths.get("data_dir", ""), "private-official.json")
+        if os.path.exists(candidate_private):
+            test_path = candidate_private
+        else:
+            candidate_public = os.path.join(paths.get("data_dir", ""), "public-official.json")
+            if os.path.exists(candidate_public):
+                test_path = candidate_public
+            else:
+                candidate_private_root = os.path.join(paths.get("runtime_root", ""), "private-official.json")
+                if os.path.exists(candidate_private_root):
+                    test_path = candidate_private_root
+                else:
+                    test_path = os.path.join(paths.get("runtime_root", ""), "public-official.json")
+
+    paths["test_path"] = test_path
+    paths["public_test_path"] = test_path
+    print(f"Resolved Test Set: {test_path}")
 
     out_dir = args.output_dir or cfg.get("outputs", {}).get("report_path", "runs/current")
     if out_dir.endswith(".json"):

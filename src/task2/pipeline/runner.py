@@ -28,6 +28,14 @@ from src.task2.generation.memory import cleanup_cuda_stage
 
 logger = logging.getLogger(__name__)
 
+#: Profiles governed by the screen-promotion path (explicit promotion report).
+PROMOTION_GATED_PROFILES = ("final_train_and_submit", "reuse_final_checkpoints_and_submit")
+
+#: Profiles held to final-mode strictness (no mocks/fallbacks/CPU substitution,
+#: final-checkpoint scope asserts). modal_a100 is governed by the in-run
+#: candidate + parent-gate chain instead of the promotion path.
+STRICT_CONTRACT_PROFILES = PROMOTION_GATED_PROFILES + ("modal_a100",)
+
 
 def run_pipeline(
     *,
@@ -57,7 +65,7 @@ def run_pipeline(
         from src.task2.production_config import get_default_production_selection
         production_cfg = get_default_production_selection()
 
-    if profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit"):
+    if profile.name in PROMOTION_GATED_PROFILES:
         from src.task2.production_config import verify_promotion_provenance
         verify_promotion_provenance(production_cfg)
 
@@ -75,7 +83,7 @@ def run_pipeline(
     bm25_dir = paths["bm25_dir"]
     dek21_dir = paths["dek21_dir"]
     model_path = paths["qwen_model_path"]
-    test_path = paths.get("public_test_path")
+    test_path = paths.get("test_path") or paths.get("public_test_path")
 
     qa_path = os.path.join(data_dir, "qa_unique.parquet")
     chunks_path = os.path.join(data_dir, "legal_chunks.parquet")
@@ -89,7 +97,7 @@ def run_pipeline(
     from src.common.dense import DenseRetriever
     from src.task2.dataset.validator import validate_dataset
 
-    is_final = profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit")
+    is_final = profile.name in STRICT_CONTRACT_PROFILES
     schema_candidate = os.path.join(cfg_root, "configs/dataset_schema.yaml")
 
     if os.path.exists(schema_candidate) and os.path.exists(data_dir):
@@ -158,7 +166,7 @@ def run_pipeline(
         reranker_checkpoint = reranker_out
         results["stages"]["reranker"] = res_rerank
 
-        if profile.name == "final_train_and_submit":
+        if profile.name in STRICT_CONTRACT_PROFILES:
             assert_final_checkpoint(reranker_checkpoint, expected_base_model="BAAI/bge-reranker-v2-m3", component_name="reranker")
     elif profile.reuse_existing_checkpoints and production_cfg.use_task_tuned_reranker:
         from src.task2.checkpoint_resolver import resolve_component_checkpoint
@@ -271,7 +279,7 @@ def run_pipeline(
         except Exception as exc:
             raise RuntimeError(f"deadline checkpoint for generator_train failed: {exc}") from exc
 
-        if profile.name == "final_train_and_submit":
+        if profile.name in STRICT_CONTRACT_PROFILES:
             assert_final_checkpoint(adapter_path, expected_base_model=production_cfg.generator_base_model, component_name="generator")
     elif profile.reuse_existing_checkpoints and production_cfg.use_qlora and profile.requires_generator:
         from src.task2.checkpoint_resolver import resolve_component_checkpoint
@@ -423,7 +431,7 @@ def run_pipeline(
                 print("INCOMPLETE: deadline refuses public_inference stage.")
                 return results
 
-        from src.task2.predict import LegalQAPipeline
+        from src.task2.predict import LegalQAPipeline, retrieval_options_from_config
         from src.common.dense import DenseRetriever
         from src.common.reranker import BGEReranker
         from src.task2.evidence_packer import EvidencePacker
@@ -432,6 +440,24 @@ def run_pipeline(
 
         cleanup_cuda_stage(devices=(0, 1))
 
+        # Stage 4 releases training memory; inference reloads its own handles.
+        from src.common.bm25 import BM25Retriever
+        from src.task2.qa_memory import QAMemory
+
+        memory = QAMemory.load(known_qa_path, qa_path)
+        bm25 = BM25Retriever.load(bm25_dir, corpus_path=chunks_path, fail_on_missing_index=True)
+
+        retrieval_options = None
+        retrieval_weights = None
+        if resolved_config is not None:
+            retrieval_options, retrieval_weights = retrieval_options_from_config(resolved_config)
+        inference_cfg = resolved_config.runtime.inference if resolved_config is not None else None
+        generation_batch_size = inference_cfg.generation_batch_size if inference_cfg else 4
+        reranker_batch_size = inference_cfg.reranker_batch_size if inference_cfg else 32
+        retrieval_batch_size = inference_cfg.retrieval_batch_size if inference_cfg else 32
+        if not torch.cuda.is_available():
+            generation_batch_size = 1
+
         dense = DenseRetriever.load_index(
             dek21_dir,
             corpus_path=chunks_path,
@@ -439,9 +465,19 @@ def run_pipeline(
             expected_model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
             expected_dtype="float16",
             final_mode=True,
+            verify_self_consistency=True,
         )
         reranker = BGEReranker(model_name=reranker_checkpoint, device=retrieval_device)
         packer = EvidencePacker(bm25.corpus)
+        legal_index = None
+        legal_rows = None
+        if retrieval_options is not None and retrieval_options.get("use_legal_reference"):
+            from src.common.legal_reference import build_legal_reference_index
+
+            legal_rows = list(bm25.corpus)
+            legal_index, lex_report = build_legal_reference_index(legal_rows)
+            if lex_report["is_empty"]:
+                raise ValueError("legal-reference arm enabled but the index is empty")
 
         generator = None
         if profile.requires_generator:
@@ -460,11 +496,23 @@ def run_pipeline(
             best_fixed_candidate=production_cfg.best_fixed_candidate or "stitched_extract",
         )
 
-        pipeline = LegalQAPipeline(memory, bm25, dense, reranker, packer, generator, selector)
+        pipeline = LegalQAPipeline(
+            memory,
+            bm25,
+            dense,
+            reranker,
+            packer,
+            generator,
+            selector,
+            legal_index=legal_index,
+            legal_rows=legal_rows,
+            retrieval_options=retrieval_options,
+            retrieval_weights=retrieval_weights,
+        )
 
         from src.task2.pipeline.contracts import validate_execution_contract
 
-        is_final_profile = profile.name in ("final_train_and_submit", "reuse_final_checkpoints_and_submit")
+        is_final_profile = profile.name in STRICT_CONTRACT_PROFILES
         validate_execution_contract(
             {"final_mode": is_final_profile, "profile": profile.name},
             {
@@ -487,19 +535,18 @@ def run_pipeline(
         )
 
         if not test_path or not os.path.exists(test_path):
-            raise FileNotFoundError(f"Public test set not found at: {test_path}")
+            raise FileNotFoundError(f"Test set not found at: {test_path}")
 
         with open(test_path, "r", encoding="utf-8") as f:
             public_test = json.load(f)
 
         items_to_predict = [{"id": str(qid), "question": str(item.get("question", "")).strip()} for qid, item in public_test.items()]
-        batch_size_gen = 4 if torch.cuda.is_available() else 1
         submission, provenance = pipeline.predict_batch(
             items=items_to_predict,
             max_new_tokens=production_cfg.max_new_tokens,
-            retrieval_batch_size=32,
-            reranker_batch_size=32,
-            generation_batch_size=batch_size_gen,
+            retrieval_batch_size=retrieval_batch_size,
+            reranker_batch_size=reranker_batch_size,
+            generation_batch_size=generation_batch_size,
             return_provenance=True,
         )
 
@@ -540,7 +587,14 @@ def run_pipeline(
             "inference": {
                 "kind": "inference",
                 "num_predictions": len(submission),
+                "expected_count": len(public_test),
                 "submission_sha256": zip_report["loose_sha256"],
+                "test_fingerprint": {
+                    "num_expected": len(public_test),
+                    "generation_batch_size": generation_batch_size,
+                    "reranker_batch_size": reranker_batch_size,
+                    "retrieval_batch_size": retrieval_batch_size,
+                },
                 "measured": True,
             },
         }

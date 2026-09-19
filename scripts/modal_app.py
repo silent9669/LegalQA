@@ -1,142 +1,374 @@
 #!/usr/bin/env python3
-"""Modal A100 adapter: thin launcher around the shared pipeline runner.
+"""Modal A100 remote pipeline runner for LegalQA Task 2.
 
-Requests exactly one A100-40GB; availability is never promised. The adapter
-calls the same run_gpu_gate shared runner as Colab (never a forked
-algorithm) with the modal_a100 runtime profile. Switching platforms requires
-its own target-GPU microprobe and full timing report even for an identical
-candidate commit.
+Idiomatic Modal structure: the local client only builds and validates the
+request, then dispatches with ``.remote()``. All GPU work happens inside the
+A100 container (image + secrets + volumes declared below).
+
+Container image pins follow constraints-gpu.txt (single source of truth,
+parsed locally at image definition time); torch itself comes from the CUDA
+12.1 index and its resolved version is recorded in run telemetry.
 
 Usage:
-  python scripts/modal_app.py --candidate <candidate-manifest> --profile configs/task2/runtime/modal_a100.yaml
+  modal run scripts/modal_app.py --stage micro_probe
+  modal run scripts/modal_app.py --stage full --test-path private-official.json
+  modal run scripts/modal_app.py --stage full --test-path public-official.json --candidate <id>
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+try:
+    import modal
+except ImportError:  # CPU-only hosts: request building still works.
+    modal = None
 
-def _load_profile(profile_path: Path) -> dict:
-    import yaml
+APP_NAME = "legalqa-a100-pipeline"
+DATA_VOLUME_NAME = "legalqa-data-vol"
+RUNS_VOLUME_NAME = "legalqa-runs-vol"
+SECRET_NAME = "legalqa-secrets"
+DATASET_SLUG = "phucdangg/legalqa-task2-clean-data"
+DENSE_MODEL_ID = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+KNOWN_TEST_FILES = ("private-official.json", "public-official.json")
 
-    with open(profile_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"runtime profile must be a mapping: {profile_path}")
-    return data
+
+def read_pin_file(name: str) -> List[str]:
+    """Parse a local requirements/constraints file into pip specifiers."""
+    specs = []
+    for line in (REPO_ROOT / name).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        specs.append(line)
+    return specs
 
 
-def run_modal_stage(
-    candidate_path: str,
-    profile_path: str,
-    data_dir: str,
-    output_dir: str,
-    stage: str = "a100_micro_probe",
-    parent_report_path: str | None = None,
-) -> dict:
-    """Run one Modal A100 gate stage through the shared runner."""
-    from src.task2.config.loader import load_resolved_config
-    from src.task2.dataset.validator import compute_sha256
-    from src.task2.provenance.candidate import CandidateManifest
-    from scripts.run_gpu_gate import build_gate_request, run_platform_stage
+def build_modal_request(
+    stage: str,
+    candidate_manifest: Dict[str, Any],
+    test_path: str = "private-official.json",
+    parent_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a validated remote-execution request (pure, locally testable).
 
-    t0 = time.monotonic()
-    profile = _load_profile(Path(profile_path))
-    if profile.get("profile_name") != "modal_a100":
-        raise ValueError(f"Modal adapter requires profile_name=modal_a100, got {profile.get('profile_name')}")
-    if int(profile.get("required_gpu_count", 0)) != 1 or "A100" not in str(profile.get("required_gpu_name_contains", "")):
-        raise ValueError("Modal adapter requires exactly one A100-40GB")
+    The parent chain is mandatory: micro_probe requires the colab_t4 PASS
+    report, full requires the a100_micro_probe PASS report, each for the
+    same candidate. No bypass, no cross-candidate reuse.
+    """
+    if stage not in ("micro_probe", "full"):
+        raise ValueError(f"unknown Modal stage: {stage}")
+    if not candidate_manifest.get("candidate_id") or not candidate_manifest.get("git_commit_sha"):
+        raise ValueError("candidate manifest must carry candidate_id and git_commit_sha")
+    dense_revision = ((candidate_manifest.get("models") or {}).get("dense") or {}).get("revision", "")
+    if not dense_revision or len(str(dense_revision)) != 40:
+        raise ValueError("candidate must pin an immutable 40-hex dense revision")
+    required_parent = {"micro_probe": "colab_t4", "full": "a100_micro_probe"}[stage]
+    if not isinstance(parent_report, dict):
+        raise ValueError(f"Modal {stage} requires the {required_parent} parent report (no bypass)")
+    if parent_report.get("status") != "PASS":
+        raise ValueError(f"parent {required_parent} report is not PASS")
+    if parent_report.get("stage") != required_parent:
+        raise ValueError(
+            f"parent stage mismatch for Modal {stage}: required {required_parent}, "
+            f"got {parent_report.get('stage')}"
+        )
+    parent_candidate = parent_report.get("candidate_id", parent_report.get("candidate_sha"))
+    if parent_candidate != candidate_manifest["candidate_id"]:
+        raise ValueError("parent report candidate mismatch: cross-candidate reuse refused")
+    if not parent_report.get("report_sha256"):
+        raise ValueError("parent report lacks report_sha256")
+    return {
+        "stage": stage,
+        "candidate_id": candidate_manifest["candidate_id"],
+        "candidate_manifest": candidate_manifest,
+        "test_filename": str(test_path),
+        "dense_revision": str(dense_revision),
+        "parent_report": parent_report,
+    }
 
-    candidate = CandidateManifest.load_json(candidate_path)
-    algo_path = REPO_ROOT / "configs" / "task2" / "algorithm.yaml"
-    resolved = load_resolved_config(algo_path, profile_path, candidate_id=candidate.candidate_id)
-    candidate.validate_against_config(resolved)
 
-    parent_report: dict | None = None
-    if parent_report_path:
+def validate_modal_request(request: Dict[str, Any]) -> None:
+    """Fail closed on malformed remote requests before any cloud spend."""
+    build_modal_request(
+        stage=request.get("stage", ""),
+        candidate_manifest=request.get("candidate_manifest", {}),
+        test_path=request.get("test_filename", ""),
+        parent_report=request.get("parent_report"),
+    )
+    if request.get("test_filename") not in KNOWN_TEST_FILES:
+        raise ValueError(f"refusing unknown test file: {request.get('test_filename')}")
+
+
+def resolve_test_file(data_dir: Path, requested: str) -> Path:
+    """Resolve the inference test set; fail closed on unknown/missing files."""
+    if requested not in KNOWN_TEST_FILES:
+        raise ValueError(f"refusing unknown test file: {requested}")
+    candidate = data_dir / requested
+    if candidate.is_file():
+        return candidate
+    fallback = data_dir / "public-official.json"
+    if requested != "public-official.json" and fallback.is_file():
+        print(f"Notice: {requested} absent; falling back to public-official.json")
+        return fallback
+    raise FileNotFoundError(f"test file not found: {candidate}")
+
+
+def test_file_fingerprint(path: Path) -> Dict[str, Any]:
+    """Count + hash the inference test set for the evidence record."""
+    raw = path.read_bytes()
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict) or not data:
+        raise ValueError(f"test file must be a nonempty JSON object: {path}")
+    return {
+        "filename": path.name,
+        "num_queries": len(data),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+    }
+
+
+# ----------------------------------------------------------------------
+# Container image, volumes, secrets (declared when the SDK is present).
+# ----------------------------------------------------------------------
+if modal is not None:
+    _constraint_specs = read_pin_file("constraints-gpu.txt")
+    _base_specs = [
+        spec for spec in read_pin_file("requirements.txt")
+        if not spec.lower().startswith(("torch", "transformers", "peft", "trl",
+                                        "bitsandbytes", "accelerate", "datasets"))
+    ]
+    legalqa_image = (
+        modal.Image.debian_slim(python_version="3.11")
+        .apt_install("git", "curl", "wget", "unzip", "build-essential")
+        .pip_install("torch", index_url="https://download.pytorch.org/whl/cu121")
+        .pip_install(*_constraint_specs)
+        .pip_install(*_base_specs)
+        .pip_install("kaggle", "kagglehub")
+        .run_commands(
+            "python -c \"import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')\""
+        )
+        .add_local_dir(str(REPO_ROOT), remote_path="/root/LegalQA", copy=True)
+    )
+
+    app = modal.App(APP_NAME, image=legalqa_image)
+    data_volume = modal.Volume.from_name(DATA_VOLUME_NAME, create_if_missing=True)
+    runs_volume = modal.Volume.from_name(RUNS_VOLUME_NAME, create_if_missing=True)
+    secrets = [modal.Secret.from_name(SECRET_NAME)]
+else:
+    app = None
+    data_volume = None
+    runs_volume = None
+    secrets = []
+
+
+if modal is not None:
+
+    def _write_candidate(run_dir: Path, candidate: Dict[str, Any]) -> str:
+        path = run_dir / "candidate_manifest.json"
+        path.write_text(json.dumps(candidate, indent=2), encoding="utf-8")
+        return str(path)
+
+    def _write_parent(run_dir: Path, parent: Dict[str, Any]) -> str:
         from src.task2.provenance.gate_report import GateReport
 
-        parent = GateReport.load_json(parent_report_path)
-        parent_report = {
-            "status": parent.status,
-            "candidate_sha": parent.candidate_id,
-            "stage": parent.stage,
-            "report_sha256": parent.compute_sha256(),
-        }
-    request = build_gate_request(
-        {
-            "candidate_sha": candidate.candidate_id,
-            "algorithm_sha256": candidate.algorithm_sha256,
-            "dataset_sha256": candidate.dataset.manifest_sha256,
-            "scorer_sha256": compute_sha256(str(REPO_ROOT / "Scoring-Program-Task-LegalQA" / "scoring.py")),
-            "runtime_profile": "modal_a100",
-            "runtime_sha256": resolved.runtime_sha256,
-        },
-        stage,
-        parent_report,
+        path = run_dir / "parent_gate_report.json"
+        path.write_text(json.dumps(parent), encoding="utf-8")
+        if GateReport.load_json(path).compute_sha256() != parent.get("report_sha256"):
+            raise ValueError("parent report sha mismatch: refusing cross-report reuse")
+        return str(path)
+
+    @app.function(
+        gpu="A100-40GB",
+        timeout=18000,
+        volumes={"/data": data_volume, "/runs": runs_volume},
+        secrets=secrets,
     )
-    request.update(
-        {
-            "candidate_path": candidate_path,
-            "data_dir": data_dir,
-            "output_dir": output_dir,
-            "parent_report_path": parent_report_path,
-            "platform": "modal",
-        }
-    )
-    report = run_platform_stage(request)
-    wall_seconds = int(time.monotonic() - t0)
+    def run_modal_a100_remote(request: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute one Modal stage inside the A100 container."""
+        import subprocess
 
-    receipt = {
-        "platform": "modal",
-        "requested_gpu": "A100-40GB",
-        "candidate_id": candidate.candidate_id,
-        "stage": stage,
-        "status": report.get("status"),
-        "wall_seconds": wall_seconds,
-        "report_sha256": report.get("report_sha256", ""),
-    }
-    out_p = Path(output_dir)
-    out_p.mkdir(parents=True, exist_ok=True)
-    (out_p / "modal_a100_receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
-    print(f"[Modal A100] stage={stage} status={receipt['status']} wall={wall_seconds}s")
-    return receipt
+        import torch
+
+        validate_modal_request(request)
+        stage = request["stage"]
+        candidate = request["candidate_manifest"]
+        print("=== Modal A100 container ===")
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        print(f"torch: {torch.__version__} | cuda: {torch.version.cuda}")
+        t_start = time.monotonic()
+
+        sys.path.insert(0, "/root/LegalQA")
+        os.chdir("/root/LegalQA")
+
+        from scripts.rebuild_dense_index import build_verified_index, check_dense_alignment
+
+        data_dir = Path("/data/legalqa-task2-clean-data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        chunks_file = data_dir / "legal_chunks.parquet"
+        if not chunks_file.exists():
+            print(f"[+] Pulling {DATASET_SLUG} from Kaggle...")
+            subprocess.run(
+                ["kaggle", "datasets", "download", "-d", DATASET_SLUG,
+                 "-p", str(data_dir), "--unzip", "--force"],
+                check=True,
+            )
+            data_volume.commit()
+        else:
+            print("[+] Dataset cached on volume.")
+
+        staged = data_dir / "indexes" / "dek21"
+        alignment = check_dense_alignment(str(staged), str(chunks_file)) if staged.exists() \
+            else {"aligned": False, "status": "missing"}
+        if alignment.get("aligned"):
+            print("[+] Staged dense index aligned; reuse.")
+            dense_index_dir = str(staged)
+        else:
+            print(f"[!] Dense misaligned ({alignment.get('status')}); cold rebuild...")
+            rebuilt = data_dir / "indexes" / "dek21_rebuilt"
+            manifest = build_verified_index(
+                corpus_path=str(chunks_file),
+                out_dir=str(rebuilt),
+                model_id=DENSE_MODEL_ID,
+                revision=request["dense_revision"],
+                batch_size=512,
+                device="cuda:0",
+            )
+            data_volume.commit()
+            dense_index_dir = str(rebuilt)
+            print(f"[+] Rebuilt in {manifest.get('seconds')}s; committed to volume.")
+
+        run_output_dir = Path(f"/runs/modal_{request['candidate_id']}_{int(time.time())}")
+        run_output_dir.mkdir(parents=True, exist_ok=True)
+        candidate_path = _write_candidate(run_output_dir, candidate)
+        parent_path = _write_parent(run_output_dir, request["parent_report"])
+
+        if stage == "micro_probe":
+            from scripts.run_gpu_gate import run_gpu_gate
+
+            report = run_gpu_gate(
+                stage="a100_micro_probe",
+                candidate_path=candidate_path,
+                data_dir=str(data_dir),
+                output_dir=str(run_output_dir),
+                skip_gpu_assert=False,
+                parent_report_path=parent_path,
+                runtime_profile="modal_a100",
+            )
+            result = {"status": report.status, "stage": "micro_probe",
+                      "report": report.to_dict(),
+                      "report_sha256": report.compute_sha256()}
+        else:
+            from src.task2.config.loader import load_resolved_config
+            from src.task2.pipeline.runner import run_pipeline
+            from src.task2.pipeline.profiles import load_profile_from_yaml
+            from src.task2.provenance.candidate import CandidateManifest
+            from src.task2.provenance.gate_report import verify_gate_report
+
+            manifest = CandidateManifest.load_json(candidate_path)
+            verify_gate_report(parent_path, manifest, expected_stage="a100_micro_probe")
+            print("[+] Microprobe parent chain verified.")
+            test_path = resolve_test_file(data_dir, request["test_filename"])
+            fingerprint = test_file_fingerprint(test_path)
+            print(f"[+] Test set: {fingerprint}")
+            resolved = load_resolved_config(
+                "/root/LegalQA/configs/task2/algorithm.yaml",
+                "/root/LegalQA/configs/task2/runtime/modal_a100.yaml",
+                candidate_id=manifest.candidate_id,
+            )
+            manifest.validate_against_config(resolved)
+            profile = load_profile_from_yaml("/root/LegalQA/configs/task2/runtime/modal_a100.yaml")
+            outputs = run_pipeline(
+                profile=profile,
+                paths={
+                    "data_dir": str(data_dir),
+                    "bm25_dir": str(data_dir / "indexes" / "bm25"),
+                    "dek21_dir": dense_index_dir,
+                    "qwen_model_path": manifest.models.generator.id,
+                    "public_test_path": str(test_path),
+                },
+                production_cfg=None,
+                resolved_config=resolved,
+                gen_device="cuda:0",
+                retrieval_device="cuda:0",
+                output_dir=str(run_output_dir),
+                seed=resolved.algorithm.seed,
+                code_root="/root/LegalQA",
+                allow_single_gpu=True,
+            )
+            result = {"status": "PASS", "stage": "full",
+                      "test_fingerprint": fingerprint,
+                      "submission_zip": outputs.get("stages", {}).get("submission", {}).get("submission_zip"),
+                      "stages": sorted(outputs.get("stages", {}).keys())}
+
+        runs_volume.commit()
+        result["wall_seconds"] = int(time.monotonic() - t_start)
+        result["output_dir"] = str(run_output_dir)
+        print(f"[+] Done in {result['wall_seconds'] / 60:.1f} min: {result['status']}")
+        return result
+
+    @app.local_entrypoint()
+    def main(
+        stage: str = "full",
+        test_path: str = "private-official.json",
+        candidate: str = "",
+        parent_report: str = "",
+    ):
+        manifest_path = Path(candidate) if candidate else None
+        if manifest_path is None or not manifest_path.is_file():
+            cands = sorted(
+                (REPO_ROOT / "artifacts" / "candidates").glob("*/candidate_manifest.json"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            if not cands:
+                raise SystemExit("no candidate manifest: pass --candidate <candidate_manifest.json>")
+            manifest_path = cands[-1]
+            print(f"using latest local candidate: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        required_parent = {"micro_probe": "colab_t4", "full": "a100_micro_probe"}.get(stage)
+        parent_path = Path(parent_report) if parent_report else None
+        if parent_path is None and required_parent:
+            gates_dir = REPO_ROOT / "artifacts" / "gates" / manifest["candidate_id"]
+            auto = sorted(gates_dir.glob(f"{required_parent}_report.json"),
+                          key=lambda p: p.stat().st_mtime) if gates_dir.is_dir() else []
+            if auto:
+                parent_path = auto[-1]
+                print(f"using parent report: {parent_path}")
+        if parent_path is None or not parent_path.is_file():
+            raise SystemExit(
+                f"Modal {stage} requires the {required_parent} PASS parent report "
+                f"(--parent-report <report.json>); no bypass."
+            )
+        parent = json.loads(parent_path.read_text(encoding="utf-8"))
+        if not parent.get("report_sha256"):
+            from src.task2.provenance.gate_report import GateReport
+
+            parent = dict(parent, report_sha256=GateReport.load_json(parent_path).compute_sha256())
+        request = build_modal_request(stage, manifest, test_path, parent)
+        print(f"=== Dispatching to Modal A100: stage={stage} candidate={manifest['candidate_id']} ===")
+        result = run_modal_a100_remote.remote(request)
+        print(json.dumps(result, indent=2))
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Modal A100 thin launcher (shared runner).")
-    parser.add_argument("--candidate", required=True, help="Path to candidate_manifest.json")
-    parser.add_argument("--profile", default=str(REPO_ROOT / "configs/task2/runtime/modal_a100.yaml"))
-    parser.add_argument("--data-dir", default="/root/legalqa_data")
-    parser.add_argument("--output-dir", default="/root/legalqa_run")
-    parser.add_argument("--stage", default="a100_micro_probe",
-                        choices=["kaggle_t4x2", "colab_t4", "a100_micro_probe"])
-    parser.add_argument("--parent-report", default=None)
+if __name__ == "__main__" and modal is None:
+    parser = argparse.ArgumentParser(description="Modal A100 runner (modal SDK required to dispatch).")
+    parser.add_argument("--stage", default="full")
+    parser.add_argument("--test-path", default="private-official.json")
+    parser.add_argument("--candidate", default="")
     args = parser.parse_args()
-    run_modal_stage(args.candidate, args.profile, args.data_dir, args.output_dir, args.stage, args.parent_report)
-
-
-try:
-    import modal  # type: ignore
-
-    app = modal.App("legalqa-a100")
-
-    @app.function(gpu="A100-40GB", timeout=60 * 60 * 5)
-    def modal_remote_stage(request: dict) -> dict:
-        from scripts.run_gpu_gate import run_platform_stage as _run
-
-        return _run(request)
-except ImportError:
-    modal = None
-    app = None
-
-
-if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "modal SDK not installed locally (pip install modal) or no token; "
+        f"validated args stage={args.stage} test-path={args.test_path}. "
+        "Dispatch with: modal run scripts/modal_app.py --stage <micro_probe|full>"
+    )

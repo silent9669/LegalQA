@@ -13,6 +13,10 @@ a100_micro_probe:
   optimizer_steps: 2
 production:
   full_train: true
+inference:
+  generation_batch_size: 16
+  reranker_batch_size: 128
+  retrieval_batch_size: 32
 outputs:
   report_path: /content/legalqa_run/a100_micro_probe_report.json
   log_path: /content/legalqa_run/train.log

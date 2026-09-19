@@ -13,7 +13,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 import pandas as pd
 
-from src.common.normalize import clean_legal_text, extract_legal_signals, normalize_question
+from src.common.normalize import (
+    clean_legal_text,
+    extract_legal_signals,
+    normalize_question,
+    normalize_question_deep,
+)
 
 
 def compute_char_ngram_vector(text: str, n: int = 3) -> Dict[str, float]:
@@ -50,9 +55,11 @@ class QAMemory:
         df: Optional[pd.DataFrame] = None,
         records: Optional[List[Dict[str, Any]]] = None,
         id_to_record: Optional[Dict[str, Dict[str, Any]]] = None,
+        question_to_answer_deep: Optional[Dict[str, str]] = None,
     ):
         self.id_to_answer = id_to_answer
         self.question_to_answer = question_to_answer
+        self.question_to_answer_deep = question_to_answer_deep or {}
         self.conflicts = conflicts or {}
         self.df = df if df is not None else pd.DataFrame()
         self.records = records or []
@@ -94,6 +101,7 @@ class QAMemory:
                 "qa_group_id": hashlib.sha256(f"qagroup:{q_norm}".encode("utf-8")).hexdigest()[:16],
                 "question_raw": q_raw,
                 "question_norm": q_norm,
+                "question_deep": normalize_question_deep(q_raw),
                 "answer_raw": ans_raw,
                 "answer_clean": ans_clean,
                 "answer_len_words": len(ans_raw.split()),
@@ -112,6 +120,8 @@ class QAMemory:
 
         question_map: Dict[str, str] = {}
         conflicts: Dict[str, List[str]] = {}
+        question_map_deep: Dict[str, str] = {}
+        deep_conflicts: Dict[str, List[str]] = {}
 
         for q_norm, items in grouped_by_q.items():
             unique_answers = list({it["answer_raw"].strip() for it in items})
@@ -120,11 +130,25 @@ class QAMemory:
             else:
                 conflicts[q_norm] = unique_answers
 
+        grouped_by_deep: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for rec in rows:
+            grouped_by_deep[rec["question_deep"]].append(rec)
+        for q_deep, items in grouped_by_deep.items():
+            unique_answers = list({it["answer_raw"].strip() for it in items})
+            if len(unique_answers) == 1:
+                question_map_deep[q_deep] = unique_answers[0]
+            else:
+                deep_conflicts[q_deep] = unique_answers
+
         df = pd.DataFrame(rows) if rows else pd.DataFrame()
         if not df.empty:
             df["is_conflict"] = df["question_norm"].apply(lambda q: q in conflicts)
 
-        return cls(id_map, question_map, conflicts, df, records=rows, id_to_record=id_to_rec)
+        merged_conflicts = dict(conflicts)
+        for key, value in deep_conflicts.items():
+            merged_conflicts.setdefault(f"deep:{key}", value)
+        return cls(id_map, question_map, merged_conflicts, df, records=rows, id_to_record=id_to_rec,
+                   question_to_answer_deep=question_map_deep)
 
     def lookup_exact(self, qa_id: Optional[str], question: Optional[str]) -> Optional[str]:
         """Lookup answer by exact normalized question or consistent QA ID.
@@ -155,6 +179,16 @@ class QAMemory:
                 return self.id_to_answer[qa_id_str]
 
         return None
+
+    def lookup_exact_deep(self, question: Optional[str]) -> Optional[str]:
+        """Filler-tolerant exact lookup (deep normalization), conflict-free only.
+
+        Question-only: ID consistency stays with the standard layer. Returns
+        None when the deep form is unknown or conflicted.
+        """
+        if not question:
+            return None
+        return self.question_to_answer_deep.get(normalize_question_deep(question))
 
     def lookup_fuzzy(
         self,
@@ -234,6 +268,7 @@ class QAMemory:
         """
         val_qa_ids_str = {str(k).strip() for k in val_qa_ids}
         val_q_norm = {normalize_question(q) for q in val_questions} if val_questions else set()
+        val_q_deep = {normalize_question_deep(q) for q in val_questions} if val_questions else set()
         val_groups = {str(g).strip() for g in val_group_ids} if val_group_ids else set()
 
         def _group_of(rec: Dict[str, Any]) -> str:
@@ -245,6 +280,8 @@ class QAMemory:
             for rec in self.records:
                 if _group_of(rec) in val_groups and rec.get("question_norm"):
                     val_q_norm.add(rec["question_norm"])
+                if _group_of(rec) in val_groups and rec.get("question_deep"):
+                    val_q_deep.add(rec["question_deep"])
             for qa_id, rec in self.id_to_record.items():
                 if _group_of(rec) in val_groups:
                     val_qa_ids_str.add(str(qa_id).strip())
@@ -269,6 +306,10 @@ class QAMemory:
             k: v for k, v in self.question_to_answer.items()
             if k not in val_q_norm
         }
+        filtered_q_deep_map = {
+            k: v for k, v in self.question_to_answer_deep.items()
+            if k not in val_q_deep
+        }
 
         if not self.df.empty:
             mask = (~self.df["qa_id"].astype(str).isin(val_qa_ids_str)) & (~self.df["question_norm"].isin(val_q_norm))
@@ -285,6 +326,7 @@ class QAMemory:
             filtered_df,
             records=filtered_records,
             id_to_record=filtered_id_to_rec,
+            question_to_answer_deep=filtered_q_deep_map,
         )
 
     def filter_groups(self, excluded_group_ids: Set[str]) -> QAMemory:
@@ -297,6 +339,7 @@ class QAMemory:
             json.dump({
                 "id_map": self.id_to_answer,
                 "question_map": self.question_to_answer,
+                "question_map_deep": self.question_to_answer_deep,
                 "conflicts_count": len(self.conflicts),
                 "records": self.records,
             }, f, ensure_ascii=False, indent=2)
@@ -311,4 +354,10 @@ class QAMemory:
             data = json.load(f)
         df = pd.read_parquet(parquet_path) if parquet_path and os.path.exists(parquet_path) else pd.DataFrame()
         records = data.get("records", [])
-        return cls(data.get("id_map", {}), data.get("question_map", {}), {}, df, records=records)
+        deep_map = data.get("question_map_deep")
+        if not deep_map and records:
+            # Backfill for memories frozen before the deep layer existed:
+            # rebuild deterministically from stored records (no data change).
+            deep_map = cls.from_records(records).question_to_answer_deep
+        return cls(data.get("id_map", {}), data.get("question_map", {}), {}, df, records=records,
+                   question_to_answer_deep=deep_map or {})

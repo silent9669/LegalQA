@@ -10,7 +10,7 @@ import pandas as pd
 from src.common.bm25 import BM25Retriever
 from src.common.dense import DenseRetriever
 from src.common.legal_reference import search_legal_references
-from src.common.query_rewrite import rewrite_query_for_retrieval, rrf_weights
+from src.common.query_rewrite import has_legal_reference, rewrite_query_for_retrieval
 from src.common.reranker import BGEReranker
 from src.common.rrf import reciprocal_rank_fusion
 from src.task2.candidates import generate_candidate_ensemble
@@ -19,6 +19,29 @@ from src.task2.generator import QwenGenerator
 from src.task2.production_config import policy_requires_generator
 from src.task2.qa_memory import QAMemory
 from src.task2.selector import CandidateSelector
+
+
+def retrieval_options_from_config(cfg: Any) -> Tuple[Dict[str, Any], Dict[str, float]]:
+    """Split a resolved candidate's retrieval recipe into options + weights."""
+    retrieval = cfg.algorithm.retrieval
+    options = {
+        "use_legal_reference": bool(retrieval.use_legal_reference),
+        "use_acronyms": bool(retrieval.use_acronyms),
+        "use_weighted_rrf": bool(retrieval.use_weighted_rrf),
+        "diversify_context": bool(retrieval.diversify_context),
+        "lost_in_middle": bool(retrieval.lost_in_middle),
+        "max_parts_per_article": int(retrieval.max_parts_per_article),
+        "rrf_k": int(retrieval.rrf_k),
+        "candidate_pool": int(retrieval.candidate_pool),
+    }
+    weights = {
+        "w_bm25_plain": float(retrieval.w_bm25_plain),
+        "w_dense_plain": float(retrieval.w_dense_plain),
+        "w_bm25_lex": float(retrieval.w_bm25_lex),
+        "w_dense_lex": float(retrieval.w_dense_lex),
+        "w_lexref_lex": float(retrieval.w_lexref_lex),
+    }
+    return options, weights
 
 
 class LegalQAPipeline:
@@ -38,6 +61,16 @@ class LegalQAPipeline:
         "candidate_pool": 50,
     }
 
+    #: Default RRF weights reproduce the legacy uniform recipe. Score-affecting
+    #: overrides arrive via retrieval_weights (hashed in the candidate).
+    DEFAULT_RETRIEVAL_WEIGHTS: Dict[str, float] = {
+        "w_bm25_plain": 0.5,
+        "w_dense_plain": 0.5,
+        "w_bm25_lex": 1.0 / 3.0,
+        "w_dense_lex": 1.0 / 3.0,
+        "w_lexref_lex": 1.0 / 3.0,
+    }
+
     def __init__(
         self,
         memory: QAMemory,
@@ -50,6 +83,7 @@ class LegalQAPipeline:
         legal_index: Optional[Dict[str, Any]] = None,
         legal_rows: Optional[List[Dict[str, Any]]] = None,
         retrieval_options: Optional[Dict[str, Any]] = None,
+        retrieval_weights: Optional[Dict[str, float]] = None,
     ):
         self.memory = memory
         self.bm25 = bm25
@@ -67,6 +101,41 @@ class LegalQAPipeline:
             if unknown:
                 raise ValueError(f"unknown retrieval options: {sorted(unknown)}")
             self.retrieval_options.update(retrieval_options)
+        self.retrieval_weights = dict(self.DEFAULT_RETRIEVAL_WEIGHTS)
+        if retrieval_weights:
+            unknown_w = set(retrieval_weights) - set(self.DEFAULT_RETRIEVAL_WEIGHTS)
+            if unknown_w:
+                raise ValueError(f"unknown retrieval weights: {sorted(unknown_w)}")
+            self.retrieval_weights.update({k: float(v) for k, v in retrieval_weights.items()})
+        self._validate_retrieval_weights()
+
+    def _validate_retrieval_weights(self) -> None:
+        w = self.retrieval_weights
+        if any(v < 0 for v in w.values()):
+            raise ValueError("retrieval RRF weights must be non-negative")
+        if abs(w["w_bm25_plain"] + w["w_dense_plain"] - 1.0) > 1e-6:
+            raise ValueError("retrieval plain weights must sum to 1.0")
+        if abs(w["w_bm25_lex"] + w["w_dense_lex"] + w["w_lexref_lex"] - 1.0) > 1e-6:
+            raise ValueError("retrieval lex weights must sum to 1.0")
+
+    def rrf_arm_weights(self, present_arms: List[str], lex_query: bool) -> List[float]:
+        """RRF weights for the present arms, renormalized to sum 1.
+
+        Weighted policy (use_weighted_rrf + reference-bearing query) uses the
+        lex row, else the plain row; the legacy path (flag off) stays uniform.
+        """
+        w = self.retrieval_weights
+        if self.retrieval_options["use_weighted_rrf"] and lex_query:
+            table = {"bm25": w["w_bm25_lex"], "dense": w["w_dense_lex"], "lexref": w["w_lexref_lex"]}
+        elif self.retrieval_options["use_weighted_rrf"]:
+            table = {"bm25": w["w_bm25_plain"], "dense": w["w_dense_plain"], "lexref": w["w_lexref_lex"]}
+        else:
+            return [1.0 / len(present_arms)] * len(present_arms) if present_arms else []
+        picked = [table[name] for name in present_arms]
+        total = sum(picked)
+        if total <= 0:
+            raise ValueError("retrieval RRF weights sum to zero for present arms")
+        return [v / total for v in picked]
 
     @property
     def policy_needs_generator(self) -> bool:
@@ -78,7 +147,11 @@ class LegalQAPipeline:
         return policy_requires_generator(policy, best_fixed)
 
     @classmethod
-    def build_mock(cls) -> LegalQAPipeline:
+    def build_mock(
+        cls,
+        retrieval_options: Optional[Dict[str, Any]] = None,
+        retrieval_weights: Optional[Dict[str, float]] = None,
+    ) -> LegalQAPipeline:
         """Construct lightweight in-memory mock pipeline for fast unit testing."""
         chunks = [
             {
@@ -101,7 +174,8 @@ class LegalQAPipeline:
         packer = EvidencePacker(chunks)
         generator = QwenGenerator(runtime="fallback")
         selector = CandidateSelector(policy="fixed_baseline", best_fixed_candidate="stitched_extract")
-        return cls(mem, bm25, dense, reranker, packer, generator, selector)
+        return cls(mem, bm25, dense, reranker, packer, generator, selector,
+                   retrieval_options=retrieval_options, retrieval_weights=retrieval_weights)
 
     @classmethod
     def load_pipeline(
@@ -123,8 +197,14 @@ class LegalQAPipeline:
         require_adapter: bool = False,
         load_generator: bool = True,
         use_legal_reference: bool = False,
+        resolved_config: Optional[Any] = None,
     ) -> LegalQAPipeline:
-        """Load full pipeline from disk artifacts with explicit Dual-T4 GPU placement."""
+        """Load full pipeline from disk artifacts with explicit Dual-T4 GPU placement.
+
+        With resolved_config, the candidate's retrieval recipe (flags, pool,
+        RRF weights) and legal-reference arm bind to this pipeline; explicit
+        arguments win over the resolved recipe.
+        """
         if index_dir is not None:
             bm25_dir = index_dir
         known_qa_path = os.path.join(data_dir, "known_qa.json")
@@ -200,6 +280,11 @@ class LegalQAPipeline:
         # same ordered corpus rows the BM25/dense arms use.
         legal_index: Optional[Dict[str, Any]] = None
         legal_rows: Optional[List[Dict[str, Any]]] = None
+        retrieval_options: Optional[Dict[str, Any]] = None
+        retrieval_weights: Optional[Dict[str, float]] = None
+        if resolved_config is not None:
+            retrieval_options, retrieval_weights = retrieval_options_from_config(resolved_config)
+            use_legal_reference = use_legal_reference or bool(retrieval_options["use_legal_reference"])
         if use_legal_reference:
             from src.common.legal_reference import build_legal_reference_index
 
@@ -218,7 +303,8 @@ class LegalQAPipeline:
             selector,
             legal_index=legal_index,
             legal_rows=legal_rows,
-            retrieval_options={"use_legal_reference": use_legal_reference},
+            retrieval_options=retrieval_options or ({"use_legal_reference": True} if use_legal_reference else None),
+            retrieval_weights=retrieval_weights,
         )
 
     def retrieve_and_rerank(
@@ -243,7 +329,7 @@ class LegalQAPipeline:
         pool = int(options["candidate_pool"])
         rrf_k = int(options["rrf_k"])
         retrieval_query = rewrite_query_for_retrieval(question, use_acronyms=options["use_acronyms"])
-        weights = rrf_weights(question, use_weighted=options["use_weighted_rrf"])
+        lex_query = has_legal_reference(question)
 
         bm25_res = self.bm25.search(retrieval_query, top_k=pool) if self.bm25 else []
         dense_res = self.dense.search(retrieval_query, top_k=pool) if self.dense else []
@@ -262,18 +348,9 @@ class LegalQAPipeline:
         if lex_res:
             arms.append(lex_res)
             arm_names.append("lexref")
-        # Weight scale matches the legacy two-arm default ([0.5, 0.5]).
-        # v10 plain arms are uniform; v10 lex-query arms are (1.2, 0.8, 1.0),
-        # normalized here to (0.4, 0.8/3, 1/3). An empty lexref arm is a
-        # no-op: fusion falls back to the two-arm weights.
-        if "lexref" in arm_names:
-            if options["use_weighted_rrf"] and weights["bm25"] > weights["dense"]:
-                full = {"bm25": 0.4, "dense": 0.8 / 3.0, "lexref": 1.0 / 3.0}
-            else:
-                full = {"bm25": 1.0 / 3.0, "dense": 1.0 / 3.0, "lexref": 1.0 / 3.0}
-            arm_weights = [full[name] for name in arm_names]
-        else:
-            arm_weights = [weights[name] / 2.0 for name in arm_names]
+        # Scores live in the candidate (algorithm config); an empty lexref
+        # arm is a no-op and fusion falls back to the present arms.
+        arm_weights = self.rrf_arm_weights(arm_names, lex_query)
         if len(arms) >= 2:
             fused_res = reciprocal_rank_fusion(arms, k=rrf_k, weights=arm_weights)
         else:

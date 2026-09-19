@@ -13,6 +13,12 @@ a100_micro_probe:
   optimizer_steps: 2
 production:
   full_train: true
+# Runtime-only batching (greedy decoding: no score effect). A100-40GB headroom
+# per fix/02: gen batch 16 (~14.2 GB), rerank batch 128 (~7.8 GB).
+inference:
+  generation_batch_size: 16
+  reranker_batch_size: 128
+  retrieval_batch_size: 32
 outputs:
   report_path: /root/legalqa_run/modal_a100_report.json
   log_path: /root/legalqa_run/modal_a100.log

@@ -14,11 +14,13 @@ from src.task2.config.schema import (
     FinalTrainingConfig,
     GeneratorAlgorithmConfig,
     GeneratorRuntimeConfig,
+    InferenceRuntimeConfig,
     MicroProbeConfig,
     ModelEntry,
     ModelsConfig,
     ProductionRuntimeConfig,
     ResolvedTask2Config,
+    RetrievalConfig,
     RuntimeConfig,
     SmokeConfig,
 )
@@ -31,6 +33,7 @@ PROTECTED_ALGORITHM_KEYS: Set[str] = {
     "generator",
     "final_training",
     "evaluation",
+    "retrieval",
     "lora_r",
     "lora_alpha",
     "lora_dropout",
@@ -55,6 +58,7 @@ ALLOWED_ALGORITHM_TOP_KEYS: Set[str] = {
     "generator",
     "final_training",
     "evaluation",
+    "retrieval",
 }
 
 ALLOWED_RUNTIME_TOP_KEYS: Set[str] = {
@@ -67,6 +71,7 @@ ALLOWED_RUNTIME_TOP_KEYS: Set[str] = {
     "a100_micro_probe",
     "production",
     "outputs",
+    "inference",
 }
 
 
@@ -91,7 +96,6 @@ def _parse_algorithm_config(raw: Dict[str, Any]) -> AlgorithmConfig:
     missing = req_keys - set(raw.keys())
     if missing:
         raise ValueError(f"Missing required algorithm keys: {missing}")
-
     models_raw = raw["models"]
     models = ModelsConfig(
         generator=ModelEntry(**models_raw["generator"]),
@@ -130,6 +134,35 @@ def _parse_algorithm_config(raw: Dict[str, Any]) -> AlgorithmConfig:
         secondary_metric=str(eval_raw.get("secondary_metric", "rouge_l")),
     )
 
+    ret_raw = raw.get("retrieval", {}) or {}
+    if not isinstance(ret_raw, dict):
+        raise ValueError("Algorithm 'retrieval' section must be a mapping")
+    retrieval = RetrievalConfig(
+        rrf_k=int(ret_raw.get("rrf_k", 60)),
+        candidate_pool=int(ret_raw.get("candidate_pool", 50)),
+        use_legal_reference=bool(ret_raw.get("use_legal_reference", False)),
+        use_acronyms=bool(ret_raw.get("use_acronyms", False)),
+        use_weighted_rrf=bool(ret_raw.get("use_weighted_rrf", False)),
+        diversify_context=bool(ret_raw.get("diversify_context", False)),
+        lost_in_middle=bool(ret_raw.get("lost_in_middle", False)),
+        max_parts_per_article=int(ret_raw.get("max_parts_per_article", 2)),
+        w_bm25_plain=float(ret_raw.get("w_bm25_plain", 0.5)),
+        w_dense_plain=float(ret_raw.get("w_dense_plain", 0.5)),
+        w_bm25_lex=float(ret_raw.get("w_bm25_lex", 1.0 / 3.0)),
+        w_dense_lex=float(ret_raw.get("w_dense_lex", 1.0 / 3.0)),
+        w_lexref_lex=float(ret_raw.get("w_lexref_lex", 1.0 / 3.0)),
+    )
+    if retrieval.rrf_k <= 0 or retrieval.candidate_pool <= 0 or retrieval.max_parts_per_article < 1:
+        raise ValueError("retrieval rrf_k/candidate_pool must be positive, max_parts_per_article >= 1")
+    for w in (retrieval.w_bm25_plain, retrieval.w_dense_plain, retrieval.w_bm25_lex,
+              retrieval.w_dense_lex, retrieval.w_lexref_lex):
+        if w < 0:
+            raise ValueError("retrieval RRF weights must be non-negative")
+    if abs(retrieval.w_bm25_plain + retrieval.w_dense_plain - 1.0) > 1e-6:
+        raise ValueError("retrieval plain weights must sum to 1.0")
+    if abs(retrieval.w_bm25_lex + retrieval.w_dense_lex + retrieval.w_lexref_lex - 1.0) > 1e-6:
+        raise ValueError("retrieval lex weights must sum to 1.0")
+
     return AlgorithmConfig(
         schema_version=int(raw["schema_version"]),
         seed=int(raw["seed"]),
@@ -137,6 +170,7 @@ def _parse_algorithm_config(raw: Dict[str, Any]) -> AlgorithmConfig:
         generator=generator,
         final_training=final_training,
         evaluation=evaluation,
+        retrieval=retrieval,
     )
 
 
@@ -164,6 +198,19 @@ def _parse_runtime_config(raw: Dict[str, Any]) -> RuntimeConfig:
     smoke = SmokeConfig(**raw["smoke"]) if "smoke" in raw and raw["smoke"] is not None else None
     probe = MicroProbeConfig(**raw["a100_micro_probe"]) if "a100_micro_probe" in raw and raw["a100_micro_probe"] is not None else None
     prod = ProductionRuntimeConfig(**raw["production"]) if "production" in raw and raw["production"] is not None else None
+    inference_raw = raw.get("inference", None)
+    if inference_raw is None:
+        inference = InferenceRuntimeConfig()
+    elif isinstance(inference_raw, dict):
+        inference = InferenceRuntimeConfig(
+            generation_batch_size=int(inference_raw.get("generation_batch_size", 4)),
+            reranker_batch_size=int(inference_raw.get("reranker_batch_size", 32)),
+            retrieval_batch_size=int(inference_raw.get("retrieval_batch_size", 32)),
+        )
+    else:
+        raise ValueError("Runtime 'inference' section must be a mapping")
+    if inference.generation_batch_size < 1 or inference.reranker_batch_size < 1 or inference.retrieval_batch_size < 1:
+        raise ValueError("inference batch sizes must be positive")
 
     return RuntimeConfig(
         profile_name=str(raw["profile_name"]),
@@ -175,6 +222,7 @@ def _parse_runtime_config(raw: Dict[str, Any]) -> RuntimeConfig:
         a100_micro_probe=probe,
         production=prod,
         outputs=dict(raw["outputs"]) if "outputs" in raw and raw["outputs"] is not None else None,
+        inference=inference,
     )
 
 

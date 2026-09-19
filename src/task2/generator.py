@@ -21,6 +21,22 @@ except ImportError:
     PeftModel = None
 
 
+def _is_cuda_oom(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return "out of memory" in message or "cuda oom" in message
+
+
+def _free_cuda_cache() -> None:
+    try:
+        import gc
+
+        gc.collect()
+        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 SYSTEM_PROMPT = (
     "Bạn là chuyên gia tư vấn pháp luật Việt Nam. Hãy trả lời câu hỏi dựa trên các văn bản pháp luật được cung cấp:\n"
     "1. Nêu đầy đủ căn cứ pháp lý (Tên văn bản, số hiệu, Điều, Khoản, Điểm).\n"
@@ -260,32 +276,50 @@ class QwenGenerator:
         prompts = [self.format_instance_prompt(q, ev) for q, ev in items]
         results: List[str] = []
 
+        batch_size = max(1, int(batch_size))
         try:
-            for i in range(0, len(prompts), batch_size):
-                b_prompts = prompts[i:i + batch_size]
-                enc = self.tokenizer(
-                    b_prompts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=2048,
-                )
-                enc = {k: v.to(self.device) for k, v in enc.items()}
-                with torch.inference_mode():
-                    out = self.model.generate(
-                        **enc,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        repetition_penalty=1.05,
-                        pad_token_id=self.tokenizer.pad_token_id,
-                    )
-                for j in range(len(b_prompts)):
-                    gen_ids = out[j][enc["input_ids"].shape[1]:]
-                    decoded = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
-                    results.append(decoded.strip())
+            index = 0
+            while index < len(prompts):
+                current = prompts[index:index + batch_size]
+                try:
+                    for text in self._generate_texts(current, max_new_tokens):
+                        results.append(text)
+                    index += len(current)
+                except Exception as batch_exc:
+                    if batch_size <= 1 or not _is_cuda_oom(batch_exc):
+                        raise
+                    batch_size //= 2
+                    _free_cuda_cache()
+                    print(f"generation OOM; retrying remaining at batch {batch_size}", file=sys.stderr)
             return results
         except Exception as e:
             if self.final_mode:
                 raise RuntimeError(f"FINAL_PIPELINE_ERROR: Qwen batch generation failed on {self.device}: {e}") from e
             print(f"Batch generation error: {e}, falling back to single generate...", file=sys.stderr)
             return [self.generate(q, ev, max_new_tokens=max_new_tokens) for q, ev in items]
+
+    def _generate_texts(self, batch_prompts: List[str], max_new_tokens: int) -> List[str]:
+        """Generate one pass over a batch of prompts (no retry)."""
+        import torch as _torch
+
+        enc = self.tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=2048,
+        )
+        enc = {k: v.to(self.device) for k, v in enc.items()}
+        with _torch.inference_mode():
+            out = self.model.generate(
+                **enc,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                repetition_penalty=1.05,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+        decoded = []
+        for j in range(len(batch_prompts)):
+            gen_ids = out[j][enc["input_ids"].shape[1]:]
+            decoded.append(self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip())
+        return decoded

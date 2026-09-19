@@ -12,6 +12,7 @@ VALID_V16_PROFILES: Set[str] = {
     "kaggle_t4x2",
     "colab_t4",
     "colab_a100",
+    "modal_a100",
     "kaggle_smoke_t4",
     "colab_train_a100",
     "generator_probe_worstcase",
@@ -110,6 +111,29 @@ def resolve_execution_profile(
             run_generator_training=True,
             run_dev_evaluation=True,
             run_public_inference=False,
+            reuse_existing_checkpoints=False,
+            val_fold=None,  # All allowed data for production
+            probe_selection=None,
+            max_generator_steps=None,
+            max_generator_examples=None,
+            max_reranker_steps=None,
+            max_reranker_pairs=None,
+            max_reranker_val_pairs=None,
+            dev_eval_size=None,
+            requires_generator=True,
+        )
+
+    # 0.3 modal_a100 (Modal A100 full run: train all data + infer + package).
+    # Unlike colab_a100 it includes public inference so one Modal container
+    # completes the attempt; governance is the in-run candidate + parent
+    # chain, not the screen-promotion path (see final-mode contract below).
+    if prof == "modal_a100":
+        return ExecutionProfile(
+            name=prof,
+            run_reranker_training=False,
+            run_generator_training=True,
+            run_dev_evaluation=True,
+            run_public_inference=True,
             reuse_existing_checkpoints=False,
             val_fold=None,  # All allowed data for production
             probe_selection=None,

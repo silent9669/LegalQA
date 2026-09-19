@@ -127,6 +127,25 @@ def normalize_question(text: str) -> str:
     return cleaned
 
 
+# Polite filler phrases that distinguish paraphrases without changing the
+# legal question (v10 norm_q_deep). Applied ONLY for the deep-exact memory
+# layer, never to the canonical identity or the acceptance scorer.
+_FILLER_PATTERN = re.compile(
+    r"\b(?:cho\s+(?:tôi|em|mình)\s+hỏi|xin\s+hỏi|xin\s+cảm\s+ơn|cảm\s+ơn"
+    r"|với\s+ạ|ạ\b|như\s+thế\s+nào|như\s+vậy|làm\s+ơn|cho\s+hỏi|hỏi\s+đáp)\b",
+    re.IGNORECASE,
+)
+
+
+def normalize_question_deep(text: str) -> str:
+    """Filler-tolerant normalization for the deep-exact memory layer."""
+    cleaned = clean_legal_text(text).lower()
+    cleaned = _FILLER_PATTERN.sub(" ", cleaned)
+    cleaned = re.sub(r"[^\w\s/]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def normalize_legal_number(doc_num: str) -> str:
     """Canonicalize a legal document number (e.g. 02/2021/tt-btp -> 2/2021/TT-BTP)."""
     if not doc_num:

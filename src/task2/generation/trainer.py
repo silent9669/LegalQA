@@ -460,11 +460,13 @@ def train_generator_qlora(
         logger.error(msg)
 
     # 14. Write and Return Provenance Manifest
+    is_full_scope = probe_mode is None and val_fold is None
     manifest = {
         "runtime_api_version": 16,
         "backend": "liger_fused_linear_ce",
         "liger_version": REQUIRED_LIGER_VERSION,
         "model": model_name_or_path,
+        "base_model_id": model_name_or_path,
         "max_seq_len": config.max_seq_len,
         "lora_r": config.lora_r,
         "lora_alpha": config.lora_alpha,
@@ -477,6 +479,13 @@ def train_generator_qlora(
         "peak_reserved_mb": peak_reserved_mb,
         "seconds_per_optimizer_step": seconds_per_step,
         "strict_reload": reload_status,
+        "is_final_checkpoint": bool(is_full_scope),
+        "smoke_only": bool(probe_mode is not None),
+        "training_scope": "all_allowed_task2_data" if is_full_scope else (
+            f"fold_excluded_{val_fold}" if val_fold is not None else "probe_subset"
+        ),
+        "val_fold": val_fold,
+        "val_fold_excluded": val_fold,
     }
 
     manifest_path = os.path.join(output_dir, "generator_manifest.json")

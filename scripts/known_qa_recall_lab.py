@@ -77,17 +77,29 @@ def main() -> None:
     for record in sampled:
         loo = memory.filter_groups({record["qa_group_id"]})
         exact = loo.lookup_exact(None, record["question_raw"])
+        deep = loo.lookup_exact_deep(record["question_raw"])
         fuzzy = loo.lookup_fuzzy(record["question_raw"], threshold=0.50, require_entity_match=True)
         per_query.append(
             {
                 "qa_id": record["qa_id"],
                 "exact_hit": exact is not None,
                 "exact_answer": exact,
+                "deep_hit": deep is not None,
+                "deep_answer": deep,
+                "deep_correct": bool(deep) and str(deep).strip() == str(record["answer_raw"]).strip(),
                 "fuzzy_sim": float(fuzzy["similarity"]) if fuzzy else 0.0,
                 "fuzzy_answer": fuzzy["answer"] if fuzzy else "",
                 "own_answer": record["answer_raw"],
             }
         )
+
+    deep_fires = [q for q in per_query if q["deep_hit"]]
+    deep_precision = (
+        sum(1 for q in deep_fires if q["deep_correct"]) / len(deep_fires) if deep_fires else 0.0
+    )
+    deep_coverage = len(deep_fires) / max(1, len(per_query))
+    print(f"deep-exact LOO: fires {len(deep_fires)}/{len(per_query)} "
+          f"(coverage {deep_coverage:.1%}), precision {deep_precision:.3f}")
 
     # METEOR of fuzzy answers vs own references (labelled, offline).
     sims = [q["fuzzy_sim"] for q in per_query]
@@ -121,6 +133,10 @@ def main() -> None:
         "quarantined_rows": canon_report["quarantined_row_count"],
         "exact_coverable": exact_coverable,
         "exact_coverable_rate": round(exact_coverable / max(1, len(sampled)), 4),
+        "deep_exact_fires": len(deep_fires),
+        "deep_exact_precision": round(deep_precision, 4),
+        "deep_exact_coverage": round(deep_coverage, 4),
+        "deep_exact_gate": "PASS" if deep_precision >= 0.90 and deep_fires else "FAIL",
         "baseline_reference": args.baseline,
         "baseline_note": "v10 generated-family reference, not a measured deployable score",
         "threshold_sweep": sweep,

@@ -54,6 +54,23 @@ class EvaluationConfig:
 
 
 @dataclass(frozen=True)
+class RetrievalConfig:
+    rrf_k: int = 60
+    candidate_pool: int = 50
+    use_legal_reference: bool = False
+    use_acronyms: bool = False
+    use_weighted_rrf: bool = False
+    diversify_context: bool = False
+    lost_in_middle: bool = False
+    max_parts_per_article: int = 2
+    w_bm25_plain: float = 0.5
+    w_dense_plain: float = 0.5
+    w_bm25_lex: float = 1.0 / 3.0
+    w_dense_lex: float = 1.0 / 3.0
+    w_lexref_lex: float = 1.0 / 3.0
+
+
+@dataclass(frozen=True)
 class AlgorithmConfig:
     schema_version: int
     seed: int
@@ -61,6 +78,7 @@ class AlgorithmConfig:
     generator: GeneratorAlgorithmConfig
     final_training: FinalTrainingConfig
     evaluation: EvaluationConfig
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -93,6 +111,15 @@ class ProductionRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class InferenceRuntimeConfig:
+    """Runtime-only batching (no score effect under greedy decoding)."""
+
+    generation_batch_size: int = 4
+    reranker_batch_size: int = 32
+    retrieval_batch_size: int = 32
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     profile_name: str
     required_gpu_count: int
@@ -103,6 +130,7 @@ class RuntimeConfig:
     a100_micro_probe: Optional[MicroProbeConfig] = None
     production: Optional[ProductionRuntimeConfig] = None
     outputs: Optional[Dict[str, str]] = None
+    inference: InferenceRuntimeConfig = field(default_factory=InferenceRuntimeConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -51,10 +51,6 @@ _LEXQ = re.compile(
     re.I,
 )
 
-W_LEX = {"bm25": 1.2, "dense": 0.8}
-W_PLAIN = {"bm25": 1.0, "dense": 1.0}
-
-
 def expand_acronyms(query: str) -> str:
     """Append long forms for known Vietnamese legal acronyms (NFC-safe)."""
     s = unicodedata.normalize("NFC", str(query or ""))
@@ -73,13 +69,6 @@ def expand_acronyms(query: str) -> str:
 def has_legal_reference(query: str) -> bool:
     """Detect explicit legal references (điều/khoản/điểm, doc numbers)."""
     return bool(_LEXQ.search(unicodedata.normalize("NFC", str(query or ""))))
-
-
-def rrf_weights(query: str, use_weighted: bool = True) -> Dict[str, float]:
-    """RRF arm weights keyed on the ORIGINAL query (never the rewritten one)."""
-    if use_weighted and has_legal_reference(query):
-        return dict(W_LEX)
-    return dict(W_PLAIN)
 
 
 def rewrite_query_for_retrieval(query: str, use_acronyms: bool = False) -> str:
