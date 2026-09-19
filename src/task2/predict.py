@@ -511,16 +511,24 @@ class LegalQAPipeline:
         if not unseen_items:
             return (results, self._provenance_report(sources)) if return_provenance else results
 
+        options = dict(self.retrieval_options)
+        pool = int(options.get("candidate_pool", 50))
+        rrf_k = int(options.get("rrf_k", 60))
+
         unseen_queries = [q for _, q in unseen_items]
+        dense_queries = [
+            rewrite_query_for_retrieval(q, use_acronyms=options.get("use_acronyms", False))
+            for q in unseen_queries
+        ]
 
         # 2. Batched Dense Retrieval
         dense_results: List[List[Dict[str, Any]]] = []
         if self.dense:
-            dense_results = self.dense.search_batch(unseen_queries, top_k=50, batch_size=retrieval_batch_size)
+            dense_results = self.dense.search_batch(dense_queries, top_k=pool, batch_size=retrieval_batch_size)
         else:
             dense_results = [[] for _ in unseen_queries]
 
-        # 3. Collect BM25 and fused candidates for all queries
+        # 3. Collect BM25, Lexref, and Fused Candidates for all queries
         fused_candidate_lists: List[List[Dict[str, Any]]] = []
         bm25_scores: List[float] = []
         dense_scores: List[float] = []
@@ -530,16 +538,35 @@ class LegalQAPipeline:
             f_hit = self.memory.lookup_fuzzy(question, threshold=0.90)
             fuzzy_hits.append(f_hit)
 
-            bm25_res = self.bm25.search(question, top_k=50) if self.bm25 else []
+            ret_q = dense_queries[idx]
+            bm25_res = self.bm25.search(ret_q, top_k=pool) if self.bm25 else []
             dense_res = dense_results[idx] if idx < len(dense_results) else []
+
+            lex_res: List[Dict[str, Any]] = []
+            if options.get("use_legal_reference") and self.legal_index is not None and self.legal_rows is not None:
+                lex_res = search_legal_references([ret_q], self.legal_index, self.legal_rows, k=pool)[0]
 
             bm25_scores.append(float(bm25_res[0].get("score", 0.0)) if bm25_res else 0.0)
             dense_scores.append(float(dense_res[0].get("score", 0.0)) if dense_res else 0.0)
 
-            if bm25_res and dense_res:
-                fused = reciprocal_rank_fusion([bm25_res, dense_res], k=60, weights=[0.5, 0.5])
+            arms: List[List[Dict[str, Any]]] = []
+            arm_names: List[str] = []
+            if bm25_res:
+                arms.append(bm25_res)
+                arm_names.append("bm25")
+            if dense_res:
+                arms.append(dense_res)
+                arm_names.append("dense")
+            if lex_res:
+                arms.append(lex_res)
+                arm_names.append("lexref")
+
+            lex_query = has_legal_reference(question)
+            arm_weights = self.rrf_arm_weights(arm_names, lex_query)
+            if len(arms) >= 2:
+                fused = reciprocal_rank_fusion(arms, k=rrf_k, weights=arm_weights)
             else:
-                fused = bm25_res or dense_res
+                fused = arms[0] if arms else []
             fused_candidate_lists.append(fused)
 
         # 4. Batch Rerank across all queries
@@ -558,10 +585,16 @@ class LegalQAPipeline:
         else:
             all_top_seeds = [cands[:8] for cands in fused_candidate_lists]
 
-        # 5. Build Evidence Packs
+        # 5. Build Evidence Packs with Context Preparation
         evidence_records: List[Dict[str, Any]] = []
         for idx, (qa_id, question) in enumerate(unseen_items):
-            top_seeds = all_top_seeds[idx]
+            raw_top_seeds = all_top_seeds[idx]
+            top_seeds = self.packer.prepare_seeds(
+                raw_top_seeds,
+                diversify=options.get("diversify_context", False),
+                lost_in_middle=options.get("lost_in_middle", False),
+                max_parts_per_article=int(options.get("max_parts_per_article", 2)),
+            )
             fuzzy_hit = fuzzy_hits[idx]
             fuzzy_ans = fuzzy_hit["answer"] if fuzzy_hit else ""
 

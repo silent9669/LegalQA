@@ -271,7 +271,14 @@ def run_gpu_gate(
     # 3. Identity Verification
     # 3a. Git SHA
     try:
-        cur_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(REPO_ROOT), text=True).strip()
+        cur_sha = ""
+        sha_file = Path(REPO_ROOT) / ".git_commit_sha"
+        if sha_file.is_file():
+            cur_sha = sha_file.read_text(encoding="utf-8").strip()
+        elif os.environ.get("GIT_COMMIT_SHA"):
+            cur_sha = os.environ["GIT_COMMIT_SHA"].strip()
+        else:
+            cur_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(REPO_ROOT), text=True).strip()
         if cur_sha != candidate.git_commit_sha:
             raise ValueError(
                 f"Active Git commit SHA ({cur_sha}) does not match candidate commit ({candidate.git_commit_sha})"

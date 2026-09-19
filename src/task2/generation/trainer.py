@@ -365,7 +365,9 @@ def train_generator_qlora(
     enforce_single_gpu_trainer_args(sft_args, device)
 
     # 9. Construct SFTTrainer with TrainerMemoryCallback
-    memory_callback = TrainerMemoryCallback(log_every_n_steps=1, empty_cache_every_n_steps=1)
+    log_freq = 1 if probe_mode else 25
+    empty_freq = 1 if probe_mode else None
+    memory_callback = TrainerMemoryCallback(log_every_n_steps=log_freq, empty_cache_every_n_steps=empty_freq)
     trainer = SFTTrainer(
         model=model,
         args=sft_args,

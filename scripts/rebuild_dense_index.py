@@ -88,8 +88,8 @@ def build_verified_index(
     retriever.fit(corpus, batch_size=batch_size, show_progress=True)
 
     destination = Path(out_dir)
-    tmp_parent = destination.parent if destination.parent.exists() else Path(".")
-    tmp_dir = Path(tempfile.mkdtemp(prefix="dense-rebuild-", dir=str(tmp_parent)))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="dense-rebuild-", dir=str(destination.parent)))
     try:
         retriever.save_index(str(tmp_dir), dtype=dtype)
         check = DenseRetriever.load_index(
@@ -116,8 +116,10 @@ def build_verified_index(
         (tmp_dir / "rebuild_manifest.json").write_text(json.dumps(build_manifest, indent=2), encoding="utf-8")
         if destination.exists():
             shutil.rmtree(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        tmp_dir.rename(destination)
+        try:
+            tmp_dir.rename(destination)
+        except OSError:
+            shutil.move(str(tmp_dir), str(destination))
     except BaseException:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
         raise

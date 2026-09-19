@@ -26,7 +26,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+if Path("/root/LegalQA").is_dir():
+    REPO_ROOT = Path("/root/LegalQA")
+else:
+    REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 try:
@@ -45,8 +48,15 @@ KNOWN_TEST_FILES = ("private-official.json", "public-official.json")
 
 def read_pin_file(name: str) -> List[str]:
     """Parse a local requirements/constraints file into pip specifiers."""
+    target = REPO_ROOT / name
+    if not target.is_file():
+        alt = Path("/root/LegalQA") / name
+        if alt.is_file():
+            target = alt
+        else:
+            return []
     specs = []
-    for line in (REPO_ROOT / name).read_text(encoding="utf-8").splitlines():
+    for line in target.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -158,13 +168,36 @@ if modal is not None:
         .run_commands(
             "python -c \"import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')\""
         )
-        .add_local_dir(str(REPO_ROOT), remote_path="/root/LegalQA", copy=True)
+        .add_local_dir(
+            str(REPO_ROOT),
+            remote_path="/root/LegalQA",
+            copy=True,
+            ignore=[
+                ".venv*",
+                ".git*",
+                "dsc2026",
+                "kaggle_dataset",
+                "artifacts",
+                "__pycache__",
+                "*.parquet",
+                "*.npy",
+                "*.zip",
+                ".playwright-mcp",
+                ".pytest_cache",
+                "fix",
+            ],
+        )
     )
 
     app = modal.App(APP_NAME, image=legalqa_image)
     data_volume = modal.Volume.from_name(DATA_VOLUME_NAME, create_if_missing=True)
     runs_volume = modal.Volume.from_name(RUNS_VOLUME_NAME, create_if_missing=True)
-    secrets = [modal.Secret.from_name(SECRET_NAME)]
+
+    # Attach available workspace secrets: user workspace holds kaggle-secret and huggingface-secret
+    secrets = [
+        modal.Secret.from_name("kaggle-secret"),
+        modal.Secret.from_name("huggingface-secret"),
+    ]
 else:
     app = None
     data_volume = None
@@ -211,6 +244,9 @@ if modal is not None:
 
         sys.path.insert(0, "/root/LegalQA")
         os.chdir("/root/LegalQA")
+        if candidate.get("git_commit_sha"):
+            os.environ["GIT_COMMIT_SHA"] = candidate["git_commit_sha"]
+            (Path("/root/LegalQA") / ".git_commit_sha").write_text(candidate["git_commit_sha"], encoding="utf-8")
 
         from scripts.rebuild_dense_index import build_verified_index, check_dense_alignment
 
@@ -218,6 +254,16 @@ if modal is not None:
         data_dir.mkdir(parents=True, exist_ok=True)
         chunks_file = data_dir / "legal_chunks.parquet"
         if not chunks_file.exists():
+            # Setup ~/.kaggle/kaggle.json if environment credentials are present
+            k_user = os.environ.get("KAGGLE_USERNAME") or os.environ.get("KAGGLE_USER")
+            k_key = os.environ.get("KAGGLE_KEY") or os.environ.get("KAGGLE_API_TOKEN") or os.environ.get("KAGGLE_TOKEN")
+            if k_user and k_key:
+                k_dir = Path.home() / ".kaggle"
+                k_dir.mkdir(parents=True, exist_ok=True)
+                k_file = k_dir / "kaggle.json"
+                if not k_file.exists():
+                    k_file.write_text(json.dumps({"username": k_user, "key": k_key}))
+                    k_file.chmod(0o600)
             print(f"[+] Pulling {DATASET_SLUG} from Kaggle...")
             subprocess.run(
                 ["kaggle", "datasets", "download", "-d", DATASET_SLUG,
@@ -228,14 +274,21 @@ if modal is not None:
         else:
             print("[+] Dataset cached on volume.")
 
-        staged = data_dir / "indexes" / "dek21"
-        alignment = check_dense_alignment(str(staged), str(chunks_file)) if staged.exists() \
-            else {"aligned": False, "status": "missing"}
-        if alignment.get("aligned"):
-            print("[+] Staged dense index aligned; reuse.")
-            dense_index_dir = str(staged)
-        else:
-            print(f"[!] Dense misaligned ({alignment.get('status')}); cold rebuild...")
+        staged_candidates = [
+            data_dir / "indexes" / "dek21_rebuilt",
+            data_dir / "indexes" / "dek21",
+        ]
+        dense_index_dir = None
+        for candidate_dir in staged_candidates:
+            if candidate_dir.exists():
+                alignment = check_dense_alignment(str(candidate_dir), str(chunks_file))
+                if alignment.get("aligned"):
+                    print(f"[+] Dense index aligned at {candidate_dir.name}; reuse.")
+                    dense_index_dir = str(candidate_dir)
+                    break
+
+        if dense_index_dir is None:
+            print("[!] Dense index missing or misaligned; cold rebuild...")
             rebuilt = data_dir / "indexes" / "dek21_rebuilt"
             manifest = build_verified_index(
                 corpus_path=str(chunks_file),
@@ -336,18 +389,21 @@ if modal is not None:
             manifest_path = cands[-1]
             print(f"using latest local candidate: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        required_parent = {"micro_probe": "colab_t4", "full": "a100_micro_probe"}.get(stage)
+        stage_parents = {"micro_probe": ("colab_t4", "kaggle_t4x2"), "full": ("a100_micro_probe",)}.get(stage, ())
         parent_path = Path(parent_report) if parent_report else None
-        if parent_path is None and required_parent:
+        if parent_path is None and stage_parents:
             gates_dir = REPO_ROOT / "artifacts" / "gates" / manifest["candidate_id"]
-            auto = sorted(gates_dir.glob(f"{required_parent}_report.json"),
-                          key=lambda p: p.stat().st_mtime) if gates_dir.is_dir() else []
-            if auto:
-                parent_path = auto[-1]
-                print(f"using parent report: {parent_path}")
+            if gates_dir.is_dir():
+                for p_stage in stage_parents:
+                    auto = sorted(gates_dir.glob(f"{p_stage}_report.json"),
+                                  key=lambda p: p.stat().st_mtime)
+                    if auto:
+                        parent_path = auto[-1]
+                        print(f"using parent report ({p_stage}): {parent_path}")
+                        break
         if parent_path is None or not parent_path.is_file():
             raise SystemExit(
-                f"Modal {stage} requires the {required_parent} PASS parent report "
+                f"Modal {stage} requires a PASS parent report from {stage_parents} "
                 f"(--parent-report <report.json>); no bypass."
             )
         parent = json.loads(parent_path.read_text(encoding="utf-8"))
