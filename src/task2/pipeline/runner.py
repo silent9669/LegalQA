@@ -571,6 +571,9 @@ def run_pipeline(
         with open(provenance_path, "w", encoding="utf-8") as f:
             json.dump(provenance, f, ensure_ascii=False, indent=2)
 
+        from src.task2.provenance.checksums import compute_file_sha256
+        provenance_sha = compute_file_sha256(provenance_path)
+
         results["stages"]["submission"] = {
             "submission_json": out_json,
             "submission_zip": out_zip,
@@ -580,6 +583,7 @@ def run_pipeline(
             "zip_sha256": zip_report["zip_sha256"],
             "provenance_path": provenance_path,
             "provenance_counts": provenance["counts"],
+            "provenance_sha256": provenance_sha,
         }
         results["evidence_links"] = {
             "candidate_sha": resolved_config.candidate_id if resolved_config else "",
@@ -589,6 +593,7 @@ def run_pipeline(
                 "num_predictions": len(submission),
                 "expected_count": len(public_test),
                 "submission_sha256": zip_report["loose_sha256"],
+                "provenance_sha256": provenance_sha,
                 "test_fingerprint": {
                     "num_expected": len(public_test),
                     "generation_batch_size": generation_batch_size,

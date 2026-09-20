@@ -94,3 +94,86 @@ def test_offline_report_keeps_public_score_null():
     assert report["scorer_sha256"] == "a" * 64
     with pytest.raises(ValueError, match="scorer_sha"):
         build_offline_metric_report({}, "short")
+
+
+def test_1918_private_submission_valid_shape(tmp_path):
+    import zipfile
+
+    expected_ids = [f"priv_q_{i:04d}" for i in range(1918)]
+    payload = {qid: {"answer": f"Cau tra loi hop le cho {qid}"} for qid in expected_ids}
+    report = validate_prediction_payload(payload, expected_ids)
+    assert report["status"] == "PASS"
+    assert report["num_predictions"] == 1918
+    assert len(report["payload_sha256"]) == 64
+
+    loose = tmp_path / "submission.json"
+    loose.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    zip_path = tmp_path / "submission.json.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(loose, arcname="submission.json")
+
+    zip_report = verify_zip_inner_matches_loose(zip_path, loose)
+    assert zip_report["loose_sha256"] == zip_report["inner_sha256"]
+    assert zip_report["loose_bytes"] == zip_report["inner_bytes"]
+
+
+def test_1918_private_submission_wrong_count():
+    expected_ids = [f"priv_q_{i:04d}" for i in range(1918)]
+
+    # 1917 queries (missing one)
+    short_payload = {qid: {"answer": "ans"} for qid in expected_ids[:-1]}
+    with pytest.raises(ValueError, match="ID"):
+        validate_prediction_payload(short_payload, expected_ids)
+
+    # 1919 queries (one extra)
+    extra_payload = {qid: {"answer": "ans"} for qid in expected_ids}
+    extra_payload["extra_id_9999"] = {"answer": "ans"}
+    with pytest.raises(ValueError, match="ID"):
+        validate_prediction_payload(extra_payload, expected_ids)
+
+
+def test_1918_private_submission_empty_answer():
+    expected_ids = [f"priv_q_{i:04d}" for i in range(1918)]
+    payload = {qid: {"answer": "ans"} for qid in expected_ids}
+
+    # Empty string answer
+    payload["priv_q_0500"] = {"answer": ""}
+    with pytest.raises(ValueError, match="empty answers"):
+        validate_prediction_payload(payload, expected_ids)
+
+    # Whitespace-only answer
+    payload["priv_q_0500"] = {"answer": "   \n\t  "}
+    with pytest.raises(ValueError, match="empty answers"):
+        validate_prediction_payload(payload, expected_ids)
+
+
+def test_1918_private_submission_duplicate_raw_key(tmp_path):
+    entries = [f'"{f"priv_q_{i:04d}"}": {{"answer": "ans_{i}"}}' for i in range(1918)]
+    # Duplicate one key
+    entries.append('"priv_q_0000": {"answer": "duplicate_entry"}')
+    raw_json = "{\n" + ",\n".join(entries) + "\n}"
+    p = tmp_path / "dup_private.json"
+    p.write_text(raw_json, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate"):
+        load_predictions_json(p)
+
+
+def test_1918_private_submission_zip_mismatch(tmp_path):
+    import zipfile
+
+    expected_ids = [f"priv_q_{i:04d}" for i in range(1918)]
+    payload = {qid: {"answer": f"ans_{qid}"} for qid in expected_ids}
+    loose = tmp_path / "submission.json"
+    loose.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Corrupt one answer in zip
+    corrupt_payload = dict(payload)
+    corrupt_payload["priv_q_0100"] = {"answer": "corrupted_answer"}
+    corrupt_zip = tmp_path / "submission.json.zip"
+    with zipfile.ZipFile(corrupt_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("submission.json", json.dumps(corrupt_payload, ensure_ascii=False, indent=2))
+
+    with pytest.raises(ValueError, match="differ"):
+        verify_zip_inner_matches_loose(corrupt_zip, loose)
+

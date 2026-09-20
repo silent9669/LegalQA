@@ -43,3 +43,7 @@ tables:
   known_qa:
     required_file: "known_qa.json"
     type: "json"
+  private_official:
+    required_file: "private-official.json"
+    type: "json"
+    description: "Official private test query set"

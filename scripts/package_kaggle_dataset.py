@@ -59,6 +59,7 @@ def package_dataset(source_dir: str, title: str = "LegalQA", slug: str = "legalq
         "fold_assignments.parquet",
         "reranker_training_pairs.parquet",
         "public-official.json",
+        "private-official.json",
     ]
 
     for fname in tracked_files:

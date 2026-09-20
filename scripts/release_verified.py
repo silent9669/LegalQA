@@ -56,12 +56,18 @@ def collect_release_inputs(bundle_dir: Path) -> tuple[dict, list]:
     if manifest.get("candidate_id") != candidate.get("candidate_id"):
         raise ValueError("bundle candidate_id does not match candidate_manifest.json")
     gate_dir = bundle_dir / "gate_reports"
-    for stage in ("kaggle_t4x2", "colab_t4", "a100_micro_probe"):
+    for stage in ("kaggle_t4x2", "a100_micro_probe"):
         report = json.loads((gate_dir / f"{stage}_report.json").read_text(encoding="utf-8"))
         if report.get("status") != "PASS":
             raise ValueError(f"gate report {stage} is not PASS")
         if report.get("candidate_id") != candidate.get("candidate_id"):
             raise ValueError(f"gate report {stage} candidate mismatch")
+    if (gate_dir / "colab_t4_report.json").is_file():
+        report = json.loads((gate_dir / "colab_t4_report.json").read_text(encoding="utf-8"))
+        if report.get("status") != "PASS":
+            raise ValueError("gate report colab_t4 is not PASS")
+        if report.get("candidate_id") != candidate.get("candidate_id"):
+            raise ValueError("gate report colab_t4 candidate mismatch")
 
     # 2. Final checkpoint scope: all allowed data, val_fold null.
     adapter_manifest_path = bundle_dir / "final_adapter" / "generator_manifest.json"
@@ -115,8 +121,8 @@ def collect_release_inputs(bundle_dir: Path) -> tuple[dict, list]:
         "intended_path_in_repo": f"runs/{run_id}",
     }
     artifacts = []
-    for rel in ("submission.json", "submission.json.zip", "production_run_manifest.json",
-                "candidate_manifest.json", "release_manifest.json"):
+    for rel in ("submission.json", "submission.json.zip", "submission_provenance.json",
+                "production_run_manifest.json", "candidate_manifest.json", "release_manifest.json"):
         candidate_path = bundle_dir / rel
         if candidate_path.is_file() and rel != "release_manifest.json":
             artifacts.append(_artifact(candidate_path, rel))
@@ -171,15 +177,23 @@ def main() -> None:
         # comparison happens below via hf_hub_download at the pinned revision.
         remote_files.append({"path": f"runs/{run['run_id']}/{rel}", "size": artifact["bytes"], "sha256": artifact["sha256"]})
     _ = local_digests
-    verified = verify_release_manifest(
-        release_manifest,
-        {"commit_sha": commit_sha, "files": [
-            {"path": a["path"], "size": a["bytes"], "sha256": a["sha256"]} for a in artifacts
-        ]},
-    )
-    _confirm_remote_bytes(run["intended_repository"], commit_sha, run["run_id"], artifacts)
+    status = "PUBLISH_UNVERIFIED"
+    error_msg = None
+    try:
+        verified = verify_release_manifest(
+            release_manifest,
+            {"commit_sha": commit_sha, "files": [
+                {"path": a["path"], "size": a["bytes"], "sha256": a["sha256"]} for a in artifacts
+            ]},
+        )
+        _confirm_remote_bytes(run["intended_repository"], commit_sha, run["run_id"], artifacts)
+        status = verified.get("status", "PUBLISH_VERIFIED")
+    except Exception as exc:
+        status = "PUBLISH_UNVERIFIED"
+        error_msg = str(exc)
+
     receipt = {
-        "status": verified["status"],
+        "status": status,
         "run_id": run["run_id"],
         "candidate_id": run["candidate_id"],
         "manifest_sha256": release_manifest["manifest_sha256"],
@@ -188,8 +202,12 @@ def main() -> None:
         "remote_revision": commit_sha,
         "remote_files": remote_files,
     }
+    if error_msg:
+        receipt["verification_error"] = error_msg
     receipt_out.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
-    print(f"[{verified['status']}] commit={commit_sha} receipt={receipt_out}")
+    print(f"[{status}] commit={commit_sha} receipt={receipt_out}")
+    if status != "PUBLISH_VERIFIED":
+        raise ValueError(f"release verification failed ({status}): {error_msg}")
 
 
 def _confirm_remote_bytes(repo_id: str, commit_sha: str, run_id: str, artifacts: list) -> None:

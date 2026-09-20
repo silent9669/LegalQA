@@ -47,6 +47,7 @@ artifacts/raw/
 artifacts/chunks/
 artifacts/data/
 artifacts/labels/
+artifacts/labs/
 artifacts/submissions/
 artifacts/task2/
 artifacts/gates/
@@ -63,7 +64,11 @@ kaggle_dataset/*
 !kaggle_dataset/dataset-metadata.json
 !kaggle_dataset/dataset_manifest.json
 data
+private-official.json
+public-official.json
 .claude/
+.agents/
+.playwright-mcp/
 .env
 .env.*
 !.env.example

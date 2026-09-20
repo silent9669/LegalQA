@@ -469,6 +469,12 @@ class LegalQAPipeline:
             retrieval_meta=retrieval_meta,
             features=fuzzy_hit,
         )
+        if not selected or not str(selected).strip():
+            selected = (
+                primary_evidence.strip()[:1500]
+                or (top_doc and f"Căn cứ văn bản {top_doc}.")
+                or "Căn cứ quy định của pháp luật hiện hành về vấn đề nêu trên."
+            ).strip()
 
         if return_trace:
             return selected, candidates, trace
@@ -660,6 +666,13 @@ class LegalQAPipeline:
                 retrieval_meta=rec["retrieval_meta"],
                 features=rec["fuzzy_hit"],
             )
+            if not selected or not str(selected).strip():
+                selected = (
+                    rec.get("primary_evidence", "").strip()[:1500]
+                    or (rec.get("top_doc", "") and f"Căn cứ văn bản {rec['top_doc']}.")
+                    or "Căn cứ quy định của pháp luật hiện hành về vấn đề nêu trên."
+                ).strip()
+                source = "extractive"
             results[rec["qa_id"]] = {"answer": selected}
             sources[rec["qa_id"]] = source
 

@@ -50,7 +50,7 @@ def verify_submission_ids(
     expected: List[str],
     submission: Dict[str, Dict[str, str]],
 ) -> Dict[str, Any]:
-    """Verify the 1,000-ID public submission via the scorer payload validator."""
+    """Verify submission IDs (public 1000, private 1918, or custom) via the scorer payload validator."""
     from src.task2.scorer_contract import validate_prediction_payload
 
     return validate_prediction_payload(submission, expected)

@@ -39,7 +39,7 @@ def require_immutable_path(path_in_repo: str | None) -> str:
     if not path_in_repo or not str(path_in_repo).strip():
         raise ValueError("release requires an explicit immutable path_in_repo")
     normalized = str(path_in_repo).strip().strip("/")
-    if normalized in ("latest", "best", "main") or normalized.startswith(("latest/", "best/")):
+    if normalized in ("latest", "best", "main") or normalized.startswith(("latest/", "best/", "main/")):
         raise ValueError(f"refusing to overwrite pointer path: {path_in_repo}")
     if "/" not in normalized:
         raise ValueError(f"release path must be a per-run directory, got: {path_in_repo}")

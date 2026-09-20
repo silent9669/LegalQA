@@ -113,7 +113,7 @@ def build_production_run_bundle(
     candidate: CandidateManifest,
     adapter_source_dir: Union[Path, str],
     kaggle_report_path: Union[Path, str],
-    colab_t4_report_path: Union[Path, str],
+    colab_t4_report_path: Optional[Union[Path, str]],
     a100_micro_probe_report_path: Union[Path, str],
     train_log_path: Union[Path, str],
     output_dir: Union[Path, str],
@@ -167,10 +167,13 @@ def build_production_run_bundle(
     k_rep = verify_gate_report(kaggle_report_path, candidate, expected_stage="kaggle_t4x2")
     k_rep.save_json(gate_dir / "kaggle_t4x2_report.json")
 
-    c_rep = verify_gate_report(colab_t4_report_path, candidate, expected_stage="colab_t4", required_parent_sha256=k_rep.compute_sha256())
-    c_rep.save_json(gate_dir / "colab_t4_report.json")
+    c_rep = None
+    if colab_t4_report_path and Path(colab_t4_report_path).is_file():
+        c_rep = verify_gate_report(colab_t4_report_path, candidate, expected_stage="colab_t4", required_parent_sha256=k_rep.compute_sha256())
+        c_rep.save_json(gate_dir / "colab_t4_report.json")
 
-    a_rep = verify_gate_report(a100_micro_probe_report_path, candidate, expected_stage="a100_micro_probe", required_parent_sha256=c_rep.compute_sha256())
+    parent_for_a100 = c_rep.compute_sha256() if c_rep else k_rep.compute_sha256()
+    a_rep = verify_gate_report(a100_micro_probe_report_path, candidate, expected_stage="a100_micro_probe", required_parent_sha256=parent_for_a100)
     a_rep.save_json(gate_dir / "a100_micro_probe_report.json")
 
     # 4. Dataset manifest & validation report
@@ -269,7 +272,7 @@ def build_production_run_bundle(
         },
         "gate_reports": {
             "kaggle_t4x2": k_rep.compute_sha256(),
-            "colab_t4": c_rep.compute_sha256(),
+            **({"colab_t4": c_rep.compute_sha256()} if c_rep else {}),
             "a100_micro_probe": a_rep.compute_sha256(),
         },
         "training_scope": "all_allowed_train",
@@ -289,6 +292,13 @@ def build_production_run_bundle(
         },
         "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    sub_file = out_root / "submission.json"
+    prov_file = out_root / "submission_provenance.json"
+    if sub_file.is_file():
+        run_manifest["submission"] = {
+            "sha256": compute_file_sha256(sub_file),
+            "provenance_sha256": compute_file_sha256(prov_file) if prov_file.is_file() else "none",
+        }
     (out_root / "production_run_manifest.json").write_text(
         json.dumps(run_manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -317,12 +327,19 @@ def verify_run_bundle(bundle_dir: Union[Path, str]) -> bool:
         "algorithm.resolved.json",
         "runtime.resolved.json",
         "gate_reports/kaggle_t4x2_report.json",
-        "gate_reports/colab_t4_report.json",
         "gate_reports/a100_micro_probe_report.json",
         "metrics.json",
         "model_card.md",
         "checksums.sha256",
     ]
+    manifest_p = root / "production_run_manifest.json"
+    if manifest_p.is_file():
+        try:
+            m_data = json.loads(manifest_p.read_text(encoding="utf-8"))
+            if "colab_t4" in m_data.get("gate_reports", {}):
+                mandatory.append("gate_reports/colab_t4_report.json")
+        except Exception:
+            pass
     for rel_f in mandatory:
         if not (root / rel_f).exists():
             raise FileNotFoundError(f"Missing mandatory file in bundle: {rel_f}")

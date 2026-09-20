@@ -208,3 +208,49 @@ def test_build_bundle_fails_on_secret_leak(tmp_path):
             optimizer_steps=300,
             training_sample_count=2400,
         )
+
+
+def test_build_production_run_bundle_modal_two_gate_chain(tmp_path):
+    """Verify that build_production_run_bundle succeeds with direct kaggle_t4x2 -> a100_micro_probe DAG."""
+    candidate = sample_candidate()
+    run_id = f"run_modal_{candidate.candidate_id}"
+    output_bundle_dir = tmp_path / "runs" / run_id
+
+    adapter_src = tmp_path / "src_adapter_modal"
+    adapter_src.mkdir()
+    (adapter_src / "adapter_config.json").write_text(json.dumps({"lora_r": 16}))
+    (adapter_src / "adapter_model.safetensors").write_bytes(b"weights_data")
+
+    k_rep = sample_gate_report("kaggle_t4x2", candidate.candidate_id, candidate.git_commit_sha)
+    # Direct parent is kaggle_t4x2
+    a_rep = sample_gate_report("a100_micro_probe", candidate.candidate_id, candidate.git_commit_sha, k_rep.compute_sha256())
+
+    k_path = tmp_path / "k_modal.json"
+    a_path = tmp_path / "a_modal.json"
+    k_rep.save_json(k_path)
+    a_rep.save_json(a_path)
+
+    log_file = tmp_path / "train_modal.log"
+    log_file.write_text("Modal Step 166 loss: 0.70\n")
+
+    manifest = build_production_run_bundle(
+        run_id=run_id,
+        candidate=candidate,
+        adapter_source_dir=adapter_src,
+        kaggle_report_path=k_path,
+        colab_t4_report_path=None,
+        a100_micro_probe_report_path=a_path,
+        train_log_path=log_file,
+        output_dir=output_bundle_dir,
+        metrics={"meteor": 0.52, "rouge_l": 0.55},
+        optimizer_steps=166,
+        training_sample_count=1325,
+        num_train_epochs=1,
+    )
+
+    assert manifest["run_id"] == run_id
+    assert "colab_t4" not in manifest["gate_reports"]
+    assert manifest["gate_reports"]["kaggle_t4x2"] == k_rep.compute_sha256()
+    assert manifest["gate_reports"]["a100_micro_probe"] == a_rep.compute_sha256()
+    assert verify_run_bundle(output_bundle_dir) is True
+

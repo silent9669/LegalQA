@@ -36,3 +36,15 @@ def test_batch_default_return_unchanged():
     pipe = LegalQAPipeline.build_mock()
     results = pipe.predict_batch([{"id": "q1", "question": "Q?"}])
     assert set(results) == {"q1"} and isinstance(results["q1"], dict)
+
+
+def test_batch_empty_candidate_fallback_guarantees_nonempty_answer():
+    pipe = LegalQAPipeline.build_mock()
+    # Force selector to return empty string
+    pipe.selector.select_with_source = lambda *args, **kwargs: ("", "empty")
+    results, provenance = pipe.predict_batch([{"id": "q_empty", "question": "Cau hoi?"}], return_provenance=True)
+    assert "q_empty" in results
+    ans = results["q_empty"]["answer"]
+    assert isinstance(ans, str) and len(ans.strip()) > 0
+    assert provenance["sources"]["q_empty"] == "extractive"
+

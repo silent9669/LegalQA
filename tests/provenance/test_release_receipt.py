@@ -52,6 +52,39 @@ def test_build_rejects_receipt_contamination_and_pointer_paths():
     assert require_immutable_path("runs/run_abc_20260918") == "runs/run_abc_20260918"
 
 
+def test_require_immutable_path_rejects_pointer_variants():
+    pointer_paths = [
+        "latest",
+        "best",
+        "main",
+        "latest/adapter",
+        "best/model",
+        "main/weights",
+        "latest/runs/123",
+        "best/final_checkpoint",
+    ]
+    for pointer in pointer_paths:
+        with pytest.raises(ValueError, match="pointer"):
+            require_immutable_path(pointer)
+
+    invalid_empty_paths = ["", "   ", None]
+    for empty in invalid_empty_paths:
+        with pytest.raises(ValueError, match="explicit immutable path_in_repo"):
+            require_immutable_path(empty)
+
+    with pytest.raises(ValueError, match="per-run directory"):
+        require_immutable_path("standalone_run_id_no_slash")
+
+    valid_paths = [
+        "runs/run_20260920_001",
+        "experiments/exp_test_run",
+        "checkpoints/final_run_42",
+    ]
+    for valid in valid_paths:
+        assert require_immutable_path(valid) == valid
+
+
+
 def test_remote_size_digest_mismatch_blocks_verification():
     manifest = build_release_manifest(_run(), _artifacts())
     assert verify_release_manifest(manifest, None)["status"] == "STAGED"
