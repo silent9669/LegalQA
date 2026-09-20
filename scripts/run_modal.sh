@@ -80,8 +80,10 @@ CAND_ID=$($PY_CMD -c "
 import json
 from pathlib import Path
 cands = sorted(Path('artifacts/candidates').glob('*/candidate_manifest.json'), key=lambda p: p.stat().st_mtime)
-if cands:
-    print(json.loads(cands[-1].read_text())['candidate_id'])
+cands_with_gates = [p for p in cands if (Path('artifacts/gates') / p.parent.name / 'kaggle_t4x2_report.json').is_file()]
+pick = cands_with_gates[-1] if cands_with_gates else (cands[-1] if cands else None)
+if pick:
+    print(json.loads(pick.read_text())['candidate_id'])
 " 2>/dev/null || echo "")
 
 if [ -n "$CAND_ID" ]; then
