@@ -40,12 +40,12 @@ End-to-end Legal Question Answering (LegalQA) system for DSC 2026 Task 2, engine
   scripts/run_gpu_gate.py --stage kaggle_t4x2
         │ (PASS) ──> kaggle_t4x2_report.json
         ▼
-[Gate 3: Colab Single-T4 Gate] ───(FAIL)─> [Fix Colab Bootstrap]
-  python scripts/launch_colab_training.py --stage colab-t4 ...
+[Gate 3: T4 Gate on Modal Tesla T4] ───(FAIL)─> [Fix T4 Bootstrap]
+  ./scripts/run_modal.sh colab_t4 (stage name kept for chain continuity)
         │ (PASS) ──> colab_t4_report.json (parent: kaggle_t4x2)
         ▼
-[Gate 4: Colab A100 Production] ──(FAIL)─> [Fix A100 Micro-Probe]
-  python scripts/launch_colab_training.py --stage a100 ...
+[Gate 4: Modal A100 Production] ──(FAIL)─> [Fix A100 Micro-Probe]
+  ./scripts/run_modal.sh micro_probe, then full ...
         │ (PASS)
         ├─> A100 Micro-Probe (2 steps) -> a100_micro_probe_report.json
         ├─> Full Production Training (All allowed data, val_fold=None)
@@ -86,24 +86,19 @@ Run the worst-case 2048-token probe and 30-step endurance test on Kaggle Dual NV
 - **Config**: `configs/task2/runtime/kaggle_t4x2.yaml`
 - **Output**: Generates `/kaggle/working/kaggle_t4x2_report.json` with cryptographic telemetry.
 
-### E. Gate 3: Google Colab Single-T4 Gate
-Test Colab orchestration, exact detached Git checkout, versioned data retrieval, single-GPU execution, and artifact download:
+### E. Gate 3: T4 Gate on Modal Tesla T4
+Runs the `colab_t4` stage (1×T4 smoke config; stage names are hardware
+profiles, not vendors) on Modal, chained from the Kaggle report:
 ```bash
-python scripts/launch_colab_training.py \
-  --stage colab-t4 \
-  --candidate artifacts/candidates/<candidate_id>/candidate_manifest.json \
-  --kaggle-report artifacts/gates/<candidate_id>/kaggle_t4x2_report.json
+./scripts/run_modal.sh colab_t4
 ```
 Produces `artifacts/gates/<candidate_id>/colab_t4_report.json` chained from the Kaggle report.
 
-### F. Gate 4: Google Colab A100 Production Training
-Executes 2-step in-session micro-probe, then full all-data production training (`val_fold=None`), packages the audited run bundle, and publishes to Hugging Face Hub:
+### F. Gate 4: Modal A100 Production Training
+Executes 2-step micro-probe, then full all-data production training (`val_fold=None`), packages the audited run bundle, and publishes to Hugging Face Hub:
 ```bash
-python scripts/launch_colab_training.py \
-  --stage a100 \
-  --candidate artifacts/candidates/<candidate_id>/candidate_manifest.json \
-  --kaggle-report artifacts/gates/<candidate_id>/kaggle_t4x2_report.json \
-  --colab-t4-report artifacts/gates/<candidate_id>/colab_t4_report.json
+./scripts/run_modal.sh micro_probe
+./scripts/run_modal.sh full --test-path private-official.json
 ```
 
 ---
@@ -118,8 +113,8 @@ LegalQA/
 │       ├── algorithm.yaml               # Authoritative score-affecting hyperparameters
 │       └── runtime/
 │           ├── kaggle_t4x2.yaml         # Dual-T4 hardware profile
-│           ├── colab_t4.yaml            # Colab single-T4 promotion gate profile
-│           └── colab_a100.yaml          # Colab A100 production training profile
+│           ├── colab_t4.yaml            # Single-T4 gate profile (executes on Modal T4)
+│           └── modal_a100.yaml          # Modal A100 production profile
 │
 ├── src/task2/
 │   ├── config/                          # Typed config schemas and canonical loader
@@ -132,14 +127,13 @@ LegalQA/
 │   ├── freeze_candidate.py              # Candidate manifest freeze utility
 │   ├── verify_ci_status.py              # GitHub Actions CI check run validator
 │   ├── run_gpu_gate.py                  # Standalone GPU gate runner
-│   ├── launch_colab_training.py         # Colab CLI stage-aware orchestrator
-│   ├── colab_remote_entry.py            # Remote entrypoint for Colab execution
+│   ├── modal_app.py                     # Modal A100/T4 remote runner
+│   ├── run_modal.sh                     # One-click Modal dispatcher
 │   ├── audit_parameters.py              # Competition parameter budget auditor (< 4.0B)
 │   └── run_pipeline.py                  # Standalone pipeline CLI runner
 │
 ├── notebooks/
-│   ├── kaggle_smoke.ipynb               # Kaggle Dual-T4 thin launcher
-│   └── colab_a100_train.ipynb           # Colab A100 interactive notebook
+│   └── kaggle_smoke.ipynb               # Kaggle Dual-T4 thin launcher
 │
 ├── constraints-gpu.txt                  # Exact GPU user-space dependency lock
 ├── requirements.txt                     # Core dependencies

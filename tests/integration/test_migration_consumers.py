@@ -25,8 +25,10 @@ def test_consumer_inventory_finds_legacy_config_users():
     assert inventory, "inventory must find tracked consumers"
     legacy_users = [f for f, hits in inventory.items() if "legacy_flat_config" in hits]
     assert legacy_users, "colab_train_a100.yaml consumers must be enumerated before any removal"
-    assert any("run_gpu_gate" in f or "colab_remote_entry" in f or "modal_app" in f for f in inventory), \
+    assert any("run_gpu_gate" in f or "modal_app" in f for f in inventory), \
         "gate adapter consumers must be enumerated"
+    assert not any("colab_remote_entry" in f or "launch_colab_training" in f for f in inventory), \
+        "Colab launchers were removed; no consumers may remain"
 
 
 def test_rollback_bundle_preserves_digests(tmp_path):

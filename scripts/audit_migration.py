@@ -25,7 +25,7 @@ TRACKED_PATTERNS = {
     "legacy_flat_config": r"colab_train_a100\.yaml",
     "legacy_smoke_config": r"kaggle_smoke_t4\.yaml",
     "gate_runner": r"run_gpu_gate",
-    "colab_entry": r"colab_remote_entry",
+    "modal_t4_gate": r"run_modal_t4_remote",
     "pipeline_runner": r"run_pipeline",
     "modal_adapter": r"modal_app",
     "release_verified": r"release_verified",

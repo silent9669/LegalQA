@@ -43,6 +43,11 @@
       "source": "public-official.json",
       "sha256": "5f68ca901cb20798559538bef60fa7c32bd7d0df59f5bf31a37eb220c9e00df5",
       "size_mb": 0.18
+    },
+    "private-official.json": {
+      "source": "private-official.json",
+      "sha256": "d84bce10a1aa1c939552b2d86d0f8cb7b66d2d6ed20266e3c2b80f3498b3d427",
+      "size_mb": 0.34
     }
   },
   "indexes": {
@@ -56,16 +61,7 @@
         "bm25s_index/indptr.csc.index.npy",
         "bm25s_index/params.index.json",
         "bm25s_index/vocab.index.json",
-        "corpus_meta.parquet"
-      ]
-    },
-    "indexes/dek21": {
-      "source": "indexes/dek21",
-      "files_count": 3,
-      "files": [
-        "dek21_manifest.json",
-        "dense_manifest.json",
-        "embeddings.npy"
+        "rebuild_manifest.json"
       ]
     }
   }

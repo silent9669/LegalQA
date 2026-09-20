@@ -29,17 +29,21 @@ Authoritative architecture specification for **LegalQA (Task 2)** in compliance 
   scripts/run_gpu_gate.py --stage kaggle_t4x2
         │ (PASS) ──> kaggle_t4x2_report.json
         ▼
-[Gate 3: Colab Single-T4 Gate] ───(FAIL)─> [Fix Colab Bootstrap]
-  python scripts/launch_colab_training.py --stage colab-t4 ...
+[Gate 3: T4 Gate on Modal Tesla T4] ───(FAIL)─> [Fix T4 Bootstrap]
+  ./scripts/run_modal.sh colab_t4 (stage name kept for chain continuity)
         │ (PASS) ──> colab_t4_report.json (parent: kaggle_t4x2)
         ▼
-[Gate 4: Colab A100 Production] ──(FAIL)─> [Fix A100 Micro-Probe]
-  python scripts/launch_colab_training.py --stage a100 ...
+[Gate 4: Modal A100 Production] ──(FAIL)─> [Fix A100 Micro-Probe]
+  ./scripts/run_modal.sh micro_probe, then full
         │ (PASS)
         ├─> A100 Micro-Probe (2 steps) -> a100_micro_probe_report.json
         ├─> Full Production Training (All allowed data, val_fold=None)
         ├─> Audited Run Bundle & Checksums Generation
         └─> Hugging Face Hub Immutable Release: runs/<run_id>/
+
+Stage names are hardware profiles, not vendors: `colab_t4` means 1×T4 smoke
+config wherever it executes. Colab tooling was retired 2026-09-20 (see
+HISTORY.md); all GPU execution runs on Modal or Kaggle.
 ```
 
 ---
@@ -60,7 +64,8 @@ Configuration is strictly divided into two orthogonal layers:
 2. **Runtime Hardware Profiles (`configs/task2/runtime/*.yaml`)**:
    - `kaggle_t4x2.yaml`: 2x T4 GPUs, generator on `cuda:0`, retrieval on `cuda:1`, FP16, per-device batch 1, grad accum 8.
    - `colab_t4.yaml`: 1x T4 GPU, single-GPU placement on `cuda:0`, FP16, per-device batch 1, grad accum 8.
-   - `colab_a100.yaml`: 1x A100 GPU, single-GPU placement on `cuda:0`, BF16, per-device batch 4, grad accum 2.
+   - `modal_a100.yaml`: 1x A100 GPU, single-GPU placement on `cuda:0`, BF16, per-device batch 4, grad accum 2, gen batch 16 / rerank batch 128.
+   - `colab_a100.yaml`: retired Colab profile, kept only for historical candidate hashes.
    - Runtime profiles are forbidden from modifying protected algorithm fields.
    - Effective batch size invariant ($batch \times accum = 8$) is strictly enforced.
 

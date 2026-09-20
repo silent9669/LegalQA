@@ -18,20 +18,6 @@ def test_kaggle_smoke_notebook_contract():
     assert "HF_DEACTIVATE_ASYNC_LOAD" in source_all
     assert "/kaggle/input/**/code/LegalQA" not in source_all, "Notebook must not look for code inside dataset!"
 
-def test_colab_train_notebook_contract():
-    nb_path = "notebooks/colab_a100_train.ipynb"
-    assert os.path.exists(nb_path), f"Missing {nb_path}"
-    with open(nb_path, "r", encoding="utf-8") as f:
-        nb = json.load(f)
-    cells = nb.get("cells", [])
-    assert len(cells) >= 5, "Expected at least 5 cells in Colab A100 notebook"
-
-    source_all = "\n".join("".join(c.get("source", [])) for c in cells)
-    assert "colab_a100.yaml" in source_all or "colab_train_a100.yaml" in source_all
-    assert "A100" in source_all
-    assert "kaggle_t4x2_report.json" in source_all or "kaggle_smoke_report.json" in source_all
-    assert "verify_smoke_pass" in source_all
-
 def test_kernel_metadata_contract():
     meta_path = "notebooks/kernel-metadata.json"
     assert os.path.exists(meta_path)
@@ -46,7 +32,7 @@ def test_notebook_cells_python_ast_compilation():
     """Verify that every python code cell across all notebooks compiles with ast.parse."""
     notebooks = [
         "notebooks/kaggle_smoke.ipynb",
-        "notebooks/colab_a100_train.ipynb",
+        "notebooks/kaggle_train_probe.ipynb",
     ]
     for nb_path in notebooks:
         with open(nb_path, "r", encoding="utf-8") as f:

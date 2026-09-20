@@ -159,3 +159,28 @@ def test_remote_production_cfg_restores_generation_ceiling():
     cfg = build_remote_production_cfg()
     assert cfg.max_new_tokens == MODAL_MAX_NEW_TOKENS == 1400
     assert cfg.max_new_tokens != get_default_production_selection().max_new_tokens
+
+
+def test_modal_request_colab_t4_stage_contracts():
+    from scripts.modal_app import build_modal_request, validate_modal_request
+
+    # colab_t4 requires kaggle_t4x2 parent report
+    req = build_modal_request("colab_t4", CAND, "private-official.json", _parent("kaggle_t4x2"))
+    assert req["stage"] == "colab_t4"
+    validate_modal_request(req)
+
+    # Rejects invalid parents (e.g. colab_t4 or a100_micro_probe for colab_t4 stage)
+    with pytest.raises(ValueError, match="stage mismatch"):
+        build_modal_request("colab_t4", CAND, "private-official.json", _parent("colab_t4"))
+
+    with pytest.raises(ValueError, match="no bypass"):
+        build_modal_request("colab_t4", CAND, "private-official.json", None)
+
+
+
+def test_modal_colab_t4_stage_takes_kaggle_parent():
+    req = build_modal_request("colab_t4", CAND, "private-official.json", _parent("kaggle_t4x2"))
+    assert req["stage"] == "colab_t4"
+    validate_modal_request(req)
+    with pytest.raises(ValueError, match="stage mismatch"):
+        build_modal_request("colab_t4", CAND, "private-official.json", _parent("colab_t4"))

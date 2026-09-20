@@ -6,7 +6,6 @@ from pathlib import Path
 
 LAUNCHERS = [
     "scripts/modal_app.py",
-    "scripts/colab_remote_entry.py",
     "scripts/run_gpu_gate.py",
     "scripts/run_pipeline.py",
 ]

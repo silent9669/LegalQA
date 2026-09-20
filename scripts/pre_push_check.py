@@ -94,7 +94,6 @@ def check_notebook_syntax() -> None:
     print_step("Validating Jupyter notebooks")
     notebook_files = [
         REPO_ROOT / "notebooks" / "kaggle_smoke.ipynb",
-        REPO_ROOT / "notebooks" / "colab_a100_train.ipynb",
     ]
     for nbf in notebook_files:
         if not nbf.exists():
