@@ -365,6 +365,7 @@ def run_gpu_gate(
         resolved_config=resolved_cfg,
         max_steps=worst_case_steps,
         probe_mode="worst_case",
+        execution_profile=profile_name,
         device=resolved_cfg.runtime.devices.get("generator", "cuda:0") if not skip_gpu_assert else "cpu",
     )
     print(f"  OK: Worst-case probe finished with status={res_probe.get('status')}")
@@ -387,6 +388,7 @@ def run_gpu_gate(
             resolved_config=resolved_cfg,
             max_steps=30,
             probe_mode="endurance",
+            execution_profile=profile_name,
             device=resolved_cfg.runtime.devices.get("generator", "cuda:0") if not skip_gpu_assert else "cpu",
         )
         endurance_steps = res_endurance.get("steps_completed", 30)

@@ -183,3 +183,48 @@ def test_modal_colab_t4_stage_takes_kaggle_parent():
     validate_modal_request(req)
     with pytest.raises(ValueError, match="stage mismatch"):
         build_modal_request("colab_t4", CAND, "private-official.json", _parent("colab_t4"))
+
+
+def test_modal_a100_micro_probe_profile_allows_batch4(tmp_path):
+    """Verify that a100_micro_probe accepts modal_a100's batch_size=4 and does not force batch_size=1."""
+    from unittest.mock import MagicMock, patch
+    from src.task2.config.loader import load_resolved_config
+    from src.task2.generation.trainer import train_generator_qlora
+
+    cfg = load_resolved_config("configs/task2/algorithm.yaml", "configs/task2/runtime/modal_a100.yaml")
+    assert cfg.runtime.generator_runtime.per_device_train_batch_size == 4
+
+    mock_tok = MagicMock()
+    mock_tok.encode.return_value = [1, 2, 3]
+    mock_model = MagicMock()
+    mock_trainer = MagicMock()
+    mock_trainer.state.global_step = 2
+    mock_reloaded = MagicMock()
+    mock_reloaded.generate.return_value = "Verified"
+
+    with patch("src.task2.generation.trainer.AutoTokenizer.from_pretrained", return_value=mock_tok), \
+         patch("src.task2.generation.trainer.AutoModelForCausalLM.from_pretrained", return_value=mock_model), \
+         patch("src.task2.generation.trainer.SFTTrainer", return_value=mock_trainer), \
+         patch("src.task2.generation.trainer.build_v16_sft_config", return_value=MagicMock()), \
+         patch("src.task2.generation.trainer.build_grounded_training_examples", return_value=[
+             {"prompt": "p", "completion": "c", "text": "p c", "qa_id": "1", "total_tokens": 10, "completion_tokens": 5}
+         ]), \
+         patch("src.task2.generation.trainer.QwenGenerator.load", return_value=mock_reloaded):
+
+        # When probe_mode='worst_case' and resolved_config has profile_name='modal_a100',
+        # it must succeed with batch_size=4 and not crash with batch_size=1 required.
+        res = train_generator_qlora(
+            model_name_or_path=cfg.algorithm.models.generator.id,
+            qa_path="dummy_qa.parquet",
+            labels_path="dummy_labels.parquet",
+            chunks_path="dummy_chunks.parquet",
+            output_dir=str(tmp_path / "probe_out"),
+            resolved_config=cfg,
+            max_steps=2,
+            probe_mode="worst_case",
+            execution_profile="modal_a100",
+            device="cpu",
+        )
+        assert res["execution_profile"] == "modal_a100"
+        assert res["strict_reload"] == "pass"
+

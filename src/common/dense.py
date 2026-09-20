@@ -161,7 +161,13 @@ class DenseRetriever:
             if self.device.startswith("cuda") and torch is not None and hasattr(self.model, "half"):
                 self.model.half()
 
-    def encode_texts(self, texts: List[str], batch_size: int = 64, show_progress: bool = False) -> np.ndarray:
+    def encode_texts(
+        self,
+        texts: List[str],
+        batch_size: int = 64,
+        show_progress: bool = False,
+        pre_tokenized: bool = False,
+    ) -> np.ndarray:
         """Encode list of strings into L2-normalized numpy embeddings."""
         dim = self._get_dim()
         if not texts:
@@ -175,7 +181,7 @@ class DenseRetriever:
 
         self._lazy_init()
         # DEk21 uses Vietnamese word tokenization; BGE-M3 handles raw text
-        if "dek21" in self.model_name.lower():
+        if "dek21" in self.model_name.lower() and not pre_tokenized:
             processed_texts = [tokenize_vietnamese(t) for t in texts]
         else:
             processed_texts = texts
@@ -200,8 +206,17 @@ class DenseRetriever:
         """Encode entire corpus and store L2-normalized embeddings."""
         self.corpus = corpus
         self.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
-        raw_texts = [c.get("text_raw", "") for c in corpus]
-        self.corpus_embeddings = self.encode_texts(raw_texts, batch_size=batch_size, show_progress=show_progress)
+        has_norm = bool(corpus and corpus[0].get("text_norm"))
+        if has_norm:
+            texts = [c.get("text_norm") or c.get("text_raw", "") for c in corpus]
+        else:
+            texts = [c.get("text_raw", "") for c in corpus]
+        self.corpus_embeddings = self.encode_texts(
+            texts,
+            batch_size=batch_size,
+            show_progress=show_progress,
+            pre_tokenized=has_norm,
+        )
         self._sync_gpu_tensor()
 
     def _sync_gpu_tensor(self) -> None:

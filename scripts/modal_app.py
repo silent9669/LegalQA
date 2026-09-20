@@ -255,16 +255,21 @@ if modal is not None:
             ignore=[
                 ".venv*",
                 ".git*",
-                "dsc2026",
-                "kaggle_dataset",
-                "artifacts",
-                "__pycache__",
+                ".remember*",
+                ".agents*",
+                ".playwright-mcp*",
+                ".pytest_cache*",
+                ".superpowers*",
+                "dsc2026*",
+                "kaggle_dataset*",
+                "artifacts*",
+                "__pycache__*",
                 "*.parquet",
                 "*.npy",
                 "*.zip",
-                ".playwright-mcp",
-                ".pytest_cache",
-                "fix",
+                "*.log",
+                ".DS_Store",
+                "fix*",
             ],
         )
     )
@@ -435,34 +440,6 @@ if modal is not None:
         else:
             print("[+] BM25 index cached on volume.")
 
-        staged_candidates = [
-            data_dir / "indexes" / "dek21_rebuilt",
-            data_dir / "indexes" / "dek21",
-        ]
-        dense_index_dir = None
-        for candidate_dir in staged_candidates:
-            if candidate_dir.exists():
-                alignment = check_dense_alignment(str(candidate_dir), str(chunks_file))
-                if alignment.get("aligned"):
-                    print(f"[+] Dense index aligned at {candidate_dir.name}; reuse.")
-                    dense_index_dir = str(candidate_dir)
-                    break
-
-        if dense_index_dir is None:
-            print("[!] Dense index missing or misaligned; cold rebuild...")
-            rebuilt = data_dir / "indexes" / "dek21_rebuilt"
-            manifest = build_verified_index(
-                corpus_path=str(chunks_file),
-                out_dir=str(rebuilt),
-                model_id=DENSE_MODEL_ID,
-                revision=request["dense_revision"],
-                batch_size=512,
-                device="cuda:0",
-            )
-            data_volume.commit()
-            dense_index_dir = str(rebuilt)
-            print(f"[+] Rebuilt in {manifest.get('seconds')}s; committed to volume.")
-
         run_output_dir = Path(f"/runs/modal_{request['candidate_id']}_{int(time.time())}")
         run_output_dir.mkdir(parents=True, exist_ok=True)
         candidate_path = _write_candidate(run_output_dir, candidate)
@@ -484,6 +461,34 @@ if modal is not None:
                       "report": report.to_dict(),
                       "report_sha256": report.compute_sha256()}
         else:
+            staged_candidates = [
+                data_dir / "indexes" / "dek21_rebuilt",
+                data_dir / "indexes" / "dek21",
+            ]
+            dense_index_dir = None
+            for candidate_dir in staged_candidates:
+                if candidate_dir.exists():
+                    alignment = check_dense_alignment(str(candidate_dir), str(chunks_file))
+                    if alignment.get("aligned"):
+                        print(f"[+] Dense index aligned at {candidate_dir.name}; reuse.")
+                        dense_index_dir = str(candidate_dir)
+                        break
+
+            if dense_index_dir is None:
+                print("[!] Dense index missing or misaligned; cold rebuild...")
+                rebuilt = data_dir / "indexes" / "dek21_rebuilt"
+                manifest = build_verified_index(
+                    corpus_path=str(chunks_file),
+                    out_dir=str(rebuilt),
+                    model_id=DENSE_MODEL_ID,
+                    revision=request["dense_revision"],
+                    batch_size=512,
+                    device="cuda:0",
+                )
+                data_volume.commit()
+                dense_index_dir = str(rebuilt)
+                print(f"[+] Rebuilt in {manifest.get('seconds')}s; committed to volume.")
+
             from src.task2.config.loader import load_resolved_config
             from src.task2.pipeline.runner import run_pipeline
             from src.task2.pipeline.profiles import load_profile_from_yaml

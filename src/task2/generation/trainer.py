@@ -184,8 +184,10 @@ def train_generator_qlora(
 
     # 1. Validate configuration for the active execution profile
     profile_name = execution_profile or (
-        "generator_probe_worstcase" if probe_mode == "worst_case" else (
-            "generator_probe_endurance" if probe_mode == "endurance" else "standard"
+        resolved_config.runtime.profile_name if resolved_config is not None else (
+            "generator_probe_worstcase" if probe_mode == "worst_case" else (
+                "generator_probe_endurance" if probe_mode == "endurance" else "standard"
+            )
         )
     )
     strict_profiles = {
@@ -469,6 +471,7 @@ def train_generator_qlora(
         "liger_version": REQUIRED_LIGER_VERSION,
         "model": model_name_or_path,
         "base_model_id": model_name_or_path,
+        "execution_profile": profile_name,
         "max_seq_len": config.max_seq_len,
         "lora_r": config.lora_r,
         "lora_alpha": config.lora_alpha,
