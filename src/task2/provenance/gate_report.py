@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from src.task2.config.loader import canonical_json_dumps, canonical_sha256
 from src.task2.provenance.candidate import CandidateManifest
@@ -127,13 +127,22 @@ class GateReport:
 def verify_gate_report(
     report_path: Union[Path, str],
     candidate: CandidateManifest,
-    expected_stage: str,
+    expected_stage: Union[str, Tuple[str, ...], List[str], Set[str]],
     required_parent_sha256: Optional[str] = None,
 ) -> GateReport:
-    """Strictly verify a gate report against candidate manifest and expected promotion chain."""
+    """Strictly verify a gate report against candidate manifest and expected promotion chain.
+
+    expected_stage accepts one stage or a tuple of accepted stages (the
+    migrated DAG lets the A100 microprobe chain under kaggle_t4x2 or
+    colab_t4). A parent report is always required by the caller; this only
+    checks identity, never authorization.
+    """
     report = GateReport.load_json(report_path)
 
-    if report.stage != expected_stage:
+    if isinstance(expected_stage, (tuple, list, set)):
+        if report.stage not in expected_stage:
+            raise ValueError(f"Gate stage mismatch: expected one of {tuple(expected_stage)}, got {report.stage}")
+    elif report.stage != expected_stage:
         raise ValueError(f"Gate stage mismatch: expected {expected_stage}, got {report.stage}")
 
     if report.status != "PASS":

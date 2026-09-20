@@ -45,3 +45,8 @@ A chronological history of architecture decisions, empirical findings, and lesso
 - **Dense index quarantined**: checked-in `embeddings.npy` failed identical-pair self-consistency (cosine ~0.0012); excluded from the dataset release, cold-rebuilt on-GPU with pinned revision + gate.
 - **BM25 rebuilt**: fresh order-bound bm25s index (k1=1.5/b=0.75 continuity, 5/5 top-5 agreement with predecessor) published in the dataset; loader enforces doc_ids order.
 - **Model pins corrected**: previous pins 404'd upstream; verified live SHAs now used.
+
+### DAG Migration: Direct Kaggle-to-A100 Chain (2026-09-20)
+- **Decision**: the A100 microprobe accepts a `kaggle_t4x2` parent directly; the `colab_t4` T4 rehearsal stays available as an optional stage (`modal run --stage colab_t4`) but no longer blocks promotion.
+- **Rationale**: Modal-only team; single-GPU placement is probed by the microprobe itself (cuda:0); a cheap T4 rehearsal remains one command away.
+- **Single source of truth**: `GATE_PARENTS` in `scripts/run_gpu_gate.py`; `validate_parent_gate`, the gate runner, and `modal_app` all derive from it (covered by `test_parent_rules_have_single_source_of_truth`).

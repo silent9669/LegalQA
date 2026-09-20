@@ -101,11 +101,15 @@ def build_modal_request(
     dense_revision = ((candidate_manifest.get("models") or {}).get("dense") or {}).get("revision", "")
     if not dense_revision or len(str(dense_revision)) != 40:
         raise ValueError("candidate must pin an immutable 40-hex dense revision")
-    allowed_parents = {
-        "colab_t4": ("kaggle_t4x2",),
-        "micro_probe": ("kaggle_t4x2", "colab_t4"),
-        "full": ("a100_micro_probe",),
-    }[stage]
+    from scripts.run_gpu_gate import GATE_PARENTS
+
+    # Accepted parents derive from the one shared DAG map. The full stage
+    # additionally requires the microprobe report (a different gate stage).
+    if stage == "full":
+        allowed_parents = ("a100_micro_probe",)
+    else:
+        gate_stage = {"colab_t4": "colab_t4", "micro_probe": "a100_micro_probe"}[stage]
+        allowed_parents = GATE_PARENTS[gate_stage]
     if not isinstance(parent_report, dict):
         raise ValueError(f"Modal {stage} requires parent report in {allowed_parents} (no bypass)")
     if parent_report.get("status") != "PASS":

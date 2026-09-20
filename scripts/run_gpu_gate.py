@@ -70,15 +70,18 @@ from src.task2.provenance.gate_report import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Promotion DAG: CI PASS -> kaggle_t4x2 -> colab_t4 -> a100_micro_probe.
-# The retained Colab T4 gate stays until a tested replacement DAG proves
-# equivalence; no stage may be bypassed, forged, reused across candidates,
-# or relabelled as final evidence.
+# Promotion DAG: CI PASS -> kaggle_t4x2 -> a100_micro_probe (-> full).
+# Migrated 2026-09-20 to a Modal-only team: the A100 microprobe accepts a
+# kaggle_t4x2 parent directly (the colab_t4 T4 rehearsal remains available as
+# an OPTIONAL stage via `modal run --stage colab_t4`, and still chains under
+# kaggle_t4x2). No stage may be bypassed, forged, reused across candidates,
+# or relabelled as final evidence; a parent report is always mandatory where
+# the map lists accepted parents.
 GATE_DAG: tuple = ("kaggle_t4x2", "colab_t4", "a100_micro_probe")
-GATE_PARENT: Dict[str, Optional[str]] = {
-    "kaggle_t4x2": None,
-    "colab_t4": "kaggle_t4x2",
-    "a100_micro_probe": "colab_t4",
+GATE_PARENTS: Dict[str, tuple] = {
+    "kaggle_t4x2": (),
+    "colab_t4": ("kaggle_t4x2",),
+    "a100_micro_probe": ("kaggle_t4x2", "colab_t4"),
 }
 # Stage -> default runtime profile. The A100 micro-probe stage runs under
 # the colab_a100 profile by default; modal_a100 is selected explicitly via
@@ -108,11 +111,11 @@ def build_gate_request(
     for key in ("candidate_sha", "algorithm_sha256", "dataset_sha256", "scorer_sha256"):
         if not candidate.get(key):
             raise ValueError(f"gate request candidate missing identity field: {key}")
-    required_parent = GATE_PARENT[stage]
-    if required_parent is None and parent_report is not None:
+    accepted_parents = GATE_PARENTS[stage]
+    if not accepted_parents and parent_report is not None:
         raise ValueError(f"gate stage {stage} takes no parent report")
-    if required_parent is not None and parent_report is None:
-        raise ValueError(f"gate stage {stage} requires parent {required_parent} report")
+    if accepted_parents and parent_report is None:
+        raise ValueError(f"gate stage {stage} requires parent report in {accepted_parents}")
     return {
         "stage": stage,
         "candidate_sha": candidate["candidate_sha"],
@@ -121,7 +124,7 @@ def build_gate_request(
         "scorer_sha256": candidate["scorer_sha256"],
         "runtime_profile": candidate.get("runtime_profile", stage),
         "runtime_sha256": candidate.get("runtime_sha256", ""),
-        "required_parent_stage": required_parent,
+        "accepted_parent_stages": accepted_parents,
         "parent_report_sha256": (parent_report or {}).get("report_sha256"),
     }
 
@@ -138,13 +141,13 @@ def validate_parent_gate(
     """
     if stage not in GATE_DAG:
         raise ValueError(f"unknown gate stage: {stage}")
-    required_parent = GATE_PARENT[stage]
-    if required_parent is None:
+    accepted_parents = GATE_PARENTS[stage]
+    if not accepted_parents:
         if report is not None:
             raise ValueError(f"gate stage {stage} takes no parent report")
         return
     if not isinstance(report, dict):
-        raise ValueError(f"gate stage {stage} requires a parent {required_parent} PASS report")
+        raise ValueError(f"gate stage {stage} requires a parent PASS report in {accepted_parents}")
     if report.get("status") != "PASS":
         raise ValueError(f"parent gate {report.get('stage')} status is not PASS: {report.get('status')}")
     if report.get("candidate_sha") != expected_sha:
@@ -152,9 +155,9 @@ def validate_parent_gate(
             f"parent gate candidate mismatch for stage {stage}: expected {expected_sha}, "
             f"got {report.get('candidate_sha')}"
         )
-    if report.get("stage") != required_parent:
+    if report.get("stage") not in accepted_parents:
         raise ValueError(
-            f"parent gate stage mismatch for {stage}: required {required_parent}, got {report.get('stage')}"
+            f"parent gate stage mismatch for {stage}: accepted {accepted_parents}, got {report.get('stage')}"
         )
     if not report.get("report_sha256"):
         raise ValueError(f"parent gate report lacks report_sha256 for stage {stage}")
@@ -322,12 +325,19 @@ def run_gpu_gate(
         )
     print(f"  OK: Authoritative configuration and cryptographic digests verified (profile={profile_name}).")
 
-    # 3d. Parent Gate Verification
+    # 3d. Parent Gate Verification (single GATE_PARENTS source of truth)
     parent_ref: Optional[GateParentRef] = None
     if parent_report_path:
         parent_p = Path(parent_report_path)
-        expected_parent_stage = "kaggle_t4x2" if stage == "colab_t4" else (("colab_t4", "kaggle_t4x2") if stage == "a100_micro_probe" else "")
-        verified_parent = verify_gate_report(parent_p, candidate, expected_stage=expected_parent_stage)
+        from src.task2.provenance.gate_report import GateReport as _GateReport
+
+        claimed_parent = _GateReport.load_json(parent_p)
+        if claimed_parent.stage not in GATE_PARENTS.get(stage, ()):
+            raise ValueError(
+                f"parent gate stage mismatch for {stage}: accepted {GATE_PARENTS.get(stage, ())}, "
+                f"got {claimed_parent.stage}"
+            )
+        verified_parent = verify_gate_report(parent_p, candidate, expected_stage=claimed_parent.stage)
         parent_ref = GateParentRef(
             stage=verified_parent.stage,
             report_sha256=verified_parent.compute_sha256(),

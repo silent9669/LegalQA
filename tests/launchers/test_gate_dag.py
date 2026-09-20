@@ -6,6 +6,7 @@ import pytest
 
 from scripts.run_gpu_gate import (
     GATE_DAG,
+    GATE_PARENTS,
     build_gate_request,
     run_platform_stage,
     validate_parent_gate,
@@ -32,11 +33,15 @@ def test_a100_rejects_different_candidate():
 
 def test_dag_order_and_parent_requirements():
     assert list(GATE_DAG) == ["kaggle_t4x2", "colab_t4", "a100_micro_probe"]
+    # Migrated Modal-only DAG: a100 accepts kaggle_t4x2 or colab_t4.
+    assert GATE_PARENTS["kaggle_t4x2"] == ()
+    assert GATE_PARENTS["colab_t4"] == ("kaggle_t4x2",)
+    assert GATE_PARENTS["a100_micro_probe"] == ("kaggle_t4x2", "colab_t4")
     # First stage takes no parent.
     req = build_gate_request(CAND, "kaggle_t4x2", None)
-    assert req["required_parent_stage"] is None
+    assert req["accepted_parent_stages"] == ()
     validate_parent_gate(None, "c" * 16, "kaggle_t4x2")
-    # Later stages require their exact parent.
+    # Later stages require a parent from the accepted set.
     with pytest.raises(ValueError, match="requires parent"):
         build_gate_request(CAND, "colab_t4", None)
     with pytest.raises(ValueError, match="requires a parent"):
@@ -44,11 +49,14 @@ def test_dag_order_and_parent_requirements():
     req2 = build_gate_request(CAND, "colab_t4", _parent("kaggle_t4x2"))
     assert req2["parent_report_sha256"] == "e" * 64
     validate_parent_gate(_parent("kaggle_t4x2"), "c" * 16, "colab_t4")
+    # Migrated rule: kaggle_t4x2 directly authorizes the A100 microprobe.
+    validate_parent_gate(_parent("kaggle_t4x2"), "c" * 16, "a100_micro_probe")
+    validate_parent_gate(_parent("colab_t4"), "c" * 16, "a100_micro_probe")
 
 
 def test_wrong_parent_stage_or_failed_status_rejected():
     with pytest.raises(ValueError, match="stage mismatch"):
-        validate_parent_gate(_parent("kaggle_t4x2"), "c" * 16, "a100_micro_probe")
+        validate_parent_gate(_parent("a100_micro_probe"), "c" * 16, "a100_micro_probe")
     bad = _parent("colab_t4")
     bad["status"] = "FAILED_TRANSIENT"
     with pytest.raises(ValueError, match="not PASS"):
@@ -101,3 +109,26 @@ def test_pure_data_packaging_rejects_code_and_secrets(tmp_path):
     report = validate_dataset(str(data_dir), schema_path="configs/dataset_schema.yaml")
     assert report["status"] == "FAIL"
     assert any("code" in e.lower() or "executable" in e.lower() for e in report["errors"])
+
+
+def test_parent_rules_have_single_source_of_truth():
+    """run_gpu_gate, validate_parent_gate, and modal_app must agree on one DAG map."""
+    from scripts.modal_app import build_modal_request as modal_build
+    from scripts.run_gpu_gate import GATE_PARENTS as GPU_GATE_PARENTS
+
+    assert GPU_GATE_PARENTS["a100_micro_probe"] == ("kaggle_t4x2", "colab_t4")
+    manifest = {"candidate_id": "c" * 16, "git_commit_sha": "a" * 40,
+                "models": {"dense": {"id": "d", "revision": "b" * 40}}}
+    kaggle = {"status": "PASS", "candidate_sha": "c" * 16, "stage": "kaggle_t4x2",
+              "report_sha256": "e" * 64}
+    colab = dict(kaggle, stage="colab_t4")
+    # Modal micro accepts exactly the shared map's a100 parents.
+    modal_build("micro_probe", manifest, "private-official.json", kaggle)
+    modal_build("micro_probe", manifest, "private-official.json", colab)
+    with pytest.raises(ValueError, match="stage mismatch"):
+        modal_build("micro_probe", manifest, "private-official.json",
+                    dict(kaggle, stage="a100_micro_probe"))
+    # Modal colab_t4 accepts exactly the shared map's colab parents.
+    modal_build("colab_t4", manifest, "private-official.json", kaggle)
+    with pytest.raises(ValueError, match="stage mismatch"):
+        modal_build("colab_t4", manifest, "private-official.json", colab)
