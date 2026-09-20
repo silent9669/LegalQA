@@ -576,6 +576,15 @@ if modal is not None:
                     if not c_rep_p.exists() and request.get("colab_report"):
                         c_rep_p.write_text(json.dumps(request["colab_report"], indent=2), encoding="utf-8")
 
+                    if not k_rep_p.is_file():
+                        raise ValueError("Missing verified kaggle_t4x2_report.json required for release packaging")
+
+                    sub_json = outputs.get("stages", {}).get("submission", {}).get("submission_json")
+                    sub_zip = outputs.get("stages", {}).get("submission", {}).get("submission_zip")
+                    prov_file = run_output_dir / "submission_provenance.json"
+                    ds_manifest = data_dir / "dataset_manifest.json"
+                    ds_report = data_dir / "validation_report.json"
+
                     print("\n" + "=" * 65)
                     print(" [+] Packaging Audited Production Run Bundle for Hugging Face Release ")
                     print("=" * 65)
@@ -583,8 +592,8 @@ if modal is not None:
                         run_id=run_id,
                         candidate=manifest,
                         adapter_source_dir=adapter_src,
-                        kaggle_report_path=k_rep_p if k_rep_p.is_file() else parent_path,
-                        colab_t4_report_path=c_rep_p if c_rep_p.is_file() else None,
+                        kaggle_report_path=k_rep_p,
+                        colab_t4_report_path=c_rep_p if (c_rep_p and c_rep_p.is_file()) else None,
                         a100_micro_probe_report_path=parent_path,
                         train_log_path=run_output_dir / "train.log",
                         output_dir=bundle_dir,
@@ -594,6 +603,11 @@ if modal is not None:
                         num_train_epochs=1,
                         effective_batch_size=8,
                         hf_repository="dangphuc2109/legalqa-qwen2.5-3b-adapter",
+                        dataset_manifest_path=ds_manifest if ds_manifest.is_file() else None,
+                        dataset_validation_report_path=ds_report if ds_report.is_file() else None,
+                        runtime_profile="modal_a100",
+                        submission_path=sub_json if (sub_json and Path(sub_json).is_file()) else None,
+                        submission_provenance_path=prov_file if prov_file.is_file() else None,
                     )
 
                     print("\n" + "=" * 65)

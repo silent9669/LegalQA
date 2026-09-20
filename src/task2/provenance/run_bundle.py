@@ -32,6 +32,7 @@ def generate_model_card(
     training_samples: Optional[int] = None,
     hf_repo: str = "dangphuc2109/legalqa-qwen2.5-3b-adapter",
     parameter_audit: Optional[Dict[str, Any]] = None,
+    has_colab_t4: bool = True,
 ) -> str:
     """Generate comprehensive Hugging Face model card documentation.
 
@@ -48,6 +49,22 @@ def generate_model_card(
     gen_rev = candidate.models.generator.revision
     rerank_id = candidate.models.reranker.id
     dense_id = candidate.models.dense.id
+
+    gate_chain_lines = [
+        "## Gate Promotion Chain",
+        "1. **Gate 0 (Local)**: Fast/Full pre-push verification tests PASSED",
+        "2. **Gate 1 (GitHub CI)**: Exact-SHA test matrix PASSED",
+        "3. **Gate 2 (Kaggle Dual-T4)**: 2048-token worst-case & 30-step endurance PASSED",
+    ]
+    if has_colab_t4:
+        gate_chain_lines.extend([
+            "4. **Gate 3 (Colab Single-T4)**: Detached checkout, single-device & upload/download lifecycle PASSED",
+            "5. **Gate 4 (Colab A100)**: 2-step in-session micro-probe & full production training PASSED",
+        ])
+    else:
+        gate_chain_lines.append(
+            "4. **Gate 3 (Modal A100)**: 2-step in-session micro-probe & full production training PASSED",
+        )
 
     lines = [
         "---",
@@ -92,12 +109,7 @@ def generate_model_card(
         "- **Audit Note**: reference estimates only; the strict release gate audits actual",
         "  base/adapter/selector configs and checkpoints (see parameter_audit in the release manifest).",
         "",
-        "## Gate Promotion Chain",
-        "1. **Gate 0 (Local)**: Fast/Full pre-push verification tests PASSED",
-        "2. **Gate 1 (GitHub CI)**: Exact-SHA test matrix PASSED",
-        "3. **Gate 2 (Kaggle Dual-T4)**: 2048-token worst-case & 30-step endurance PASSED",
-        "4. **Gate 3 (Colab Single-T4)**: Detached checkout, single-device & upload/download lifecycle PASSED",
-        "5. **Gate 4 (Colab A100)**: 2-step in-session micro-probe & full production training PASSED",
+        *gate_chain_lines,
         "",
         "## Metrics",
         f"- **Optimizer Steps**: {optimizer_steps}",
@@ -126,6 +138,9 @@ def build_production_run_bundle(
     hf_commit_sha: Optional[str] = None,
     dataset_manifest_path: Optional[Union[Path, str]] = None,
     dataset_validation_report_path: Optional[Union[Path, str]] = None,
+    runtime_profile: str = "colab_a100",
+    submission_path: Optional[Union[Path, str]] = None,
+    submission_provenance_path: Optional[Union[Path, str]] = None,
 ) -> Dict[str, Any]:
     """Build and package the complete immutable production run bundle.
 
@@ -155,7 +170,12 @@ def build_production_run_bundle(
 
     # 2. Resolved configs
     base_task2 = REPO_ROOT / "configs" / "task2"
-    algo_cfg = load_resolved_config(base_task2 / "algorithm.yaml", base_task2 / "runtime" / "colab_a100.yaml")
+    runtime_yaml = (
+        base_task2 / "runtime" / f"{runtime_profile}.yaml"
+        if not str(runtime_profile).endswith(".yaml")
+        else Path(runtime_profile)
+    )
+    algo_cfg = load_resolved_config(base_task2 / "algorithm.yaml", runtime_yaml)
     (out_root / "algorithm.resolved.json").write_text(
         json.dumps(algo_cfg.algorithm.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -245,6 +265,7 @@ def build_production_run_bundle(
         optimizer_steps=optimizer_steps,
         training_samples=training_sample_count,
         hf_repo=hf_repository,
+        has_colab_t4=bool(c_rep is not None),
     )
     (out_root / "model_card.md").write_text(card_content, encoding="utf-8")
 
@@ -252,7 +273,17 @@ def build_production_run_bundle(
     adapter_model_p = adapter_dir / "adapter_model.safetensors"
     adapter_hash = compute_file_sha256(adapter_model_p) if adapter_model_p.exists() else "none"
 
-    # 11. Production Run Manifest
+    # 11. Copy submission artifacts if provided
+    if submission_path and Path(submission_path).is_file():
+        shutil.copy(str(submission_path), str(out_root / "submission.json"))
+        sub_zip = Path(str(submission_path) + ".zip")
+        if sub_zip.is_file():
+            shutil.copy(str(sub_zip), str(out_root / "submission.json.zip"))
+
+    if submission_provenance_path and Path(submission_provenance_path).is_file():
+        shutil.copy(str(submission_provenance_path), str(out_root / "submission_provenance.json"))
+
+    # 12. Production Run Manifest
     run_manifest = {
         "schema_version": 1,
         "run_id": run_id,
@@ -303,10 +334,10 @@ def build_production_run_bundle(
         json.dumps(run_manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    # 12. Secret Scan before Checksum Generation (Fail-Closed)
+    # 13. Secret Scan before Checksum Generation (Fail-Closed)
     assert_no_secrets_in_workspace(out_root, exclude_tests=False)
 
-    # 13. Write Checksums File
+    # 14. Write Checksums File
     write_checksums_file(out_root, out_root / "checksums.sha256")
 
     print(f"\n[+] Production run bundle successfully built at: {out_root}")

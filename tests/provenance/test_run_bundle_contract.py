@@ -254,3 +254,56 @@ def test_build_production_run_bundle_modal_two_gate_chain(tmp_path):
     assert manifest["gate_reports"]["a100_micro_probe"] == a_rep.compute_sha256()
     assert verify_run_bundle(output_bundle_dir) is True
 
+
+def test_build_production_run_bundle_modal_runtime_and_submission(tmp_path):
+    """Verify that build_production_run_bundle binds modal_a100 runtime and seals submission files."""
+    candidate = sample_candidate()
+    run_id = f"run_modal_sub_{candidate.candidate_id}"
+    output_bundle_dir = tmp_path / "runs" / run_id
+
+    adapter_src = tmp_path / "src_adapter_sub"
+    adapter_src.mkdir()
+    (adapter_src / "adapter_config.json").write_text(json.dumps({"lora_r": 16}))
+    (adapter_src / "adapter_model.safetensors").write_bytes(b"weights_with_submission")
+
+    k_rep = sample_gate_report("kaggle_t4x2", candidate.candidate_id, candidate.git_commit_sha)
+    a_rep = sample_gate_report("a100_micro_probe", candidate.candidate_id, candidate.git_commit_sha, k_rep.compute_sha256())
+
+    k_path = tmp_path / "k_sub.json"
+    a_path = tmp_path / "a_sub.json"
+    k_rep.save_json(k_path)
+    a_rep.save_json(a_path)
+
+    log_file = tmp_path / "train_sub.log"
+    log_file.write_text("Modal Step 100 loss: 0.50\n")
+
+    sub_file = tmp_path / "submission.json"
+    sub_file.write_text(json.dumps({"1": {"answer": "Answer 1"}}, indent=2))
+    prov_file = tmp_path / "submission_provenance.json"
+    prov_file.write_text(json.dumps({"1": {"source": "generated"}}, indent=2))
+
+    manifest = build_production_run_bundle(
+        run_id=run_id,
+        candidate=candidate,
+        adapter_source_dir=adapter_src,
+        kaggle_report_path=k_path,
+        colab_t4_report_path=None,
+        a100_micro_probe_report_path=a_path,
+        train_log_path=log_file,
+        output_dir=output_bundle_dir,
+        metrics={"meteor": 0.53, "rouge_l": 0.56},
+        optimizer_steps=100,
+        training_sample_count=800,
+        num_train_epochs=1,
+        runtime_profile="modal_a100",
+        submission_path=sub_file,
+        submission_provenance_path=prov_file,
+    )
+
+    assert manifest["run_id"] == run_id
+    assert "submission" in manifest
+    assert (output_bundle_dir / "submission.json").exists()
+    assert (output_bundle_dir / "submission_provenance.json").exists()
+    assert verify_run_bundle(output_bundle_dir) is True
+
+
