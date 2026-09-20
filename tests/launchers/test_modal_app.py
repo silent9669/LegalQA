@@ -141,3 +141,21 @@ def test_repo_root_survives_unreadable_system_paths():
         exec(compile(mod_code, "scripts/modal_app.py", "exec"), fake_mod.__dict__)
         assert fake_mod.REPO_ROOT == Path("scripts/modal_app.py").resolve().parent.parent
         assert fake_mod.read_pin_file("constraints-gpu.txt") != []
+
+
+def test_remote_paths_carry_deadline_and_model():
+    from scripts.modal_app import MODAL_DEADLINE_BUDGET_SECONDS, build_remote_paths
+
+    paths = build_remote_paths("/data", "/data/idx", "/data/t.json", qwen_model_path="Qwen/Qwen2.5-3B-Instruct")
+    assert paths["dek21_dir"] == "/data/idx"
+    assert paths["qwen_model_path"] == "Qwen/Qwen2.5-3B-Instruct"
+    assert int(paths["deadline_budget_seconds"]) == MODAL_DEADLINE_BUDGET_SECONDS == 17100
+
+
+def test_remote_production_cfg_restores_generation_ceiling():
+    from scripts.modal_app import MODAL_MAX_NEW_TOKENS, build_remote_production_cfg
+    from src.task2.production_config import get_default_production_selection
+
+    cfg = build_remote_production_cfg()
+    assert cfg.max_new_tokens == MODAL_MAX_NEW_TOKENS == 1400
+    assert cfg.max_new_tokens != get_default_production_selection().max_new_tokens

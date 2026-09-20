@@ -163,6 +163,44 @@ def test_file_fingerprint(path: Path) -> Dict[str, Any]:
     }
 
 
+#: Graceful hard-stop budget (seconds) for the full Modal attempt: the runner
+#: writes INCOMPLETE and preserves checkpoints instead of hitting the hard
+#: container timeout with uncommitted volume state.
+MODAL_DEADLINE_BUDGET_SECONDS = 17100
+
+#: Historical v10 generation ceiling (tokens). The shared default (384)
+#: truncates the measured ~736-token answers; the full run restores 1,400.
+MODAL_MAX_NEW_TOKENS = 1400
+
+
+def build_remote_paths(
+    data_dir: str, dense_index_dir: str, test_path: str, qwen_model_path: str = "Qwen/Qwen2.5-3B-Instruct"
+) -> Dict[str, str]:
+    """Runner paths for the Modal container (pure, testable)."""
+    return {
+        "data_dir": str(data_dir),
+        "bm25_dir": str(Path(data_dir) / "indexes" / "bm25"),
+        "dek21_dir": str(dense_index_dir),
+        "qwen_model_path": str(qwen_model_path),
+        "public_test_path": str(test_path),
+        "deadline_budget_seconds": MODAL_DEADLINE_BUDGET_SECONDS,
+    }
+
+
+def build_remote_production_cfg() -> Any:
+    """Production selection for the Modal full run (pure, testable).
+
+    Mirrors the shared default but restores the historical 1,400-token
+    generation ceiling. Governance stays with the candidate + parent chain
+    (modal_a100 is not on the screen-promotion path).
+    """
+    import dataclasses
+
+    from src.task2.production_config import get_default_production_selection
+
+    return dataclasses.replace(get_default_production_selection(), max_new_tokens=MODAL_MAX_NEW_TOKENS)
+
+
 # ----------------------------------------------------------------------
 # Container image, volumes, secrets (declared when the SDK is present).
 # ----------------------------------------------------------------------
@@ -359,14 +397,11 @@ if modal is not None:
             profile = load_profile_from_yaml("/root/LegalQA/configs/task2/runtime/modal_a100.yaml")
             outputs = run_pipeline(
                 profile=profile,
-                paths={
-                    "data_dir": str(data_dir),
-                    "bm25_dir": str(data_dir / "indexes" / "bm25"),
-                    "dek21_dir": dense_index_dir,
-                    "qwen_model_path": manifest.models.generator.id,
-                    "public_test_path": str(test_path),
-                },
-                production_cfg=None,
+                paths=build_remote_paths(
+                    str(data_dir), dense_index_dir, str(test_path),
+                    qwen_model_path=manifest.models.generator.id,
+                ),
+                production_cfg=build_remote_production_cfg(),
                 resolved_config=resolved,
                 gen_device="cuda:0",
                 retrieval_device="cuda:0",
@@ -375,9 +410,16 @@ if modal is not None:
                 code_root="/root/LegalQA",
                 allow_single_gpu=True,
             )
+            sub_zip = outputs.get("stages", {}).get("submission", {}).get("submission_zip")
+            sub_zip_b64 = None
+            if sub_zip and Path(sub_zip).is_file():
+                import base64
+                sub_zip_b64 = base64.b64encode(Path(sub_zip).read_bytes()).decode("ascii")
+
             result = {"status": "PASS", "stage": "full",
                       "test_fingerprint": fingerprint,
-                      "submission_zip": outputs.get("stages", {}).get("submission", {}).get("submission_zip"),
+                      "submission_zip": sub_zip,
+                      "submission_zip_b64": sub_zip_b64,
                       "stages": sorted(outputs.get("stages", {}).keys())}
 
         runs_volume.commit()
@@ -404,21 +446,19 @@ if modal is not None:
             manifest_path = cands[-1]
             print(f"using latest local candidate: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        stage_parents = {"micro_probe": ("colab_t4", "kaggle_t4x2"), "full": ("a100_micro_probe",)}.get(stage, ())
+        required_parent = {"micro_probe": "colab_t4", "full": "a100_micro_probe"}.get(stage)
         parent_path = Path(parent_report) if parent_report else None
-        if parent_path is None and stage_parents:
+        if parent_path is None and required_parent:
             gates_dir = REPO_ROOT / "artifacts" / "gates" / manifest["candidate_id"]
             if gates_dir.is_dir():
-                for p_stage in stage_parents:
-                    auto = sorted(gates_dir.glob(f"{p_stage}_report.json"),
-                                  key=lambda p: p.stat().st_mtime)
-                    if auto:
-                        parent_path = auto[-1]
-                        print(f"using parent report ({p_stage}): {parent_path}")
-                        break
+                auto = sorted(gates_dir.glob(f"{required_parent}_report.json"),
+                              key=lambda p: p.stat().st_mtime)
+                if auto:
+                    parent_path = auto[-1]
+                    print(f"using parent report ({required_parent}): {parent_path}")
         if parent_path is None or not parent_path.is_file():
             raise SystemExit(
-                f"Modal {stage} requires a PASS parent report from {stage_parents} "
+                f"Modal {stage} requires a PASS parent report for {required_parent} "
                 f"(--parent-report <report.json>); no bypass."
             )
         parent = json.loads(parent_path.read_text(encoding="utf-8"))
@@ -429,7 +469,27 @@ if modal is not None:
         request = build_modal_request(stage, manifest, test_path, parent)
         print(f"=== Dispatching to Modal A100: stage={stage} candidate={manifest['candidate_id']} ===")
         result = run_modal_a100_remote.remote(request)
-        print(json.dumps(result, indent=2))
+        print(json.dumps({k: v for k, v in result.items() if k != "submission_zip_b64"}, indent=2))
+
+        # Auto-register micro_probe report locally
+        if stage == "micro_probe" and result.get("report"):
+            out_gate = REPO_ROOT / "artifacts" / "gates" / manifest["candidate_id"] / "a100_micro_probe_report.json"
+            out_gate.parent.mkdir(parents=True, exist_ok=True)
+            out_gate.write_text(json.dumps(result["report"], indent=2), encoding="utf-8")
+            print(f"\n[+] Parent gate report automatically saved locally to: {out_gate}")
+
+        # Auto-download full submission locally
+        if stage == "full" and result.get("submission_zip_b64"):
+            import base64
+            zip_bytes = base64.b64decode(result["submission_zip_b64"])
+            sub_dir = REPO_ROOT / "artifacts" / "submissions" / manifest["candidate_id"]
+            sub_dir.mkdir(parents=True, exist_ok=True)
+            local_sub = sub_dir / "submission.json.zip"
+            local_sub.write_bytes(zip_bytes)
+            root_sub = REPO_ROOT / "submission.json.zip"
+            root_sub.write_bytes(zip_bytes)
+            print(f"\n[+] Submission ZIP automatically downloaded to: {local_sub}")
+            print(f"[+] Root copy ready for submission at: {root_sub}")
 
 
 if __name__ == "__main__" and modal is None:

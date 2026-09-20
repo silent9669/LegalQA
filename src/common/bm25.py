@@ -213,6 +213,7 @@ class BM25Retriever:
         retriever.corpus_size = len(corpus)
 
         manifest_path = os.path.join(index_dir, "bm25_manifest.json")
+        saved_doc_ids: list = []
         if os.path.exists(manifest_path):
             try:
                 with open(manifest_path, "r", encoding="utf-8") as f:
@@ -220,8 +221,21 @@ class BM25Retriever:
                     retriever.k1 = manifest.get("k1", 1.5)
                     retriever.b = manifest.get("b", 0.75)
                     retriever.avg_doc_len = manifest.get("avg_doc_len", 0.0)
+                    saved_doc_ids = manifest.get("doc_ids", []) or []
             except Exception:
                 pass
+
+        if saved_doc_ids and retriever.doc_ids:
+            if len(saved_doc_ids) != len(retriever.doc_ids) or any(
+                a != b for a, b in zip(saved_doc_ids, retriever.doc_ids)
+            ):
+                message = (
+                    "FINAL_PIPELINE_ERROR: BM25 manifest doc_ids do not match corpus order. "
+                    "The index was built from a different corpus snapshot — rebuild it, never use it."
+                )
+                if fail_on_missing_index:
+                    raise ValueError(message)
+                print(f"Warning: {message}", file=sys.stderr)
 
         bm25s_dir = os.path.join(index_dir, "bm25s_index")
         params_file = os.path.join(bm25s_dir, "params.index.json")
