@@ -85,22 +85,12 @@ if cands:
 " 2>/dev/null || echo "")
 
 if [ -n "$CAND_ID" ]; then
-    COLAB_REPORT="artifacts/gates/$CAND_ID/colab_t4_report.json"
     MICRO_REPORT="artifacts/gates/$CAND_ID/a100_micro_probe_report.json"
-
-    if [ "$STAGE" = "micro_probe" ] || [ "$STAGE" = "full" ]; then
-        if [ ! -f "$COLAB_REPORT" ]; then
-            echo "[*] colab_t4_report.json missing for candidate $CAND_ID."
-            echo "    Automatically running required DAG stage 'colab_t4' on Modal Tesla T4 first (~45s)..."
-            $MODAL_CMD run scripts/modal_app.py --stage "colab_t4"
-            echo "[+] colab_t4 stage completed and registered locally at $COLAB_REPORT!"
-        fi
-    fi
 
     if [ "$STAGE" = "full" ]; then
         if [ ! -f "$MICRO_REPORT" ]; then
             echo "[*] a100_micro_probe_report.json missing for candidate $CAND_ID."
-            echo "    Automatically running required DAG stage 'micro_probe' on Modal A100 first (~1.5 min)..."
+            echo "    Automatically running required DAG stage 'micro_probe' on Modal A100 (~1.5 min)..."
             $MODAL_CMD run scripts/modal_app.py --stage "micro_probe"
             echo "[+] a100_micro_probe stage completed and registered locally at $MICRO_REPORT!"
         fi

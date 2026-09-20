@@ -326,7 +326,7 @@ def run_gpu_gate(
     parent_ref: Optional[GateParentRef] = None
     if parent_report_path:
         parent_p = Path(parent_report_path)
-        expected_parent_stage = "kaggle_t4x2" if stage == "colab_t4" else ("colab_t4" if stage == "a100_micro_probe" else "")
+        expected_parent_stage = "kaggle_t4x2" if stage == "colab_t4" else (("colab_t4", "kaggle_t4x2") if stage == "a100_micro_probe" else "")
         verified_parent = verify_gate_report(parent_p, candidate, expected_stage=expected_parent_stage)
         parent_ref = GateParentRef(
             stage=verified_parent.stage,

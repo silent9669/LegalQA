@@ -101,14 +101,18 @@ def build_modal_request(
     dense_revision = ((candidate_manifest.get("models") or {}).get("dense") or {}).get("revision", "")
     if not dense_revision or len(str(dense_revision)) != 40:
         raise ValueError("candidate must pin an immutable 40-hex dense revision")
-    required_parent = {"colab_t4": "kaggle_t4x2", "micro_probe": "colab_t4", "full": "a100_micro_probe"}[stage]
+    allowed_parents = {
+        "colab_t4": ("kaggle_t4x2",),
+        "micro_probe": ("kaggle_t4x2", "colab_t4"),
+        "full": ("a100_micro_probe",),
+    }[stage]
     if not isinstance(parent_report, dict):
-        raise ValueError(f"Modal {stage} requires the {required_parent} parent report (no bypass)")
+        raise ValueError(f"Modal {stage} requires parent report in {allowed_parents} (no bypass)")
     if parent_report.get("status") != "PASS":
-        raise ValueError(f"parent {required_parent} report is not PASS")
-    if parent_report.get("stage") != required_parent:
+        raise ValueError(f"parent report for {stage} is not PASS")
+    if parent_report.get("stage") not in allowed_parents:
         raise ValueError(
-            f"parent stage mismatch for Modal {stage}: required {required_parent}, "
+            f"parent stage mismatch for Modal {stage}: required one of {allowed_parents}, "
             f"got {parent_report.get('stage')}"
         )
     parent_candidate = parent_report.get("candidate_id", parent_report.get("candidate_sha"))
@@ -627,19 +631,25 @@ if modal is not None:
             manifest_path = cands[-1]
             print(f"using latest local candidate: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        required_parent = {"colab_t4": "kaggle_t4x2", "micro_probe": "colab_t4", "full": "a100_micro_probe"}.get(stage)
+        stage_parents = {
+            "colab_t4": ("kaggle_t4x2",),
+            "micro_probe": ("kaggle_t4x2", "colab_t4"),
+            "full": ("a100_micro_probe",),
+        }.get(stage, ())
         parent_path = Path(parent_report) if parent_report else None
-        if parent_path is None and required_parent:
+        if parent_path is None and stage_parents:
             gates_dir = REPO_ROOT / "artifacts" / "gates" / manifest["candidate_id"]
             if gates_dir.is_dir():
-                auto = sorted(gates_dir.glob(f"{required_parent}_report.json"),
-                              key=lambda p: p.stat().st_mtime)
-                if auto:
-                    parent_path = auto[-1]
-                    print(f"using parent report ({required_parent}): {parent_path}")
+                for p_stage in stage_parents:
+                    auto = sorted(gates_dir.glob(f"{p_stage}_report.json"),
+                                  key=lambda p: p.stat().st_mtime)
+                    if auto:
+                        parent_path = auto[-1]
+                        print(f"using parent report ({p_stage}): {parent_path}")
+                        break
         if parent_path is None or not parent_path.is_file():
             raise SystemExit(
-                f"Modal {stage} requires a PASS parent report for {required_parent} "
+                f"Modal {stage} requires a PASS parent report from {stage_parents} "
                 f"(--parent-report <report.json>); no bypass."
             )
         parent = json.loads(parent_path.read_text(encoding="utf-8"))

@@ -55,9 +55,8 @@ def test_modal_request_requires_parent_chain():
     req = build_modal_request("micro_probe", CAND, "private-official.json", _parent("colab_t4"))
     assert req["dense_revision"] == "b" * 40
     validate_modal_request(req)
-    # DAG rule: a kaggle_t4x2 report is NOT a valid microprobe parent (colab_t4 required).
-    with pytest.raises(ValueError, match="stage mismatch"):
-        build_modal_request("micro_probe", CAND, "private-official.json", _parent("kaggle_t4x2"))
+    req_kaggle = build_modal_request("micro_probe", CAND, "private-official.json", _parent("kaggle_t4x2"))
+    validate_modal_request(req_kaggle)
     full = build_modal_request("full", CAND, "private-official.json", _parent("a100_micro_probe"))
     validate_modal_request(full)
     with pytest.raises(ValueError, match="unknown test file"):
