@@ -277,14 +277,19 @@ class QwenGenerator:
         results: List[str] = []
 
         batch_size = max(1, int(batch_size))
+        total_prompts = len(prompts)
         try:
             index = 0
-            while index < len(prompts):
+            while index < total_prompts:
                 current = prompts[index:index + batch_size]
                 try:
                     for text in self._generate_texts(current, max_new_tokens):
                         results.append(text)
                     index += len(current)
+                    if index % (batch_size * 5) == 0 or index >= total_prompts:
+                        pct = (index / max(1, total_prompts)) * 100
+                        print(f"  [Inference] Generated {index}/{total_prompts} queries ({pct:.1f}%) | Batch size: {batch_size}")
+                        sys.stdout.flush()
                 except Exception as batch_exc:
                     if batch_size <= 1 or not _is_cuda_oom(batch_exc):
                         raise
