@@ -59,6 +59,8 @@ artifacts/archive/**
 *.parquet
 *.npy
 *.npz
+*.zip
+submission*.json
 logs/
 kaggle_dataset/*
 !kaggle_dataset/dataset-metadata.json
