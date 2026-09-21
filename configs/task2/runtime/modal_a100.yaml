@@ -19,6 +19,10 @@ inference:
   generation_batch_size: 16
   reranker_batch_size: 128
   retrieval_batch_size: 32
+  generator_load_mode: bfloat16
+  merge_adapter: true
+  max_new_tokens: 1536
+  best_fixed_candidate: dual_assembled
 outputs:
   report_path: /root/legalqa_run/modal_a100_report.json
   log_path: /root/legalqa_run/modal_a100.log

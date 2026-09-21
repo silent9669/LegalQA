@@ -88,6 +88,8 @@ class QwenGenerator:
         device: Optional[str] = None,
         final_mode: bool = False,
         require_adapter: bool = False,
+        load_mode: str = "nf4",
+        merge_adapter: bool = False,
     ):
         self.model_path = model_path
         self.adapter_path = adapter_path
@@ -95,6 +97,8 @@ class QwenGenerator:
         self.device = device
         self.final_mode = final_mode
         self.require_adapter = require_adapter
+        self.load_mode = load_mode
+        self.merge_adapter = merge_adapter
         self.model = None
         self.tokenizer = None
 
@@ -108,8 +112,13 @@ class QwenGenerator:
         fail_on_fallback: bool = False,
         final_mode: bool = False,
         require_adapter: bool = False,
+        load_mode: str = "nf4",
+        merge_adapter: bool = False,
     ) -> QwenGenerator:
         """Load generator model, enforcing explicit device mapping and loud failure in competition mode."""
+        if load_mode not in ("nf4", "bfloat16"):
+            raise ValueError(f"unknown generator load mode: {load_mode!r}")
+
         gen = cls(
             model_path=model_path,
             adapter_path=adapter_path,
@@ -117,6 +126,8 @@ class QwenGenerator:
             device=device,
             final_mode=final_mode,
             require_adapter=require_adapter,
+            load_mode=load_mode,
+            merge_adapter=merge_adapter,
         )
 
         # P0-9: Strict adapter requirements validation before loading
@@ -172,7 +183,7 @@ class QwenGenerator:
                     load_kwargs["device_map"] = {"": dev}
                     load_kwargs["dtype"] = compute_dtype
                     load_kwargs["torch_dtype"] = compute_dtype
-                    if BitsAndBytesConfig is not None:
+                    if load_mode == "nf4" and BitsAndBytesConfig is not None:
                         load_kwargs["quantization_config"] = BitsAndBytesConfig(
                             load_in_4bit=True,
                             bnb_4bit_quant_type="nf4",
@@ -191,6 +202,9 @@ class QwenGenerator:
                 if adapter_path and os.path.exists(adapter_path) and PeftModel is not None:
                     print(f"Loading PEFT adapter from {adapter_path}...")
                     model = PeftModel.from_pretrained(model, adapter_path)
+                    if merge_adapter and is_peft_model(model) and load_mode == "bfloat16":
+                        print("Merging adapter into base model (bfloat16)...")
+                        model = model.merge_and_unload()
 
                 if require_adapter and not is_peft_model(model):
                     raise RuntimeError(f"require_adapter=True but loaded model is not a PEFT model: {type(model)}")
@@ -274,17 +288,21 @@ class QwenGenerator:
             return [self.generate(q, ev, max_new_tokens=max_new_tokens) for q, ev in items]
 
         prompts = [self.format_instance_prompt(q, ev) for q, ev in items]
-        results: List[str] = []
+        total_prompts = len(prompts)
+
+        # Length-sorting: group descending by length to minimize padding waste across batches
+        order = sorted(range(total_prompts), key=lambda i: -len(prompts[i]))
+        sorted_prompts = [prompts[i] for i in order]
+        sorted_results: List[str] = []
 
         batch_size = max(1, int(batch_size))
-        total_prompts = len(prompts)
         try:
             index = 0
             while index < total_prompts:
-                current = prompts[index:index + batch_size]
+                current = sorted_prompts[index:index + batch_size]
                 try:
                     for text in self._generate_texts(current, max_new_tokens):
-                        results.append(text)
+                        sorted_results.append(text)
                     index += len(current)
                     if index % (batch_size * 5) == 0 or index >= total_prompts:
                         pct = (index / max(1, total_prompts)) * 100
@@ -296,6 +314,11 @@ class QwenGenerator:
                     batch_size //= 2
                     _free_cuda_cache()
                     print(f"generation OOM; retrying remaining at batch {batch_size}", file=sys.stderr)
+
+            # Invert permutation to guarantee exact original input order
+            results = [None] * total_prompts
+            for slot, text in zip(order, sorted_results):
+                results[slot] = text
             return results
         except Exception as e:
             if self.final_mode:

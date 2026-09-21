@@ -211,6 +211,7 @@ def build_grounded_training_examples(
     return_diagnostics: bool = False,
     return_sft_objects: bool = False,
     seed: int = 42,
+    require_evidence: bool = False,
 ) -> Union[
     List[Dict[str, Any]],
     Tuple[List[Dict[str, Any]], Dict[str, Any]],
@@ -226,6 +227,13 @@ def build_grounded_training_examples(
 
     if fold_to_exclude is not None and "fold_id" in df_qa.columns:
         df_qa = df_qa[df_qa["fold_id"] != fold_to_exclude]
+
+    id_col = "qa_id" if "qa_id" in df_qa.columns else ("id" if "id" in df_qa.columns else None)
+    initial_qa_count = len(df_qa)
+    duplicate_qa_dropped = 0
+    if id_col is not None:
+        df_qa = df_qa.drop_duplicates(subset=[id_col]).reset_index(drop=True)
+        duplicate_qa_dropped = initial_qa_count - len(df_qa)
 
     # 1. Deterministic sampling FIRST for bounded smoke subsets
     if max_train_examples is not None and len(df_qa) > max_train_examples:
@@ -307,6 +315,7 @@ def build_grounded_training_examples(
     token_lengths = []
     ev_truncated_count = 0
     dropped_count = 0
+    dropped_no_evidence_count = 0
 
     for _, row in df_qa.iterrows():
         qid = str(row.get("qa_id") or row.get("id", "")).strip()
@@ -318,6 +327,10 @@ def build_grounded_training_examples(
 
         pos_pieces = qa_to_pos_evidence.get(qid, [])
         raw_evidence = "\n\n".join(pos_pieces) if pos_pieces else ""
+
+        if require_evidence and not raw_evidence.strip():
+            dropped_no_evidence_count += 1
+            continue
 
         full_text, diag = build_sft_example_token_aware(
             question=q,
@@ -350,6 +363,8 @@ def build_grounded_training_examples(
     diag_summary = {
         "kept_count": len(examples),
         "dropped_count": dropped_count,
+        "dropped_no_evidence": dropped_no_evidence_count,
+        "duplicate_qa_dropped": duplicate_qa_dropped,
         "drop_rate": dropped_count / max(1, len(examples) + dropped_count),
         "evidence_truncated_count": ev_truncated_count,
         "evidence_truncated_rate": ev_truncated_count / max(1, len(examples)),

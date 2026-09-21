@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,6 +45,21 @@ def retrieval_options_from_config(cfg: Any) -> Tuple[Dict[str, Any], Dict[str, f
     }
     return options, weights
 
+
+DEGENERATE_HEADERS = {
+    "căn cứ quy định của pháp luật:",
+    "căn cứ quy định của pháp luật hiện hành:",
+    "căn cứ quy định của pháp luật.",
+    "căn cứ quy định của pháp luật",
+    "căn cứ theo quy định của pháp luật.",
+    "căn cứ theo quy định của pháp luật:",
+}
+
+
+def is_degenerate_answer(text: str) -> bool:
+    """Check if an answer string is empty, whitespace, or a bare statutory header."""
+    s = str(text or "").strip().lower()
+    return not s or s in DEGENERATE_HEADERS or len(s) < 10
 
 class LegalQAPipeline:
     """End-to-end LegalQA inference pipeline orchestrating Memory, Hybrid Retrieval, Reranking, Evidence Packing, Qwen, and Selection."""
@@ -469,7 +486,7 @@ class LegalQAPipeline:
             retrieval_meta=retrieval_meta,
             features=fuzzy_hit,
         )
-        if not selected or not str(selected).strip():
+        if is_degenerate_answer(selected):
             selected = (
                 primary_evidence.strip()[:1500]
                 or (top_doc and f"Căn cứ văn bản {top_doc}.")
@@ -492,6 +509,7 @@ class LegalQAPipeline:
         reranker_batch_size: int = 32,
         generation_batch_size: int = 4,
         return_provenance: bool = False,
+        raw_cache_path: Optional[str] = None,
     ) -> Any:
         """High-throughput batch prediction orchestrating BM25, batched dense GPU search, batched reranking, and batched generation.
 
@@ -540,17 +558,28 @@ class LegalQAPipeline:
         dense_scores: List[float] = []
         fuzzy_hits: List[Optional[Dict[str, Any]]] = []
 
+        # Batched Legal Reference and BM25 queries (eliminates serial loop overhead across 1,918 questions)
+        all_lex_res: List[List[Dict[str, Any]]] = []
+        if options.get("use_legal_reference") and self.legal_index is not None and self.legal_rows is not None:
+            all_lex_res = search_legal_references(dense_queries, self.legal_index, self.legal_rows, k=pool)
+        else:
+            all_lex_res = [[] for _ in unseen_queries]
+
+        all_bm25_res: List[List[Dict[str, Any]]] = []
+        if self.bm25 and hasattr(self.bm25, "search_batch"):
+            all_bm25_res = self.bm25.search_batch(dense_queries, top_k=pool)
+        elif self.bm25:
+            all_bm25_res = [self.bm25.search(q, top_k=pool) for q in dense_queries]
+        else:
+            all_bm25_res = [[] for _ in unseen_queries]
+
         for idx, (qa_id, question) in enumerate(unseen_items):
             f_hit = self.memory.lookup_fuzzy(question, threshold=0.90)
             fuzzy_hits.append(f_hit)
 
-            ret_q = dense_queries[idx]
-            bm25_res = self.bm25.search(ret_q, top_k=pool) if self.bm25 else []
+            bm25_res = all_bm25_res[idx] if idx < len(all_bm25_res) else []
             dense_res = dense_results[idx] if idx < len(dense_results) else []
-
-            lex_res: List[Dict[str, Any]] = []
-            if options.get("use_legal_reference") and self.legal_index is not None and self.legal_rows is not None:
-                lex_res = search_legal_references([ret_q], self.legal_index, self.legal_rows, k=pool)[0]
+            lex_res = all_lex_res[idx] if idx < len(all_lex_res) else []
 
             bm25_scores.append(float(bm25_res[0].get("score", 0.0)) if bm25_res else 0.0)
             dense_scores.append(float(dense_res[0].get("score", 0.0)) if dense_res else 0.0)
@@ -639,12 +668,59 @@ class LegalQAPipeline:
                 "retrieval_meta": retrieval_meta,
             })
 
-        # 6. Batched Qwen Generation (Only if generator loaded and needed!)
+        # 6. Batched Qwen Generation (with prompt-keyed persistent caching)
+        gen_answers: List[str] = ["" for _ in evidence_records]
         if self.generator is not None and self.policy_needs_generator:
-            pairs = [(rec["question"], rec["primary_evidence"]) for rec in evidence_records]
-            gen_answers = self.generator.generate_batch(pairs, max_new_tokens=max_new_tokens, batch_size=generation_batch_size)
-        else:
-            gen_answers = ["" for _ in evidence_records]
+            cached_map: Dict[str, str] = {}
+            if raw_cache_path and os.path.exists(raw_cache_path):
+                try:
+                    with open(raw_cache_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip():
+                                rec_c = json.loads(line)
+                                if "prompt_hash" in rec_c and "raw" in rec_c:
+                                    cached_map[rec_c["prompt_hash"]] = rec_c["raw"]
+                except Exception as e:
+                    logger.warning("Failed to load existing raw cache: %s", e)
+
+            prompts_and_hashes = []
+            todo_indices = []
+            todo_pairs = []
+
+            for i, rec in enumerate(evidence_records):
+                p_text = self.generator.format_instance_prompt(rec["question"], rec["primary_evidence"])
+                h_key = hashlib.sha256(
+                    (p_text + str(max_new_tokens) + str(getattr(self.generator, "adapter_path", ""))).encode("utf-8")
+                ).hexdigest()
+                prompts_and_hashes.append((p_text, h_key))
+
+                if h_key in cached_map:
+                    gen_answers[i] = cached_map[h_key]
+                else:
+                    todo_indices.append(i)
+                    todo_pairs.append((rec["question"], rec["primary_evidence"]))
+
+            if todo_pairs:
+                new_answers = self.generator.generate_batch(
+                    todo_pairs,
+                    max_new_tokens=max_new_tokens,
+                    batch_size=generation_batch_size,
+                )
+                for slot, ans in zip(todo_indices, new_answers):
+                    gen_answers[slot] = ans
+                    p_text, h_key = prompts_and_hashes[slot]
+                    cached_map[h_key] = ans
+                    if raw_cache_path:
+                        try:
+                            os.makedirs(os.path.dirname(os.path.abspath(raw_cache_path)), exist_ok=True)
+                            with open(raw_cache_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps({
+                                    "qa_id": evidence_records[slot]["qa_id"],
+                                    "prompt_hash": h_key,
+                                    "raw": ans,
+                                }, ensure_ascii=False) + "\n")
+                        except Exception:
+                            pass
 
         # 7. Candidate Ensembles & Selection
         for rec, gen_ans in zip(evidence_records, gen_answers):
@@ -666,7 +742,7 @@ class LegalQAPipeline:
                 retrieval_meta=rec["retrieval_meta"],
                 features=rec["fuzzy_hit"],
             )
-            if not selected or not str(selected).strip():
+            if is_degenerate_answer(selected):
                 selected = (
                     rec.get("primary_evidence", "").strip()[:1500]
                     or (rec.get("top_doc", "") and f"Căn cứ văn bản {rec['top_doc']}.")

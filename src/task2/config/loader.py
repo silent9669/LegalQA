@@ -202,10 +202,17 @@ def _parse_runtime_config(raw: Dict[str, Any]) -> RuntimeConfig:
     if inference_raw is None:
         inference = InferenceRuntimeConfig()
     elif isinstance(inference_raw, dict):
+        gen_mode = str(inference_raw.get("generator_load_mode", "nf4"))
+        if gen_mode not in ("nf4", "bfloat16"):
+            raise ValueError(f"unknown generator load mode: {gen_mode!r}")
         inference = InferenceRuntimeConfig(
             generation_batch_size=int(inference_raw.get("generation_batch_size", 4)),
             reranker_batch_size=int(inference_raw.get("reranker_batch_size", 32)),
             retrieval_batch_size=int(inference_raw.get("retrieval_batch_size", 32)),
+            generator_load_mode=gen_mode,
+            merge_adapter=bool(inference_raw.get("merge_adapter", False)),
+            max_new_tokens=int(inference_raw.get("max_new_tokens", 1536)),
+            best_fixed_candidate=str(inference_raw.get("best_fixed_candidate", "dual_assembled")),
         )
     else:
         raise ValueError("Runtime 'inference' section must be a mapping")

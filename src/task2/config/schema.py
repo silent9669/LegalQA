@@ -112,11 +112,15 @@ class ProductionRuntimeConfig:
 
 @dataclass(frozen=True)
 class InferenceRuntimeConfig:
-    """Runtime-only batching (no score effect under greedy decoding)."""
+    """Runtime-only batching and inference settings."""
 
     generation_batch_size: int = 4
     reranker_batch_size: int = 32
     retrieval_batch_size: int = 32
+    generator_load_mode: str = "nf4"
+    merge_adapter: bool = False
+    max_new_tokens: int = 1536
+    best_fixed_candidate: str = "dual_assembled"
 
 
 @dataclass(frozen=True)

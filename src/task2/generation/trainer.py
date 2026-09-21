@@ -128,6 +128,14 @@ def build_v16_sft_config(config: GeneratorTrainConfig, **kwargs: Any) -> Any:
     if torch is not None and not torch.cuda.is_available() and "use_cpu" in sig.parameters:
         config_kwargs.setdefault("use_cpu", True)
 
+    # Length grouping to avoid padding waste at max_seq_len
+    if "train_sampling_strategy" in sig.parameters and "train_sampling_strategy" not in config_kwargs:
+        config_kwargs["train_sampling_strategy"] = "group_by_length"
+    elif "group_by_length" in sig.parameters and "group_by_length" not in config_kwargs:
+        config_kwargs["group_by_length"] = True
+    if "packing" in sig.parameters and "packing" not in config_kwargs:
+        config_kwargs["packing"] = False
+
     # Set sequence length
     if "max_length" in sig.parameters:
         config_kwargs["max_length"] = config.max_seq_len
@@ -158,6 +166,7 @@ def train_generator_qlora(
     seed: int = 42,
     resume_from_checkpoint: Optional[str] = None,
     execution_profile: Optional[str] = None,
+    require_evidence: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Train Qwen2.5-3B-Instruct with 4-bit NF4 QLoRA, selective Liger fused-linear CE, and strict validation (V16)."""
     assert_no_secrets_in_workspace(Path.cwd())
@@ -238,7 +247,8 @@ def train_generator_qlora(
 
     # 5. Build SFT dataset
     print(f"\nBuilding SFT training examples from {qa_path} (excluding val_fold={val_fold})...")
-    examples = build_grounded_training_examples(
+    require_ev = (val_fold is None and probe_mode is None) if require_evidence is None else bool(require_evidence)
+    raw_res = build_grounded_training_examples(
         qa_path=qa_path,
         labels_path=labels_path,
         chunks_path=chunks_path,
@@ -247,7 +257,17 @@ def train_generator_qlora(
         max_seq_len=config.max_seq_len,
         max_train_examples=max_train_examples,
         seed=seed,
+        require_evidence=require_ev,
+        return_diagnostics=True,
     )
+    if isinstance(raw_res, tuple) and len(raw_res) == 2:
+        examples, diag = raw_res
+    else:
+        examples, diag = raw_res, {}
+    if diag.get("dropped_no_evidence"):
+        print(f"[+] Grounded SFT: dropped {diag['dropped_no_evidence']} evidence-free examples (kept {len(examples)}).")
+    if diag.get("duplicate_qa_dropped"):
+        print(f"[+] Grounded SFT: deduplicated {diag['duplicate_qa_dropped']} repeated QA IDs.")
 
     if probe_mode == "worst_case":
         print(f"Applying worst-case probe selector (top total & completion lengths)...")
@@ -353,6 +373,14 @@ def train_generator_qlora(
         "fp16": config.compute_dtype == "float16" and device.startswith("cuda"),
         "bf16": config.compute_dtype == "bfloat16" and device.startswith("cuda"),
     }
+    if SFTConfig is not None:
+        _sft_sig = inspect.signature(SFTConfig)
+        if "train_sampling_strategy" in _sft_sig.parameters:
+            sft_kwargs["train_sampling_strategy"] = "group_by_length"
+        elif "group_by_length" in _sft_sig.parameters:
+            sft_kwargs["group_by_length"] = True
+        if "packing" in _sft_sig.parameters:
+            sft_kwargs["packing"] = False
     if max_steps is not None:
         sft_kwargs["max_steps"] = max_steps
 
@@ -378,6 +406,28 @@ def train_generator_qlora(
         peft_config=peft_config,
         callbacks=[memory_callback],
     )
+
+    # Verify completion-only loss masking
+    if config.completion_only_loss and hasattr(trainer, "data_collator") and len(train_dataset) > 0:
+        try:
+            probe_batch = trainer.data_collator([train_dataset[0]])
+            if "labels" in probe_batch:
+                p_labels = probe_batch["labels"][0]
+                if hasattr(p_labels, "numpy"):
+                    p_labels = p_labels.cpu().numpy()
+                elif hasattr(p_labels, "tolist"):
+                    p_labels = p_labels.tolist()
+                masked = sum(1 for tok in p_labels if tok == -100)
+                if masked == 0 and len(p_labels) > 0:
+                    raise RuntimeError(
+                        "completion_only_loss=True but collator masked 0 prompt tokens to -100; "
+                        "loss would leak onto prompt/evidence text."
+                    )
+                print(f"[+] completion-only loss verified: {masked} prompt tokens masked to -100.")
+        except Exception as e:
+            if "masked 0 prompt tokens" in str(e):
+                raise
+            logger.warning("Completion-only loss collator probe skipped: %s", e)
 
     # Ensure lora_dropout layers do not allocate intermediate dropout tensors on wide intermediate projections
     if hasattr(trainer, "model"):

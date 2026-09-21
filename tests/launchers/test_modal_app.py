@@ -149,6 +149,7 @@ def test_remote_paths_carry_deadline_and_model():
     assert paths["dek21_dir"] == "/data/idx"
     assert paths["qwen_model_path"] == "Qwen/Qwen2.5-3B-Instruct"
     assert int(paths["deadline_budget_seconds"]) == MODAL_DEADLINE_BUDGET_SECONDS == 17100
+    assert "predicted_inference_seconds" in paths
 
 
 def test_remote_production_cfg_restores_generation_ceiling():
@@ -156,7 +157,7 @@ def test_remote_production_cfg_restores_generation_ceiling():
     from src.task2.production_config import get_default_production_selection
 
     cfg = build_remote_production_cfg()
-    assert cfg.max_new_tokens == MODAL_MAX_NEW_TOKENS == 512
+    assert cfg.max_new_tokens == MODAL_MAX_NEW_TOKENS == 1536
     assert cfg.best_fixed_candidate == "dual_assembled"
     assert cfg.max_new_tokens != get_default_production_selection().max_new_tokens
 
@@ -229,3 +230,12 @@ def test_modal_a100_micro_probe_profile_allows_batch4(tmp_path):
         assert res["execution_profile"] == "modal_a100"
         assert res["strict_reload"] == "pass"
 
+
+
+def test_modal_request_kaggle_t4x2_stage_contracts():
+    req = build_modal_request("kaggle_t4x2", CAND, "private-official.json", None)
+    assert req["stage"] == "kaggle_t4x2"
+    validate_modal_request(req)
+
+    with pytest.raises(ValueError, match="takes no parent report"):
+        build_modal_request("kaggle_t4x2", CAND, "private-official.json", _parent("kaggle_t4x2"))

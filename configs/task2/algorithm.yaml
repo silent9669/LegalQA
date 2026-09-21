@@ -31,7 +31,7 @@ generator:
   lr_scheduler_type: cosine
   warmup_ratio: 0.05
   effective_batch_size: 8
-  num_train_epochs: 1
+  num_train_epochs: 2
   completion_only_loss: true
   use_liger_fused_ce: true
   gradient_checkpointing: true

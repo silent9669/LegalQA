@@ -76,6 +76,12 @@ class BM25Retriever:
             except Exception:
                 self.bm25s_index = None
 
+    def search_batch(self, queries: List[str], top_k: int = 60) -> List[List[Dict[str, Any]]]:
+        """Search multiple queries across indexed corpus, amortizing index lookups."""
+        if not queries:
+            return []
+        return [self.search(q, top_k=top_k) for q in queries]
+
     def search(self, query: str, top_k: int = 60) -> List[Dict[str, Any]]:
         """Search query across indexed corpus and return ranked results with isolated legal entity boosts."""
         if not self.corpus or self.corpus_size == 0 or not query.strip():

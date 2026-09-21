@@ -384,6 +384,15 @@ def run_pipeline(
 
             print(f"Protocol-8 screen complete! Handoff zip created: {handoff_zip}")
             results["stages"]["screen"] = {"handoff_zip": handoff_zip}
+        elif profile.name == "modal_a100" and profile.val_fold is None:
+            print(f"\n[Stage 6] modal_a100 trains on 100% of data (val_fold=None); skipping dev evaluation to prevent leaked metrics.")
+            eval_res = {
+                "selected_meteor": None,
+                "reason": "Production trains on 100% of data (val_fold=None); no honest held-out dev fold.",
+                "sample_size": None,
+                "held_out_fold": None,
+            }
+            results["stages"]["evaluation"] = eval_res
         else:
             # smoke_only evaluation
             from src.task2.evaluation import evaluate_checkpoint
@@ -489,6 +498,8 @@ def run_pipeline(
                 fail_on_fallback=True,
                 final_mode=True,
                 require_adapter=production_cfg.use_qlora,
+                load_mode=inference_cfg.generator_load_mode if inference_cfg else "nf4",
+                merge_adapter=inference_cfg.merge_adapter if inference_cfg else False,
             )
 
         selector = CandidateSelector(
@@ -541,6 +552,7 @@ def run_pipeline(
             public_test = json.load(f)
 
         items_to_predict = [{"id": str(qid), "question": str(item.get("question", "")).strip()} for qid, item in public_test.items()]
+        raw_cache_file = os.path.join(output_dir, "gen_raw_cache.jsonl")
         submission, provenance = pipeline.predict_batch(
             items=items_to_predict,
             max_new_tokens=production_cfg.max_new_tokens,
@@ -548,7 +560,17 @@ def run_pipeline(
             reranker_batch_size=reranker_batch_size,
             generation_batch_size=generation_batch_size,
             return_provenance=True,
+            raw_cache_path=raw_cache_file,
         )
+
+        ans_lengths = [len(str(v.get("answer", "")).split()) for v in submission.values()]
+        mean_len = float(np.mean(ans_lengths)) if ans_lengths else 0.0
+        med_len = float(np.median(ans_lengths)) if ans_lengths else 0.0
+        p90_len = float(np.percentile(ans_lengths, 90)) if ans_lengths else 0.0
+        empty_count = sum(1 for l in ans_lengths if l == 0)
+        print(f"[+] Submission answer words: mean={mean_len:.1f} | median={med_len:.1f} | p90={p90_len:.1f} | empty={empty_count}")
+        if is_final_profile and (empty_count > 0 or mean_len < 80):
+            raise RuntimeError(f"SUBMISSION INTEGRITY ERROR: empty answers ({empty_count}) or mean words ({mean_len:.1f}) < 80")
 
         # Verification: exact 1,000 IDs, nonempty answer objects, ZIP inner bytes.
         from src.task2.pipeline.contracts import verify_submission_ids
@@ -578,6 +600,12 @@ def run_pipeline(
             "submission_json": out_json,
             "submission_zip": out_zip,
             "num_queries": len(submission),
+            "answer_length": {
+                "mean_words": mean_len,
+                "median_words": med_len,
+                "p90_words": p90_len,
+                "empty_answers": empty_count,
+            },
             "loose_sha256": zip_report["loose_sha256"],
             "inner_sha256": zip_report["inner_sha256"],
             "zip_sha256": zip_report["zip_sha256"],

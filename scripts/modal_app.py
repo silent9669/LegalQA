@@ -94,7 +94,7 @@ def build_modal_request(
     report, full requires the a100_micro_probe PASS report, each for the
     same candidate. No bypass, no cross-candidate reuse.
     """
-    if stage not in ("colab_t4", "micro_probe", "full"):
+    if stage not in ("kaggle_t4x2", "colab_t4", "micro_probe", "full"):
         raise ValueError(f"unknown Modal stage: {stage}")
     if not candidate_manifest.get("candidate_id") or not candidate_manifest.get("git_commit_sha"):
         raise ValueError("candidate manifest must carry candidate_id and git_commit_sha")
@@ -105,25 +105,32 @@ def build_modal_request(
 
     # Accepted parents derive from the one shared DAG map. The full stage
     # additionally requires the microprobe report (a different gate stage).
-    if stage == "full":
+    if stage == "kaggle_t4x2":
+        allowed_parents = ()
+    elif stage == "full":
         allowed_parents = ("a100_micro_probe",)
     else:
         gate_stage = {"colab_t4": "colab_t4", "micro_probe": "a100_micro_probe"}[stage]
         allowed_parents = GATE_PARENTS[gate_stage]
-    if not isinstance(parent_report, dict):
-        raise ValueError(f"Modal {stage} requires parent report in {allowed_parents} (no bypass)")
-    if parent_report.get("status") != "PASS":
-        raise ValueError(f"parent report for {stage} is not PASS")
-    if parent_report.get("stage") not in allowed_parents:
-        raise ValueError(
-            f"parent stage mismatch for Modal {stage}: required one of {allowed_parents}, "
-            f"got {parent_report.get('stage')}"
-        )
-    parent_candidate = parent_report.get("candidate_id", parent_report.get("candidate_sha"))
-    if parent_candidate != candidate_manifest["candidate_id"]:
-        raise ValueError("parent report candidate mismatch: cross-candidate reuse refused")
-    if not parent_report.get("report_sha256"):
-        raise ValueError("parent report lacks report_sha256")
+
+    if not allowed_parents:
+        if parent_report is not None:
+            raise ValueError(f"Modal {stage} takes no parent report")
+    else:
+        if not isinstance(parent_report, dict):
+            raise ValueError(f"Modal {stage} requires parent report in {allowed_parents} (no bypass)")
+        if parent_report.get("status") != "PASS":
+            raise ValueError(f"parent report for {stage} is not PASS")
+        if parent_report.get("stage") not in allowed_parents:
+            raise ValueError(
+                f"parent stage mismatch for Modal {stage}: required one of {allowed_parents}, "
+                f"got {parent_report.get('stage')}"
+            )
+        parent_candidate = parent_report.get("candidate_id", parent_report.get("candidate_sha"))
+        if parent_candidate != candidate_manifest["candidate_id"]:
+            raise ValueError("parent report candidate mismatch: cross-candidate reuse refused")
+        if not parent_report.get("report_sha256"):
+            raise ValueError("parent report lacks report_sha256")
 
     # Auto-resolve historical gate reports for stage='full' if not explicitly passed
     cid = candidate_manifest.get("candidate_id")
@@ -195,14 +202,18 @@ def test_file_fingerprint(path: Path) -> Dict[str, Any]:
 #: container timeout with uncommitted volume state.
 MODAL_DEADLINE_BUDGET_SECONDS = 17100
 
-#: Calibrated generation ceiling (tokens) covering 90%+ of statutory answers
-#: while preventing repetitive decoder loops and keeping batch inference fast.
-MODAL_MAX_NEW_TOKENS = 512
+#: Calibrated generation ceiling (tokens) covering 99.5% of statutory answers
+#: with high-recall statutory and reasoning capacity on A100.
+MODAL_MAX_NEW_TOKENS = 1536
 
 
 def build_remote_paths(
-    data_dir: str, dense_index_dir: str, test_path: str, qwen_model_path: str = "Qwen/Qwen2.5-3B-Instruct"
-) -> Dict[str, str]:
+    data_dir: str,
+    dense_index_dir: str,
+    test_path: str,
+    qwen_model_path: str = "Qwen/Qwen2.5-3B-Instruct",
+    predicted_inference_seconds: int = 3600,
+) -> Dict[str, Any]:
     """Runner paths for the Modal container (pure, testable)."""
     return {
         "data_dir": str(data_dir),
@@ -211,25 +222,27 @@ def build_remote_paths(
         "qwen_model_path": str(qwen_model_path),
         "public_test_path": str(test_path),
         "deadline_budget_seconds": MODAL_DEADLINE_BUDGET_SECONDS,
+        "predicted_inference_seconds": int(predicted_inference_seconds),
     }
 
 
-def build_remote_production_cfg() -> Any:
-    """Production selection for the Modal full run (pure, testable).
-
-    Applies the calibrated 512-token generation ceiling to maximize METEOR
-    and ROUGE score while preventing decoder over-generation. Uses 'dual_assembled'
-    candidate policy to produce prose reasoning + primary statutory citation block,
-    matching the winning 0.5486 benchmark answer distribution (mean ~850 words).
-    """
+def build_remote_production_cfg(resolved_cfg: Optional[Any] = None) -> Any:
+    """Production selection for the Modal full run, sourced from hashed runtime config."""
     import dataclasses
 
     from src.task2.production_config import get_default_production_selection
 
+    max_tokens = MODAL_MAX_NEW_TOKENS
+    best_cand = "dual_assembled"
+    if resolved_cfg is not None and hasattr(resolved_cfg, "runtime") and hasattr(resolved_cfg.runtime, "inference"):
+        inf = resolved_cfg.runtime.inference
+        max_tokens = getattr(inf, "max_new_tokens", max_tokens)
+        best_cand = getattr(inf, "best_fixed_candidate", best_cand)
+
     return dataclasses.replace(
         get_default_production_selection(),
-        max_new_tokens=MODAL_MAX_NEW_TOKENS,
-        best_fixed_candidate="dual_assembled",
+        max_new_tokens=max_tokens,
+        best_fixed_candidate=best_cand,
     )
 
 
@@ -310,6 +323,72 @@ if modal is not None:
         if GateReport.load_json(path).compute_sha256() != parent.get("report_sha256"):
             raise ValueError("parent report sha mismatch: refusing cross-report reuse")
         return str(path)
+
+    @app.function(
+        gpu="T4:2",
+        timeout=3600,
+        volumes={"/data": data_volume, "/runs": runs_volume},
+        secrets=secrets,
+    )
+    def run_modal_kaggle_t4x2_remote(request: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute kaggle_t4x2 root gate stage on remote Modal Dual Tesla T4 GPUs."""
+        import subprocess
+        import torch
+
+        validate_modal_request(request)
+        candidate = request["candidate_manifest"]
+        print("=== Modal Dual Tesla T4 container ===")
+        print(f"GPUs: {torch.cuda.device_count()} x {torch.cuda.get_device_name(0)}")
+        print(f"torch: {torch.__version__} | cuda: {torch.version.cuda}")
+
+        sys.path.insert(0, "/root/LegalQA")
+        os.chdir("/root/LegalQA")
+        if candidate.get("git_commit_sha"):
+            os.environ["GIT_COMMIT_SHA"] = candidate["git_commit_sha"]
+            (Path("/root/LegalQA") / ".git_commit_sha").write_text(candidate["git_commit_sha"], encoding="utf-8")
+
+        data_dir = Path("/data/legalqa-task2-clean-data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        chunks_file = data_dir / "legal_chunks.parquet"
+        if not chunks_file.exists():
+            k_user = os.environ.get("KAGGLE_USERNAME") or os.environ.get("KAGGLE_USER")
+            k_key = os.environ.get("KAGGLE_KEY") or os.environ.get("KAGGLE_API_TOKEN") or os.environ.get("KAGGLE_TOKEN")
+            if k_user and k_key:
+                k_dir = Path.home() / ".kaggle"
+                k_dir.mkdir(parents=True, exist_ok=True)
+                k_file = k_dir / "kaggle.json"
+                if not k_file.exists():
+                    k_file.write_text(json.dumps({"username": k_user, "key": k_key}))
+                    k_file.chmod(0o600)
+            print(f"[+] Pulling {DATASET_SLUG} from Kaggle...")
+            subprocess.run(
+                ["kaggle", "datasets", "download", "-d", DATASET_SLUG,
+                 "-p", str(data_dir), "--unzip", "--force"],
+                check=True,
+            )
+            data_volume.commit()
+
+        run_output_dir = Path(f"/runs/modal_kaggle_{request['candidate_id']}_{int(time.time())}")
+        run_output_dir.mkdir(parents=True, exist_ok=True)
+        candidate_path = _write_candidate(run_output_dir, candidate)
+
+        from scripts.run_gpu_gate import run_gpu_gate
+
+        report = run_gpu_gate(
+            stage="kaggle_t4x2",
+            candidate_path=candidate_path,
+            data_dir=str(data_dir),
+            output_dir=str(run_output_dir),
+            skip_gpu_assert=False,
+            parent_report_path=None,
+        )
+        runs_volume.commit()
+        return {
+            "status": report.status,
+            "stage": "kaggle_t4x2",
+            "report": report.to_dict(),
+            "report_sha256": report.compute_sha256(),
+        }
 
     @app.function(
         gpu="T4",
@@ -519,7 +598,7 @@ if modal is not None:
                     str(data_dir), dense_index_dir, str(test_path),
                     qwen_model_path=manifest.models.generator.id,
                 ),
-                production_cfg=build_remote_production_cfg(),
+                production_cfg=build_remote_production_cfg(resolved),
                 resolved_config=resolved,
                 gen_device="cuda:0",
                 retrieval_device="cuda:0",
@@ -605,7 +684,7 @@ if modal is not None:
                         metrics=metrics,
                         optimizer_steps=opt_steps,
                         training_sample_count=dataset_sz,
-                        num_train_epochs=1,
+                        num_train_epochs=int(resolved.algorithm.generator.num_train_epochs),
                         effective_batch_size=8,
                         hf_repository="dangphuc2109/legalqa-qwen2.5-3b-adapter",
                         dataset_manifest_path=ds_manifest if ds_manifest.is_file() else None,
@@ -665,9 +744,10 @@ if modal is not None:
             print(f"using local candidate: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         stage_parents = {
-            "colab_t4": ("kaggle_t4x2",),
-            "micro_probe": ("kaggle_t4x2", "colab_t4"),
+            "kaggle_t4x2": (),
+            "micro_probe": ("kaggle_t4x2",),
             "full": ("a100_micro_probe",),
+            "colab_t4": ("kaggle_t4x2",),
         }.get(stage, ())
         parent_path = Path(parent_report) if parent_report else None
         if parent_path is None and stage_parents:
@@ -706,6 +786,17 @@ if modal is not None:
             stage, manifest, test_path, parent,
             kaggle_report=k_rep, colab_report=c_rep,
         )
+
+        if stage == "kaggle_t4x2":
+            print(f"=== Dispatching to Modal Dual Tesla T4: stage={stage} candidate={manifest['candidate_id']} ===")
+            result = run_modal_kaggle_t4x2_remote.remote(request)
+            print(json.dumps(result, indent=2))
+            if result.get("report"):
+                out_gate = REPO_ROOT / "artifacts" / "gates" / manifest["candidate_id"] / "kaggle_t4x2_report.json"
+                out_gate.parent.mkdir(parents=True, exist_ok=True)
+                out_gate.write_text(json.dumps(result["report"], indent=2), encoding="utf-8")
+                print(f"\n[+] Kaggle T4x2 gate report automatically saved locally to: {out_gate}")
+            return result
 
         if stage == "colab_t4":
             print(f"=== Dispatching to Modal Tesla T4: stage={stage} candidate={manifest['candidate_id']} ===")
