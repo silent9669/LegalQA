@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "candidate_id": "9c1a3df4ecfde7ac",
+  "task": "task2",
+  "git_repository": "https://github.com/silent9669/LegalQA.git",
+  "git_commit_sha": "d419a829ab22e6771f5d8f200b42585620e005d0",
+  "dataset": {
+    "slug": "phucdangg/legalqa-task2-clean-data",
+    "version": 1,
+    "manifest_sha256": "d9a0600dc9adfaabd36d77c2d1d9725395a4aaf0556f6c45262280555f0d1641"
+  },
+  "algorithm_sha256": "bb11dda92c0b88da9675335e490fd69bfd982c218d7947d0d05088a70801f475",
+  "runtime_profile_sha256": {
+    "kaggle_t4x2": "6b817a4cf9cfe28e78cf1462a98553e37261f1646c9197fcb64993c7eea8ed86",
+    "colab_t4": "b325ce8239146b650458f5d546f853e39af3a96f19c587567cc43547715316ff",
+    "colab_a100": "837ea85bf9d55abc29adb7e5c0fed4b9d2c6c408362ebdf8d8807463e9bb9b4e",
+    "modal_a100": "834b8e32a19e8b15e7ecf08a9881f334239fed2ee431c84b87aa269bebfa5798"
+  },
+  "config_bundle_sha256": "1a4f6b829cd1542b0614a1139e1a901154d0e6654ee22e2e9e100a8d9d543967",
+  "models": {
+    "generator": {
+      "id": "Qwen/Qwen2.5-3B-Instruct",
+      "revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1"
+    },
+    "reranker": {
+      "id": "BAAI/bge-reranker-v2-m3",
+      "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+    },
+    "dense": {
+      "id": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+      "revision": "99a2963b2f51fa7a570a3e7f550d7993b9de90a8"
+    }
+  },
+  "dependency_lock_sha256": "e86aa315733fac5405245c322a5ab7243e4723e18820d9f7d6cf75c18fee45ec",
+  "seed": 42,
+  "created_at_utc": "2026-09-21T08:00:51.659102+00:00",
+  "bundle_sha256_by_profile": {
+    "kaggle_t4x2": "1a4f6b829cd1542b0614a1139e1a901154d0e6654ee22e2e9e100a8d9d543967",
+    "colab_t4": "5e5cb1251eb784752969e2c902d38de0f53aa3a87646057bf28b5fba5b96bd86",
+    "colab_a100": "55a30225d6d4c3b9aa8f84c2e495944d5637701e089e79034f330162a4ac90ec",
+    "modal_a100": "7f37aa293a30186c1bf606a969f617b31b0c01369a9f5a842e1e9fbbb5aaa1e1"
+  }
+}
