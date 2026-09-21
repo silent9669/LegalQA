@@ -144,7 +144,6 @@ LegalQA/
 │   └── audit_parameters.py              # Competition parameter budget auditor (< 4.0B)
 │
 ├── notebooks/
-│   ├── DSC2026_LegalQA_Pipeline_v13.ipynb # Reference v13.2 inference & lab pipeline
 │   └── kaggle_smoke.ipynb               # Kaggle Dual-T4 thin launcher
 │
 ├── constraints-gpu.txt                  # Exact GPU user-space dependency lock
