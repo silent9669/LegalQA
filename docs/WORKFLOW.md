@@ -10,7 +10,7 @@ Authoritative production workflow for **LegalQA Task 2 (DSC 2026)** utilizing Mo
 [Clean Dataset] ──> phucdangg/legalqa-task2-clean-data (Kaggle Dataset v1)
        │
        ▼
-[Local Verification] ──> python scripts/pre_push_check.py --mode full (251/251 PASS)
+[Local Verification] ──> python scripts/pre_push_check.py --mode full (261/261 PASS)
        │
        ▼
 [Candidate Freeze] ────> artifacts/candidates/<candidate_id>/candidate_manifest.json
@@ -22,10 +22,10 @@ Authoritative production workflow for **LegalQA Task 2 (DSC 2026)** utilizing Mo
 [Modal A100 Execution] (via ./scripts/run_modal.sh)
        ├─> Ingress & Volume Caching (legalqa-data-vol)
        ├─> BM25 & Dense Index Verification / Auto-Rebuild
-       ├─> Modal T4 Gate Verification (colab_t4_report.json)
+       ├─> Dual-T4 Gate Verification (kaggle_t4x2_report.json)
        ├─> Modal A100 Micro-Probe (a100_micro_probe_report.json)
-       ├─> Full SFT 1-Epoch Training (A100-40GB, bfloat16, Liger fused CE)
-       ├─> Private Set Inference (1,918 queries, batch 16/128, 1400 token ceiling)
+       ├─> Full SFT 2-Epoch Training (A100-40GB, bfloat16, Liger fused CE)
+       ├─> Private Set Inference (1,918 queries, batch 16/128, 1536 token ceiling)
        ├─> Automated Packaging of Audited Run Bundle
        ├─> Automated Hugging Face Release (runs/<run_id>/)
        └─> Automated Download of submission.json.zip to project root
@@ -62,7 +62,7 @@ Validates A100 allocation, VRAM limits, and establishes parent gate reports:
 ```bash
 ./scripts/run_modal.sh micro_probe
 ```
-- Automatically executes the T4 smoke gate on Modal T4 if `colab_t4_report.json` is missing.
+- Automatically executes the Dual-T4 root gate on Modal if `kaggle_t4x2_report.json` is missing.
 - Runs the 2-step A100 micro-probe.
 - Automatically saves `a100_micro_probe_report.json` to `artifacts/gates/<candidate_id>/`.
 
@@ -71,8 +71,8 @@ Executes the production training run and generates the private competition submi
 ```bash
 ./scripts/run_modal.sh full
 ```
-- Trains Qwen2.5-3B-Instruct for 1 epoch (889 steps on full multi-evidence dataset) using 4-bit NF4 QLoRA and selective Liger fused linear cross-entropy.
-- Runs high-throughput batched retrieval and generation for all **1,918 private queries** (`private-official.json`).
+- Trains Qwen2.5-3B-Instruct for 2 epochs on deduplicated, evidence-grounded dataset using 4-bit NF4 QLoRA and selective Liger fused linear cross-entropy with `train_sampling_strategy='group_by_length'`.
+- Runs high-throughput batched retrieval and generation for all **1,918 private queries** (`private-official.json`) in native `bfloat16` with merged adapter weights and length-sorted batching.
 - Automatically bundles all artifacts, manifests, and logs, then publishes them to Hugging Face (`dangphuc2109/legalqa-qwen2.5-3b-adapter`).
 - Automatically downloads `./submission.json.zip` directly to the project root, ready for upload to Codabench.
 

@@ -88,7 +88,17 @@ if pick:
 " 2>/dev/null || echo "")
 
 if [ -n "$CAND_ID" ]; then
+    KAGGLE_REPORT="artifacts/gates/$CAND_ID/kaggle_t4x2_report.json"
     MICRO_REPORT="artifacts/gates/$CAND_ID/a100_micro_probe_report.json"
+
+    if [ "$STAGE" = "micro_probe" ] || [ "$STAGE" = "full" ]; then
+        if [ ! -f "$KAGGLE_REPORT" ]; then
+            echo "[*] kaggle_t4x2_report.json missing for candidate $CAND_ID."
+            echo "    Automatically running required DAG root stage 'kaggle_t4x2' on Modal Dual-T4 (~8 min)..."
+            "$MODAL_BIN" run scripts/modal_app.py --stage "kaggle_t4x2"
+            echo "[+] kaggle_t4x2 stage completed and registered locally at $KAGGLE_REPORT!"
+        fi
+    fi
 
     if [ "$STAGE" = "full" ]; then
         if [ ! -f "$MICRO_REPORT" ]; then

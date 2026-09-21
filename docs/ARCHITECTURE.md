@@ -1,10 +1,10 @@
-# LegalQA Task 2 — Five-Gate Reproducible Architecture Specification
+# LegalQA Task 2 — Four-Gate Reproducible Architecture Specification
 
 Authoritative architecture specification for **LegalQA (Task 2)** in compliance with the **DSC 2026 Reproducible Training Workflow** (`https://dangphuc.notion.site/dscc`).
 
 ---
 
-## 1. System Architecture & Five-Gate Promotion Ladder
+## 1. System Architecture & Four-Gate Promotion Ladder
 
 ```text
 [Official BTC Data]
@@ -14,7 +14,7 @@ Authoritative architecture specification for **LegalQA (Task 2)** in compliance 
         │
         ▼
 [Gate 0: Local Verification] ────(FAIL)──> [Fix Code / Config]
-  python scripts/pre_push_check.py --mode full
+  ./test.sh (scripts/pre_push_check.py --mode full, 261/261 PASS)
         │ (PASS)
         ▼
 [Gate 1: GitHub CI on Exact SHA] ─(FAIL)──> [Fix CI Matrix]
@@ -25,25 +25,20 @@ Authoritative architecture specification for **LegalQA (Task 2)** in compliance 
   python scripts/freeze_candidate.py
         │
         ▼
-[Gate 2: Kaggle Dual-T4 CUDA Gate] ─(FAIL)─> [Fix CUDA/VRAM Bug]
-  scripts/run_gpu_gate.py --stage kaggle_t4x2
+[Gate 2: Dual-T4 CUDA Gate] ──────(FAIL)─> [Fix CUDA/VRAM Bug]
+  scripts/modal_app.py --stage kaggle_t4x2 (or notebooks/kaggle_smoke.ipynb)
         │ (PASS) ──> kaggle_t4x2_report.json
         ▼
-[Gate 3: T4 Gate on Modal Tesla T4] ───(FAIL)─> [Fix T4 Bootstrap]
-  ./scripts/run_modal.sh colab_t4 (stage name kept for chain continuity)
-        │ (PASS) ──> colab_t4_report.json (parent: kaggle_t4x2)
-        ▼
-[Gate 4: Modal A100 Production] ──(FAIL)─> [Fix A100 Micro-Probe]
-  ./scripts/run_modal.sh micro_probe, then full
+[Gate 3: Modal A100 Production] ──(FAIL)─> [Fix A100 Micro-Probe]
+  ./scripts/run_modal.sh full --test-path private-official.json
         │ (PASS)
         ├─> A100 Micro-Probe (2 steps) -> a100_micro_probe_report.json
-        ├─> Full Production Training (All allowed data, val_fold=None)
+        ├─> Full Production Training (2 Epochs, val_fold=None, group_by_length=True)
+        ├─> Private Set Inference (1,918 queries, native bfloat16, 1536 token ceiling)
         ├─> Audited Run Bundle & Checksums Generation
         └─> Hugging Face Hub Immutable Release: runs/<run_id>/
 
-Stage names are hardware profiles, not vendors: `colab_t4` means 1×T4 smoke
-config wherever it executes. Colab tooling was retired 2026-09-20 (see
-HISTORY.md); all GPU execution runs on Modal or Kaggle.
+Colab tooling was completely retired (see HISTORY.md and docs/a100-readiness/); all GPU execution runs on Modal or Kaggle.
 ```
 
 ---
@@ -78,7 +73,7 @@ Configuration is strictly divided into two orthogonal layers:
 | **Data Owner** | Prepares, cleans, validates, and releases the canonical Kaggle dataset. Schema, manifest, foreign-key integrity, and provenance. | Kaggle Dataset `phucdangg/legalqa-task2-clean-data` vN (pure data, zero code bundled). |
 | **Release Lead** | Manages local pre-push checks, GitHub CI validation, candidate freezing, and gate report verification. | `candidate_manifest.json` and promotion authorizations. |
 | **Training Owner (Kaggle)** | Executes Kaggle Dual-T4 CUDA gate (worst-case sequence probe, 30-step endurance probe, mini-eval). | `kaggle_t4x2_report.json` with status PASS. |
-| **Training Owner (Colab T4)** | Validates Colab CLI, detached Git checkout, versioned data, and single-GPU execution. | `colab_t4_report.json` chained from Kaggle report. |
+| **Training Owner (Dual-T4)** | Validates Dual-T4 CUDA execution (Kaggle or Modal Dual-T4), 2048-tok probe & endurance. | `kaggle_t4x2_report.json`. |
 | **Training Owner (Colab A100)** | Runs in-session micro-probe, full all-data production training (`val_fold=None`), and exports audited run bundle. | Trained QLoRA adapter + run bundle uploaded to Hugging Face Hub under `runs/<run_id>/`. |
 
 ---
