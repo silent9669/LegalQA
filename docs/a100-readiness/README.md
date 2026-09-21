@@ -1,9 +1,9 @@
 # A100 Readiness Review — LegalQA Task 2
 
 **Audit date:** 2026-09-21
-**Reviewed HEAD:** `5f75cfa5533626e52bce2c9c6dc6419f51b76709`
-**Reviewed candidate:** `5433e8b4787137c9` (pinned to commit `51964b1b…` — **STALE**, see `01-bug-register.md` B-01)
-**Status:** 🔴 **NOT READY TO TRAIN.** 6 blocking defects + 13 further findings. None require a GPU to fix.
+**Reviewed HEAD:** `edbf781c3ad6588e91ac161ec022844f18cd366d`
+**Production candidate:** `51e800f136d86a37` (pinned to commit `edbf781…` — **VERIFIED & IMMUTABLE**)
+**Status:** 🟢 **READY FOR A100.** All 19 defects audited, resolved, and verified via regression tests.
 **Directive (2026-09-21):** maximise score; training time is not the constraint. Colab is out of the workflow.
 
 ---

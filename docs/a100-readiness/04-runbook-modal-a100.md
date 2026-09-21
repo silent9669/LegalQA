@@ -14,7 +14,7 @@ cd "/Users/phucdang/Documents/LegalQA - Public Test"
 git status --porcelain                        # empty
 git rev-parse HEAD                            # note it
 
-CID=$(ls -t artifacts/candidates | head -1)
+CID="51e800f136d86a37"
 .venv311/bin/python -c "
 import json, subprocess
 cid = '$CID'
