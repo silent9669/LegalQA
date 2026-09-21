@@ -41,7 +41,7 @@ The pipeline implements an audited, leakage-safe retrieval-augmented generation 
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`runs/20260920-215402`** | **0.5486** (Rank 2) | Base Qwen2.5-3B Zero-Shot (`SYS_B`) | `encoder_ft_v2` (MRR: 0.3407) | Dual-Part (`article@4000` + supervised) | 82 Known-QA overrides, mean 869 tokens |
 | **`runs/run_5433e8b4787137c9_20260920_193355`** | 0.4900 | QLoRA 1 Epoch (Loss: 0.7726, Acc: 80.22%) | `huydang-dek21` base | Prose Only (`snapped`, mean 313 tokens) | High-accuracy LoRA foundation, isolated prose |
-| **`runs/run_v16_dual_assembled`** | **Target > 0.60** | QLoRA Foundation Adapter | `encoder_ft_v2` | Dual-Part Assembly (`snapped` + `article@4000`) | Fused best of both: QLoRA weights + Dual Assembly |
+| **`runs/run_d2618710d9d0b6de_20260921_154231`** | **Target > 0.60** | QLoRA 2 Epochs (Loss: 0.7797, Acc: 82.15%) | `encoder_ft_v2` (aligned) | Dual-Part Assembly (1536 tok cap, bfloat16) | 1,918 predictions, mean 1,065 words, zero empty answers |
 
 ---
 
@@ -65,7 +65,7 @@ from peft import PeftModel
 
 base_id = "Qwen/Qwen2.5-3B-Instruct"
 repo_id = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
-subfolder = "runs/run_5433e8b4787137c9_20260920_193355/final_adapter"
+subfolder = "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter"
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id, subfolder=subfolder)
 model = AutoModelForCausalLM.from_pretrained(
