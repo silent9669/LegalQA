@@ -735,12 +735,8 @@ if modal is not None:
             )
             if not cands:
                 raise SystemExit("no candidate manifest: pass --candidate <candidate_manifest.json>")
-            # Prefer candidates with verified gate reports in artifacts/gates/
-            cands_with_gates = [
-                p for p in cands
-                if (REPO_ROOT / "artifacts" / "gates" / p.parent.name / "kaggle_t4x2_report.json").is_file()
-            ]
-            manifest_path = cands_with_gates[-1] if cands_with_gates else cands[-1]
+            # Use the newest minted candidate manifest
+            manifest_path = cands[-1]
             print(f"using local candidate: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         stage_parents = {
