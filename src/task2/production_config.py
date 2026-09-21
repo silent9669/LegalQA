@@ -14,6 +14,7 @@ from src.common.hashing import sha256_file
 GENERATOR_DEPENDENT_CANDIDATES = {
     "generated",
     "snapped",
+    "dual_assembled",
     "strategy_f_300",
     "strategy_f_600",
     "strategy_f_1000",

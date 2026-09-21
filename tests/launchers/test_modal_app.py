@@ -157,7 +157,7 @@ def test_remote_production_cfg_restores_generation_ceiling():
 
     cfg = build_remote_production_cfg()
     assert cfg.max_new_tokens == MODAL_MAX_NEW_TOKENS == 512
-    assert cfg.best_fixed_candidate == "snapped"
+    assert cfg.best_fixed_candidate == "dual_assembled"
     assert cfg.max_new_tokens != get_default_production_selection().max_new_tokens
 
 

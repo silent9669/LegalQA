@@ -218,8 +218,9 @@ def build_remote_production_cfg() -> Any:
     """Production selection for the Modal full run (pure, testable).
 
     Applies the calibrated 512-token generation ceiling to maximize METEOR
-    and ROUGE score while preventing decoder over-generation. Uses 'snapped'
-    candidate policy to snap verbatim dates and decree citations into generated text.
+    and ROUGE score while preventing decoder over-generation. Uses 'dual_assembled'
+    candidate policy to produce prose reasoning + primary statutory citation block,
+    matching the winning 0.5486 benchmark answer distribution (mean ~850 words).
     """
     import dataclasses
 
@@ -228,7 +229,7 @@ def build_remote_production_cfg() -> Any:
     return dataclasses.replace(
         get_default_production_selection(),
         max_new_tokens=MODAL_MAX_NEW_TOKENS,
-        best_fixed_candidate="snapped",
+        best_fixed_candidate="dual_assembled",
     )
 
 

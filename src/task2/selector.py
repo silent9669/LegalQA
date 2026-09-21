@@ -33,6 +33,7 @@ CANDIDATE_ORDER = [
     "strategy_f_1000",
     "strategy_f_1500",
     "snapped",
+    "dual_assembled",
     "generated",
 ]
 
@@ -229,7 +230,7 @@ class CandidateSelector:
         if self.policy == "fixed_baseline":
             if self.best_fixed_candidate in candidates:
                 return candidates[self.best_fixed_candidate].strip(), self.best_fixed_candidate
-            for fallback_key in ["stitched_extract", "focused_extract", "focused_complete_clause", "strategy_f_1000", "generated", "snapped"]:
+            for fallback_key in ["dual_assembled", "stitched_extract", "focused_extract", "focused_complete_clause", "strategy_f_1000", "generated", "snapped"]:
                 if fallback_key in candidates and candidates[fallback_key].strip():
                     return candidates[fallback_key].strip(), fallback_key
 

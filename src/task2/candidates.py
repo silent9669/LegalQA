@@ -15,7 +15,33 @@ INTERNAL_TAGS_REGEX = re.compile(r'\[DOCUMENT\]\s*.*?\n|\[ARTICLE\]\s*|\[CLAUSE\
 IMAGE_CAPTION_REGEX = re.compile(r'\(Hình từ Internet\)|\(Ảnh từ Internet\)|\(Nguồn:.*?\)|Hình từ Internet|Ảnh từ Internet', re.IGNORECASE)
 DUPLICATE_PREFIX_REGEX = re.compile(r'\b(ngày|tháng|năm)\s+\1\b', re.IGNORECASE)
 
+_MODEL_PROSE_CLEAN_PATTERNS = [
+    (re.compile(r"<\|im_(?:start|end)\|>.*?$", re.S), ""),
+    (re.compile(r"^\s*(?:assistant|system|user)\s*[:：]\s*", re.I), ""),
+    (re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$", re.M), ""),
+    (re.compile(r"^\s*(?:Trả lời|Câu trả lời)\s*[:：]\s*", re.I), ""),
+    (re.compile(r"\n{3,}"), "\n\n"),
+    (re.compile(r"[ \t]{2,}"), " "),
+]
+_PREAMBLE_REGEX = re.compile(
+    r"^\s*(?:Dựa\s+(?:trên|vào)|Căn\s+cứ\s+vào)\s+(?:các\s+)?"
+    r"(?:tài liệu|thông tin|ngữ cảnh|trích đoạn|văn bản)"
+    r"(?:\s+(?:được\s+cung\s+cấp|trên|sau))*\s*[,.:;]?\s*",
+    re.IGNORECASE,
+)
+
 SOURCE_HEADER = "\n\nTrích dẫn quy định:\n"
+
+
+def clean_model_prose(raw_text: str) -> str:
+    """Clean model generated prose: strip fences, tags, preambles, and collapse token loops."""
+    if not raw_text:
+        return ""
+    s = str(raw_text).strip()
+    for rx, rep in _MODEL_PROSE_CLEAN_PATTERNS:
+        s = rx.sub(rep, s).strip()
+    s = _PREAMBLE_REGEX.sub("", s).strip()
+    return collapse_loops(s)
 
 
 def clean_statutory_text(raw_text: str) -> str:
@@ -193,13 +219,21 @@ def generate_candidate_ensemble(
     clean_ev = clean_statutory_text(evidence)
     header = build_citation_header(doc_name, art_num, clause_num)
 
-    gen_ans = collapse_loops(gen_ans) if gen_ans else ""
-    snapped = snap_facts_to_evidence(gen_ans, clean_ev) if gen_ans else ""
+    gen_prose = clean_model_prose(gen_ans) if gen_ans else ""
+    snapped = snap_facts_to_evidence(gen_prose, clean_ev) if gen_prose else ""
     focused_ext = clean_ev[:800] if clean_ev else ""
     stitched_ext = f"{header}\n{clean_ev[:1500]}" if clean_ev else header
 
     # Section 15: Structured complete clause/sentence extracts
     focused_clause = f"{header}\n{trim_at_complete_sentence(clean_ev, max_chars=800)}" if clean_ev else header
+
+    # Dual-part statutory assembly: prose reasoning + primary statutory citation block
+    prose = snapped or gen_prose
+    full_art_text = clean_statutory_text(evidence_packs.get("full_article", "")) if evidence_packs else ""
+    if not full_art_text and clean_ev:
+        full_art_text = clean_ev
+    citation_block = f"{header}\n{full_art_text[:4000]}".strip() if full_art_text else ""
+    dual_assembled = (prose + "\n\nTrích dẫn quy định:\n" + citation_block).strip() if (prose and citation_block) else (prose or citation_block)
 
     candidates: Dict[str, str] = {
         "exact_memory": exact_ans,
@@ -207,12 +241,13 @@ def generate_candidate_ensemble(
         "focused_extract": focused_ext,
         "stitched_extract": stitched_ext,
         "focused_complete_clause": focused_clause,
-        "generated": gen_ans,
+        "generated": gen_prose,
         "snapped": snapped,
-        "strategy_f_300": apply_strategy_f(snapped or gen_ans, clean_ev, max_chars=300),
-        "strategy_f_600": apply_strategy_f(snapped or gen_ans, clean_ev, max_chars=600),
-        "strategy_f_1000": apply_strategy_f(snapped or gen_ans, clean_ev, max_chars=1000),
-        "strategy_f_1500": apply_strategy_f(snapped or gen_ans, clean_ev, max_chars=1500),
+        "dual_assembled": dual_assembled,
+        "strategy_f_300": apply_strategy_f(snapped or gen_prose, clean_ev, max_chars=300),
+        "strategy_f_600": apply_strategy_f(snapped or gen_prose, clean_ev, max_chars=600),
+        "strategy_f_1000": apply_strategy_f(snapped or gen_prose, clean_ev, max_chars=1000),
+        "strategy_f_1500": apply_strategy_f(snapped or gen_prose, clean_ev, max_chars=1500),
     }
 
     if evidence_packs:

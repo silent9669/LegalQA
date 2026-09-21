@@ -236,7 +236,7 @@ class QwenGenerator:
                         **inputs,
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
-                        repetition_penalty=1.05,
+                        repetition_penalty=1.0,
                         pad_token_id=self.tokenizer.pad_token_id,
                     )
                 generated_ids = outputs[0][inputs["input_ids"].shape[1]:]
@@ -320,7 +320,7 @@ class QwenGenerator:
                 **enc,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
-                repetition_penalty=1.05,
+                repetition_penalty=1.0,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
         decoded = []
