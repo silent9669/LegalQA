@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "candidate_id": "0589ce35af4300d4",
+  "candidate_id": "fda43c0f04242277",
   "task": "task2",
   "git_repository": "https://github.com/silent9669/LegalQA.git",
-  "git_commit_sha": "ca00097b30e7869fb9af5e6499c9e23b69795334",
+  "git_commit_sha": "84984b9f6ce65c58bccbde9d2c3fa059e5de24b7",
   "dataset": {
     "slug": "phucdangg/legalqa-task2-clean-data",
     "version": 1,
@@ -33,7 +33,7 @@
   },
   "dependency_lock_sha256": "e86aa315733fac5405245c322a5ab7243e4723e18820d9f7d6cf75c18fee45ec",
   "seed": 42,
-  "created_at_utc": "2026-09-21T08:01:05.937958+00:00",
+  "created_at_utc": "2026-09-21T10:36:59.838906+00:00",
   "bundle_sha256_by_profile": {
     "kaggle_t4x2": "1a4f6b829cd1542b0614a1139e1a901154d0e6654ee22e2e9e100a8d9d543967",
     "colab_t4": "5e5cb1251eb784752969e2c902d38de0f53aa3a87646057bf28b5fba5b96bd86",
