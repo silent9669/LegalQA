@@ -26,3 +26,33 @@ def test_generator_load_rejects_unknown_mode():
     from src.task2.generator import QwenGenerator
     with pytest.raises(ValueError, match="unknown generator load mode"):
         QwenGenerator.load(model_path="Qwen/Qwen2.5-3B-Instruct", load_mode="int3")
+
+
+def test_generator_load_allows_merged_adapter_when_require_adapter_is_true(monkeypatch):
+    from unittest.mock import MagicMock
+    from src.task2.generator import QwenGenerator
+    import src.task2.generator as gen_mod
+
+    mock_base = MagicMock()
+    mock_peft = MagicMock()
+    mock_merged = MagicMock()
+    mock_peft.merge_and_unload.return_value = mock_merged
+
+    monkeypatch.setattr(gen_mod, "AutoTokenizer", MagicMock())
+    monkeypatch.setattr(gen_mod, "AutoModelForCausalLM", MagicMock(from_pretrained=MagicMock(return_value=mock_base)))
+    monkeypatch.setattr(gen_mod, "PeftModel", MagicMock(from_pretrained=MagicMock(return_value=mock_peft)))
+    monkeypatch.setattr(gen_mod, "is_peft_model", lambda m: m is mock_peft)
+
+    import os
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+
+    gen = QwenGenerator.load(
+        model_path="Qwen/Qwen2.5-3B-Instruct",
+        adapter_path="/fake/adapter",
+        device="cpu",
+        runtime="torch",
+        load_mode="bfloat16",
+        merge_adapter=True,
+        require_adapter=True,
+    )
+    assert gen.model is mock_merged

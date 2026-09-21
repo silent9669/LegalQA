@@ -199,14 +199,16 @@ class QwenGenerator:
                     **load_kwargs,
                 )
 
+                adapter_loaded = False
                 if adapter_path and os.path.exists(adapter_path) and PeftModel is not None:
                     print(f"Loading PEFT adapter from {adapter_path}...")
                     model = PeftModel.from_pretrained(model, adapter_path)
-                    if merge_adapter and is_peft_model(model) and load_mode == "bfloat16":
+                    adapter_loaded = True
+                    if merge_adapter and is_peft_model(model) and load_mode != "nf4":
                         print("Merging adapter into base model (bfloat16)...")
                         model = model.merge_and_unload()
 
-                if require_adapter and not is_peft_model(model):
+                if require_adapter and not adapter_loaded and not is_peft_model(model):
                     raise RuntimeError(f"require_adapter=True but loaded model is not a PEFT model: {type(model)}")
 
                 if dev not in ("cuda", "cpu") and not dev.startswith("cuda"):

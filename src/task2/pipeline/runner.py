@@ -231,23 +231,32 @@ def run_pipeline(
             print(f"target={gen_device}")
             print(f"trainer_n_gpu={gen_cfg.trainer_n_gpu}")
 
-        res_qlora = train_generator_qlora(
-            model_name_or_path=model_path,
-            qa_path=qa_path,
-            labels_path=labels_path,
-            chunks_path=chunks_path,
-            output_dir=qlora_out,
-            config=gen_cfg,
-            resolved_config=resolved_config,
-            val_fold=profile.val_fold,
-            max_steps=profile.max_generator_steps,
-            max_train_examples=profile.max_generator_examples,
-            probe_mode=profile.probe_selection,
-            execution_profile=profile.name,
-            device=gen_device,
-            fail_on_error=True,
-            seed=seed,
-        )
+        if (
+            os.path.exists(os.path.join(qlora_out, "adapter_model.safetensors"))
+            and os.path.exists(os.path.join(qlora_out, "generator_manifest.json"))
+            and not is_smoke
+        ):
+            print(f"[+] Found existing verified generator checkpoint at {qlora_out}; reusing.")
+            with open(os.path.join(qlora_out, "generator_manifest.json"), "r", encoding="utf-8") as _mf:
+                res_qlora = json.load(_mf)
+        else:
+            res_qlora = train_generator_qlora(
+                model_name_or_path=model_path,
+                qa_path=qa_path,
+                labels_path=labels_path,
+                chunks_path=chunks_path,
+                output_dir=qlora_out,
+                config=gen_cfg,
+                resolved_config=resolved_config,
+                val_fold=profile.val_fold,
+                max_steps=profile.max_generator_steps,
+                max_train_examples=profile.max_generator_examples,
+                probe_mode=profile.probe_selection,
+                execution_profile=profile.name,
+                device=gen_device,
+                fail_on_error=True,
+                seed=seed,
+            )
         adapter_path = qlora_out
         results["stages"]["generator"] = res_qlora
 

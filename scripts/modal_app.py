@@ -591,6 +591,19 @@ if modal is not None:
                 candidate_id=manifest.candidate_id,
             )
             manifest.validate_against_config(resolved)
+            # Reuse completed generator adapter from an earlier run of the exact same candidate if present
+            prior_runs = sorted(Path("/runs").glob(f"modal_{request['candidate_id']}_*"), key=lambda p: p.stat().st_mtime)
+            for pr in reversed(prior_runs):
+                prior_adapter = pr / "checkpoints" / "generator" / "hf_adapter"
+                if (prior_adapter / "adapter_model.safetensors").is_file() and (prior_adapter / "generator_manifest.json").is_file():
+                    target_adapter = run_output_dir / "checkpoints" / "generator" / "hf_adapter"
+                    if not (target_adapter / "adapter_model.safetensors").is_file():
+                        print(f"[+] Reusing verified generator adapter from prior run: {pr.name}")
+                        target_adapter.parent.mkdir(parents=True, exist_ok=True)
+                        import shutil
+                        shutil.copytree(str(prior_adapter), str(target_adapter), dirs_exist_ok=True)
+                    break
+
             profile = load_profile_from_yaml("/root/LegalQA/configs/task2/runtime/modal_a100.yaml")
             outputs = run_pipeline(
                 profile=profile,
