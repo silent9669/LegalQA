@@ -110,7 +110,7 @@ def run_pipeline(
     dense_expected = (
         resolved_config.algorithm.models.dense.id
         if resolved_config is not None
-        else "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+        else "runs/20260920-215402/encoder_ft_v2"
     )
     probe_dense = DenseRetriever.load_index(
         dek21_dir,
@@ -122,7 +122,7 @@ def run_pipeline(
         verify_self_consistency=True,
     )
     consistency = getattr(probe_dense, "self_consistency_report", {})
-    print(f"Dense DEk21 probe successful: {probe_dense.corpus_embeddings.shape} on {retrieval_device}")
+    print(f"Dense probe successful: {probe_dense.corpus_embeddings.shape} on {retrieval_device}")
     if consistency:
         print(f"Dense self-consistency: {consistency}")
     del probe_dense
@@ -339,7 +339,7 @@ def run_pipeline(
                 held_out_fold=eval_fold,
                 bm25_dir=bm25_dir,
                 dense_dir=dek21_dir,
-                dense_model="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+                dense_model="runs/20260920-215402/encoder_ft_v2",
                 base_reranker="BAAI/bge-reranker-v2-m3",
                 tuned_reranker=reranker_checkpoint,
                 base_generator=model_path,
@@ -418,7 +418,7 @@ def run_pipeline(
                 held_out_fold=eval_fold,
                 bm25_dir=bm25_dir,
                 dense_dir=dek21_dir,
-                dense_model="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+                dense_model="runs/20260920-215402/encoder_ft_v2",
                 reranker_checkpoint=reranker_checkpoint,
                 generator_model=model_path if profile.requires_generator else None,
                 adapter_path=adapter_path,

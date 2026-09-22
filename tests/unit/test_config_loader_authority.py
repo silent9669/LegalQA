@@ -23,10 +23,10 @@ from src.task2.provenance.candidate import (
 
 GEN = "Qwen/Qwen2.5-3B-Instruct"
 RER = "BAAI/bge-reranker-v2-m3"
-DEN = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+DEN = "runs/20260920-215402/encoder_ft_v2"
 REV_G = "d8a1c8901eb4284d720235adcf8849767f40d7e4"
 REV_R = "278e2e28328135817d69932cb4ad12d7c58e5d32"
-REV_D = "c356b6aa96e00cb1b6a12b48a1c0d4530058b884"
+REV_D = "6a2721e34a083eae202dbb80e4fe529707ec4097"
 
 
 def test_final_rejects_floating_model_revision():

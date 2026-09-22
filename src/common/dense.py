@@ -123,7 +123,7 @@ class DenseRetriever:
 
     def __init__(
         self,
-        model_name: str = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        model_name: str = "runs/20260920-215402/encoder_ft_v2",
         revision: Optional[str] = None,
         device: Optional[str] = None,
         dtype: str = "float16",
@@ -438,7 +438,7 @@ class DenseRetriever:
         cls,
         index_dir: str,
         corpus_path: Optional[str] = None,
-        model_name: str = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        model_name: str = "runs/20260920-215402/encoder_ft_v2",
         device: Optional[str] = None,
         dtype: str = "float16",
         final_mode: bool = False,

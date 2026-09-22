@@ -27,6 +27,8 @@ def load_config_file(config_path: str) -> dict:
 DEFAULT_STACK_A_MODELS = {
     "Qwen/Qwen2.5-3B-Instruct": 3086303232,
     "BAAI/bge-reranker-v2-m3": 567419904,
+    # Canonical fine-tuned encoder (same PhoBERT 768-dim architecture as dek21).
+    "runs/20260920-215402/encoder_ft_v2": 135168000,
     "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2": 135168000,
 }
 
@@ -49,7 +51,7 @@ def audit_parameter_budget(
         # Authoritative configs/task2/algorithm.yaml format
         gen_id = models.get("generator", {}).get("id", "Qwen/Qwen2.5-3B-Instruct")
         rerank_id = models.get("reranker", {}).get("id", "BAAI/bge-reranker-v2-m3")
-        dense_id = models.get("dense", {}).get("id", "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2")
+        dense_id = models.get("dense", {}).get("id", "runs/20260920-215402/encoder_ft_v2")
 
         for mid in [gen_id, rerank_id, dense_id]:
             p = DEFAULT_STACK_A_MODELS.get(mid, 0)

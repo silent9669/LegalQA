@@ -9,7 +9,7 @@ models:
     id: BAAI/bge-reranker-v2-m3
     revision_policy: exact_commit
   dense:
-    id: CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2
+    id: runs/20260920-215402/encoder_ft_v2
     revision_policy: exact_commit
 
 generator:

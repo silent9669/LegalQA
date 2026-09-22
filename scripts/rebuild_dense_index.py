@@ -160,7 +160,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Cold rebuild a verified dense index.")
     parser.add_argument("--corpus", required=True, help="legal_chunks.parquet (row order is the index order)")
     parser.add_argument("--out", required=True, help="Destination index directory")
-    parser.add_argument("--model", default="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2")
+    parser.add_argument("--model", default="runs/20260920-215402/encoder_ft_v2")
     parser.add_argument("--revision", required=True, help="Immutable 40-hex encoder commit")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--device", default="cuda:0")

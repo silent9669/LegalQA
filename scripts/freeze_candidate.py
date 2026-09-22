@@ -38,7 +38,10 @@ KNOWN_MODEL_REVISIONS = {
     # returned 404 upstream and were never real pins.
     "Qwen/Qwen2.5-3B-Instruct": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
     "BAAI/bge-reranker-v2-m3": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
-    "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2": "99a2963b2f51fa7a570a3e7f550d7993b9de90a8",
+    # Canonical dense encoder: fine-tuned PhoBERT encoder_ft_v2 (ft of dek21).
+    # Not a standalone HF repo: revision pins the adapter-repo commit that
+    # introduced runs/20260920-215402/encoder_ft_v2 (verified 8 files present).
+    "runs/20260920-215402/encoder_ft_v2": "6a2721e34a083eae202dbb80e4fe529707ec4097",
 }
 
 

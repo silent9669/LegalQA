@@ -40,7 +40,7 @@ def run_kaggle_smoke(
     data_dir: str = "artifacts/task2/data",
     output_dir: str = "artifacts/smoke_output",
     device: str = "cuda:0" if torch.cuda.is_available() else "cpu",
-    dense_model: str = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+    dense_model: str = "runs/20260920-215402/encoder_ft_v2",
     generator_model: str = "Qwen/Qwen2.5-3B-Instruct",
     adapter_path: str = "",
     num_queries: int = 8,
@@ -223,7 +223,7 @@ def main() -> None:
     parser.add_argument("--data-dir", default="artifacts/task2/data", help="Directory containing dataset files")
     parser.add_argument("--output-dir", default="artifacts/smoke_output", help="Directory to store smoke output")
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--dense-model", default="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2")
+    parser.add_argument("--dense-model", default="runs/20260920-215402/encoder_ft_v2")
     parser.add_argument("--generator-model", default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--adapter-path", default="")
     parser.add_argument("--num-queries", type=int, default=8)

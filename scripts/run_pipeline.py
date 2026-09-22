@@ -41,7 +41,7 @@ def main():
                         help="Check the staged dense index and cold-rebuild it (pinned revision) when misaligned")
     parser.add_argument("--dense-revision", default=None,
                         help="Immutable 40-hex dense encoder commit (required with --ensure-dense-index)")
-    parser.add_argument("--dense-model", default="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+    parser.add_argument("--dense-model", default="runs/20260920-215402/encoder_ft_v2",
                         help="Dense encoder model id for a cold rebuild")
     args = parser.parse_args()
 

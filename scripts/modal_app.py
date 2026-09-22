@@ -54,7 +54,7 @@ DATA_VOLUME_NAME = "legalqa-data-vol"
 RUNS_VOLUME_NAME = "legalqa-runs-vol"
 SECRET_NAME = "legalqa-secrets"
 DATASET_SLUG = "phucdangg/legalqa-task2-clean-data"
-DENSE_MODEL_ID = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+DENSE_MODEL_ID = "runs/20260920-215402/encoder_ft_v2"
 HF_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
 KNOWN_TEST_FILES = ("private-official.json", "public-official.json")
 
