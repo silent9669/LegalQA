@@ -118,7 +118,15 @@ def run_kaggle_smoke(
         dense = DenseRetriever(model_name="mock")
         dense.fit_mock(corpus_chunks)
 
-    reranker = BGEReranker(model_name="mock")
+    reranker_model = "BAAI/bge-reranker-v2-m3"
+    try:
+        reranker = BGEReranker(model_name=reranker_model, device=device)
+        print(f"      Neural BGE Reranker loaded ({reranker_model}) on {device}.")
+    except Exception as e:
+        if not allow_mock:
+            raise RuntimeError(f"Reranker '{reranker_model}' failed to load: {e}. Refusing mock in strict smoke mode.") from e
+        print(f"      [!] Reranker load skipped ({e}); using mock reranker for smoke...")
+        reranker = BGEReranker(model_name="mock")
     packer = EvidencePacker(corpus_chunks)
     memory = QAMemory.from_records([])
 

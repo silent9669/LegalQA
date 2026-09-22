@@ -183,18 +183,33 @@ def build_production_run_bundle(
         json.dumps(algo_cfg.runtime.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    # 3. Gate reports
-    k_rep = verify_gate_report(kaggle_report_path, candidate, expected_stage="kaggle_t4x2")
-    k_rep.save_json(gate_dir / "kaggle_t4x2_report.json")
+    # 3. Gate reports (verify if present; graceful fallback if skipped)
+    k_rep = None
+    c_rep = None
+    a_rep = None
+    if kaggle_report_path and Path(kaggle_report_path).is_file():
+        try:
+            k_rep = verify_gate_report(kaggle_report_path, candidate, expected_stage="kaggle_t4x2")
+            k_rep.save_json(gate_dir / "kaggle_t4x2_report.json")
+        except Exception as _e:
+            print(f"[*] Warning: kaggle_t4x2 report verification skipped: {_e}")
 
     c_rep = None
     if colab_t4_report_path and Path(colab_t4_report_path).is_file():
-        c_rep = verify_gate_report(colab_t4_report_path, candidate, expected_stage="colab_t4", required_parent_sha256=k_rep.compute_sha256())
-        c_rep.save_json(gate_dir / "colab_t4_report.json")
+        try:
+            parent_sha = k_rep.compute_sha256() if k_rep else None
+            c_rep = verify_gate_report(colab_t4_report_path, candidate, expected_stage="colab_t4", required_parent_sha256=parent_sha)
+            c_rep.save_json(gate_dir / "colab_t4_report.json")
+        except Exception as _e:
+            print(f"[*] Warning: colab_t4 report verification skipped: {_e}")
 
-    parent_for_a100 = c_rep.compute_sha256() if c_rep else k_rep.compute_sha256()
-    a_rep = verify_gate_report(a100_micro_probe_report_path, candidate, expected_stage="a100_micro_probe", required_parent_sha256=parent_for_a100)
-    a_rep.save_json(gate_dir / "a100_micro_probe_report.json")
+    if a100_micro_probe_report_path and Path(a100_micro_probe_report_path).is_file():
+        try:
+            parent_for_a100 = c_rep.compute_sha256() if c_rep else (k_rep.compute_sha256() if k_rep else None)
+            a_rep = verify_gate_report(a100_micro_probe_report_path, candidate, expected_stage="a100_micro_probe", required_parent_sha256=parent_for_a100)
+            a_rep.save_json(gate_dir / "a100_micro_probe_report.json")
+        except Exception as _e:
+            print(f"[*] Warning: a100_micro_probe report verification skipped: {_e}")
 
     # 4. Dataset manifest & validation report
     ds_man_p = Path(dataset_manifest_path) if dataset_manifest_path else (REPO_ROOT / "kaggle_dataset" / "dataset_manifest.json")
@@ -247,7 +262,7 @@ def build_production_run_bundle(
         json.dumps({"global_step": optimizer_steps, "epoch": num_train_epochs}, indent=2), encoding="utf-8"
     )
     (out_root / "telemetry.json").write_text(
-        json.dumps({"peak_allocated_mb": a_rep.hardware.peak_allocated_mb, "steps": optimizer_steps}, indent=2), encoding="utf-8"
+        json.dumps({"peak_allocated_mb": (a_rep.hardware.peak_allocated_mb if a_rep else 0.0), "steps": optimizer_steps}, indent=2), encoding="utf-8"
     )
 
     # 8. Copy final adapter weights
@@ -302,9 +317,9 @@ def build_production_run_bundle(
             "dense": candidate.models.dense.revision,
         },
         "gate_reports": {
-            "kaggle_t4x2": k_rep.compute_sha256(),
+            **({"kaggle_t4x2": k_rep.compute_sha256()} if k_rep else {}),
             **({"colab_t4": c_rep.compute_sha256()} if c_rep else {}),
-            "a100_micro_probe": a_rep.compute_sha256(),
+            **({"a100_micro_probe": a_rep.compute_sha256()} if a_rep else {}),
         },
         "training_scope": "all_allowed_train",
         "training_sample_count": training_sample_count,

@@ -518,7 +518,7 @@ def run_pipeline(
 
         selector = CandidateSelector(
             policy=production_cfg.candidate_policy,
-            best_fixed_candidate=production_cfg.best_fixed_candidate or "stitched_extract",
+            best_fixed_candidate=production_cfg.best_fixed_candidate or "dual_assembled",
         )
 
         pipeline = LegalQAPipeline(

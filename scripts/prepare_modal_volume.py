@@ -15,8 +15,8 @@ except ImportError:
     sys.exit(1)
 
 app = modal.App("legalqa-volume-preloader")
-data_volume = modal.Volume.from_name("legalqa-data-vol")
-runs_volume = modal.Volume.from_name("legalqa-runs-vol")
+data_volume = modal.Volume.from_name("legalqa-data-vol", create_if_missing=True)
+runs_volume = modal.Volume.from_name("legalqa-runs-vol", create_if_missing=True)
 hf_secret = modal.Secret.from_name("huggingface-secret")
 
 HF_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"

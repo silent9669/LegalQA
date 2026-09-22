@@ -75,7 +75,7 @@ if env_p.is_file():
         if vol not in vol_out:
             print(f'      Creating missing volume {vol} on Modal...')
             subprocess.run([modal_bin, 'volume', 'create', vol], check=True)
-" 2>/dev/null || true
+" "${MODAL_CMD[0]}" 2>/dev/null || true
 
 # 4. Auto-resolve DAG prerequisites if parent reports are missing
 CAND_ID=$("$PY_BIN" -c "
@@ -108,4 +108,6 @@ echo "[3/4] Ready: stage=$STAGE | test=$TEST_PATH"
 echo "[4/4] Dispatching to remote Modal container..."
 echo "======================================================================="
 
-"${MODAL_CMD[@]}" run scripts/modal_app.py --stage "$STAGE" --test-path "$TEST_PATH" "${EXTRA_FLAGS[@]}"
+DENSE_ARG=()
+if [ -n "$3" ]; then DENSE_ARG=(--dense-model "$3"); fi
+"${MODAL_CMD[@]}" run scripts/modal_app.py --stage "$STAGE" --test-path "$TEST_PATH" "${EXTRA_FLAGS[@]}" "${DENSE_ARG[@]}"

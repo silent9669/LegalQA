@@ -127,19 +127,23 @@ def main() -> None:
             if line.strip():
                 items.append(json.loads(line))
 
-    # If raw cache format (has 'raw' and 'qa_id' but lacks 'reference'), backfill from qa-path
-    if items and not any(it.get("reference") for it in items):
-        qa_p = args.qa_path or "artifacts/task2/data/qa_unique.parquet"
-        if os.path.exists(qa_p):
-            import pandas as pd
-            df_qa = pd.read_parquet(qa_p)
-            id_to_ref = dict(zip(df_qa["qa_id"].astype(str), df_qa["answer_raw"].astype(str)))
-            for it in items:
-                qid = str(it.get("qa_id", ""))
-                if qid in id_to_ref:
-                    it["reference"] = id_to_ref[qid]
-                if "prose" not in it and "raw" in it:
-                    it["prose"] = it["raw"]
+    # If raw cache format (has 'raw' and 'qa_id' but lacks 'reference' or 'evidence'), backfill
+    qa_p = args.qa_path or "artifacts/task2/data/qa_unique.parquet"
+    if items and os.path.exists(qa_p):
+        import pandas as pd
+        df_qa = pd.read_parquet(qa_p)
+        id_to_ref = dict(zip(df_qa["qa_id"].astype(str), df_qa["answer_raw"].astype(str))) if "answer_raw" in df_qa.columns else {}
+        for it in items:
+            qid = str(it.get("qa_id", ""))
+            if "reference" not in it and qid in id_to_ref:
+                it["reference"] = id_to_ref[qid]
+            if "prose" not in it and "raw" in it:
+                it["prose"] = it["raw"]
+            if not it.get("evidence"):
+                # Backfill from candidate packs or article if present
+                packs = it.get("evidence_packs") or {}
+                if isinstance(packs, dict) and packs.get("full_article"):
+                    it["evidence"] = packs["full_article"]
 
     if not items or not any(it.get("reference") for it in items):
         print("Error: Input items lack 'reference' answers for evaluation. Pass an evaluation trace or provide a valid --qa-path.", file=sys.stderr)
