@@ -420,8 +420,9 @@ def run_gpu_gate(
 
     # 8. Memory Telemetry & Peak Allocation
     mem_snap = snapshot_cuda_memory()
-    peak_allocated = float(mem_snap.get("cuda_0", {}).get("peak_allocated_mb", 0.0))
-    peak_reserved = float(mem_snap.get("cuda_0", {}).get("peak_reserved_mb", 0.0))
+    dev0 = mem_snap.get("cuda_0") or mem_snap.get("devices", {}).get(0, {})
+    peak_allocated = float(dev0.get("max_allocated_mb", dev0.get("peak_allocated_mb", 0.0)))
+    peak_reserved = float(dev0.get("max_reserved_mb", dev0.get("peak_reserved_mb", 0.0)))
 
     finished_time_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -466,7 +467,7 @@ def run_gpu_gate(
         ),
         metrics=GateMetrics(
             optimizer_steps=worst_steps_done + int(endurance_steps),
-            seconds_per_step=round(endurance_sps or probe_sps or 1.42, 2),
+            seconds_per_step=round(endurance_sps or probe_sps or 0.0, 2),
             meteor=meteor_score,
             rouge_l=rouge_l_score,
         ),

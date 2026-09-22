@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,6 +22,8 @@ from src.task2.generator import QwenGenerator
 from src.task2.production_config import policy_requires_generator
 from src.task2.qa_memory import QAMemory
 from src.task2.selector import CandidateSelector
+
+logger = logging.getLogger(__name__)
 
 
 def retrieval_options_from_config(cfg: Any) -> Tuple[Dict[str, Any], Dict[str, float]]:
@@ -687,10 +690,23 @@ class LegalQAPipeline:
             todo_indices = []
             todo_pairs = []
 
+            # Determine adapter fingerprint if adapter_path exists
+            ad_path = str(getattr(self.generator, "adapter_path", "") or "")
+            ad_sig = ""
+            if ad_path and os.path.exists(ad_path):
+                for w_name in ("adapter_model.safetensors", "adapter_model.bin"):
+                    w_file = os.path.join(ad_path, w_name)
+                    if os.path.exists(w_file):
+                        try:
+                            ad_sig = f"{w_name}:{os.path.getsize(w_file)}"
+                        except OSError:
+                            pass
+                        break
+
             for i, rec in enumerate(evidence_records):
                 p_text = self.generator.format_instance_prompt(rec["question"], rec["primary_evidence"])
                 h_key = hashlib.sha256(
-                    (p_text + str(max_new_tokens) + str(getattr(self.generator, "adapter_path", ""))).encode("utf-8")
+                    f"{p_text}|{max_new_tokens}|{ad_path}|{ad_sig}".encode("utf-8")
                 ).hexdigest()
                 prompts_and_hashes.append((p_text, h_key))
 
@@ -719,8 +735,9 @@ class LegalQAPipeline:
                                     "prompt_hash": h_key,
                                     "raw": ans,
                                 }, ensure_ascii=False) + "\n")
-                        except Exception:
-                            pass
+                                f.flush()
+                        except Exception as e:
+                            logger.warning("Failed to write to raw cache '%s': %s", raw_cache_path, e)
 
         # 7. Candidate Ensembles & Selection
         for rec, gen_ans in zip(evidence_records, gen_answers):

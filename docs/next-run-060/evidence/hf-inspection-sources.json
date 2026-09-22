@@ -1,0 +1,115 @@
+{
+  "inspected_on": "2026-09-22",
+  "repo": "dangphuc2109/legalqa-qwen2.5-3b-adapter",
+  "scope": "Public metadata and selected notebook source/output/log sections; no weight binaries downloaded, no new execution; hashes identify fetched files, not exhaustive audits.",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "2b91277b7d1d49c7a3704b024805624be3ebf242d67e539277d005028262c028",
+      "bytes": 3971,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/README.md"
+    },
+    {
+      "path": "runs/20260920-215402/run_config_v6.json",
+      "sha256": "b2a60bfa05be2af218edfe9ec923c4dfe10fbcc03aa98d3a4e26a57975fe6433",
+      "bytes": 3318,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/runs/20260920-215402/run_config_v6.json"
+    },
+    {
+      "path": "runs/20260920-215402/encoder_ft_v2/config.json",
+      "sha256": "fc53c9f07942aaf4357e05bbf2e41ac89958ac3df5c97cd5cf6d992fc5be7a02",
+      "bytes": 761,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/runs/20260920-215402/encoder_ft_v2/config.json",
+      "local_copy": "encoder-ft-v2-config.json"
+    },
+    {
+      "path": "runs/20260920-215402/encoder_ft_v2/ft_meta.json",
+      "sha256": "a9afff95c612aabc7c57a72e91d0b52bfb7e05942b1707604cf7d4461d7e720b",
+      "bytes": 560,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/runs/20260920-215402/encoder_ft_v2/ft_meta.json",
+      "local_copy": "encoder-ft-v2-meta.json"
+    },
+    {
+      "path": "runs/20260920-215402/executed.ipynb",
+      "sha256": "26918c1025514e92f1d27fb85e6004b0734cdeff8952a15ea43861dd16b6b96e",
+      "bytes": 1560507,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/runs/20260920-215402/executed.ipynb"
+    },
+    {
+      "path": "runs/20260920-215402/logs/launcher.out.log",
+      "sha256": "93c009f189cb2cc9dddc30f05a9380c307f265e80d2ccf340f64b71d685b76c9",
+      "bytes": 315612,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/runs/20260920-215402/logs/launcher.out.log"
+    },
+    {
+      "path": "runs/20260920-215402/logs/modal-app.log",
+      "sha256": "4e93fd21ae80cac7a827112498c0f41f00d1933825a74b8e6538aea6ea973390",
+      "bytes": 10518,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/runs/20260920-215402/logs/modal-app.log"
+    },
+    {
+      "path": "runs/run_v16_dual_assembled/submission_manifest.json",
+      "sha256": "7f1f713872155bab0cf8ebbd5ca97e8c18ceb6c8f5b8c0151f8f8c554419077a",
+      "bytes": 778,
+      "revision": "a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53",
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/a6e4805b5a25dec3f3220f6a0a6506ecc5e00e53/runs/run_v16_dual_assembled/submission_manifest.json"
+    },
+    {
+      "path": "checkpoints/generator/hf_adapter/adapter_config.json",
+      "revision": "295d6ff206ce14a69412aa1cb1728849ffe56fde",
+      "sha256": "c96bbb8f1967d47fb437810873faefb3d66e7609125e0ba06858871a60f8dcd7",
+      "bytes": 1156,
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/295d6ff206ce14a69412aa1cb1728849ffe56fde/checkpoints/generator/hf_adapter/adapter_config.json"
+    },
+    {
+      "path": "checkpoints/generator/hf_adapter/generator_manifest.json",
+      "revision": "295d6ff206ce14a69412aa1cb1728849ffe56fde",
+      "sha256": "da5441c0ed1c1b9b036adfbcbb6b57976954430e7a3d466f02b1ad443cd0a50f",
+      "bytes": 448,
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/295d6ff206ce14a69412aa1cb1728849ffe56fde/checkpoints/generator/hf_adapter/generator_manifest.json"
+    },
+    {
+      "path": "checkpoints/generator/hf_adapter/runs/checkpoint-3/trainer_state.json",
+      "revision": "295d6ff206ce14a69412aa1cb1728849ffe56fde",
+      "sha256": "6f9684aa92f24f975af06a1d45f4f05da6a257a2714b981eaff8b2d630a160c0",
+      "bytes": 761,
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/295d6ff206ce14a69412aa1cb1728849ffe56fde/checkpoints/generator/hf_adapter/runs/checkpoint-3/trainer_state.json"
+    },
+    {
+      "path": "runs/20260915T175335Z-cf39a0a3/run_manifest.json",
+      "revision": "295d6ff206ce14a69412aa1cb1728849ffe56fde",
+      "sha256": "00a0932d6d9b8d628142a395b4ff105d72c6e56d84e9463b65c576d679c57054",
+      "bytes": 1931,
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/295d6ff206ce14a69412aa1cb1728849ffe56fde/runs/20260915T175335Z-cf39a0a3/run_manifest.json"
+    },
+    {
+      "path": "runs/20260916T173649Z-5cfa1495/run_manifest.json",
+      "revision": "295d6ff206ce14a69412aa1cb1728849ffe56fde",
+      "sha256": "1a5bccfcf139d54b8b86bb03ec35820b9e93986cc14922ef72251614a0631078",
+      "bytes": 2044,
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/295d6ff206ce14a69412aa1cb1728849ffe56fde/runs/20260916T173649Z-5cfa1495/run_manifest.json"
+    },
+    {
+      "path": "runs/20260917T040954Z-293b8d37/run_manifest.json",
+      "revision": "295d6ff206ce14a69412aa1cb1728849ffe56fde",
+      "sha256": "7e8f4060b59e218afb484ac4bfe8b1caaa9ebd98852026a922df6bf7fd36c3c5",
+      "bytes": 2043,
+      "url": "https://huggingface.co/dangphuc2109/legalqa-qwen2.5-3b-adapter/resolve/295d6ff206ce14a69412aa1cb1728849ffe56fde/runs/20260917T040954Z-293b8d37/run_manifest.json"
+    }
+  ],
+  "git_notebook": {
+    "ref": "5f75cfa",
+    "path": "notebooks/DSC2026_LegalQA_Pipeline_v13.ipynb",
+    "sha256": "35bcc8cac275866ae70da5faafab55aa64d817ccc75387d7cdc164fe3ebf358a",
+    "execution_outputs_present": false,
+    "deleted_at": "cdf35a8",
+    "inspection": "Read-only local-history subagent report"
+  }
+}

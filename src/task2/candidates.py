@@ -232,8 +232,28 @@ def generate_candidate_ensemble(
     full_art_text = clean_statutory_text(evidence_packs.get("full_article", "")) if evidence_packs else ""
     if not full_art_text and clean_ev:
         full_art_text = clean_ev
+
+    # 1. Standard article@4000
     citation_block = f"{header}\n{full_art_text[:4000]}".strip() if full_art_text else ""
-    dual_assembled = (prose + "\n\nTrích dẫn quy định:\n" + citation_block).strip() if (prose and citation_block) else (prose or citation_block)
+    dual_assembled = (prose + SOURCE_HEADER + citation_block).strip() if (prose and citation_block) else (prose or citation_block)
+
+    # 2. Extended article@6000 (v13 local empirical optimum)
+    citation_block_6000 = f"{header}\n{full_art_text[:6000]}".strip() if full_art_text else ""
+    dual_assembled_6000 = (prose + SOURCE_HEADER + citation_block_6000).strip() if (prose and citation_block_6000) else (prose or citation_block_6000)
+
+    # 3. Clause boundary trimmed (max 2500 chars, complete sentence)
+    trimmed_clause = trim_at_complete_sentence(full_art_text, max_chars=2500)
+    citation_block_clause = f"{header}\n{trimmed_clause}".strip() if trimmed_clause else ""
+    dual_assembled_clause = (prose + SOURCE_HEADER + citation_block_clause).strip() if (prose and citation_block_clause) else (prose or citation_block_clause)
+
+    # 4. Compact length-calibrated assembly (prevent fragmentation when prose is already long)
+    prose_words = len(prose.split()) if prose else 0
+    if prose_words > 350:
+        compact_ev = trim_at_complete_sentence(full_art_text, max_chars=1500)
+        citation_block_compact = f"{header}\n{compact_ev}".strip() if compact_ev else ""
+        dual_assembled_compact = (prose + SOURCE_HEADER + citation_block_compact).strip() if (prose and citation_block_compact) else (prose or citation_block_compact)
+    else:
+        dual_assembled_compact = dual_assembled
 
     candidates: Dict[str, str] = {
         "exact_memory": exact_ans,
@@ -244,6 +264,9 @@ def generate_candidate_ensemble(
         "generated": gen_prose,
         "snapped": snapped,
         "dual_assembled": dual_assembled,
+        "dual_assembled_6000": dual_assembled_6000,
+        "dual_assembled_clause": dual_assembled_clause,
+        "dual_assembled_compact": dual_assembled_compact,
         "strategy_f_300": apply_strategy_f(snapped or gen_prose, clean_ev, max_chars=300),
         "strategy_f_600": apply_strategy_f(snapped or gen_prose, clean_ev, max_chars=600),
         "strategy_f_1000": apply_strategy_f(snapped or gen_prose, clean_ev, max_chars=1000),

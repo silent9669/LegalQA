@@ -34,6 +34,9 @@ CANDIDATE_ORDER = [
     "strategy_f_1500",
     "snapped",
     "dual_assembled",
+    "dual_assembled_6000",
+    "dual_assembled_clause",
+    "dual_assembled_compact",
     "generated",
 ]
 

@@ -1,0 +1,4 @@
+elapsedTime: 705.114177942276
+exitCode: 0
+ingestionElapsedTime: null
+ingestionExitCode: null

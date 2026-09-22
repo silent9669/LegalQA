@@ -36,6 +36,10 @@ from src.task2.selector import CandidateSelector
 GENERATOR_DEPENDENT_FAMILIES: Set[str] = {
     "generated",
     "snapped",
+    "dual_assembled",
+    "dual_assembled_6000",
+    "dual_assembled_clause",
+    "dual_assembled_compact",
     "strategy_f_300",
     "strategy_f_600",
     "strategy_f_1000",

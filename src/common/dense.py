@@ -128,11 +128,15 @@ class DenseRetriever:
         device: Optional[str] = None,
         dtype: str = "float16",
         final_mode: bool = False,
+        max_seq_length: Optional[int] = 256,
+        is_vietnamese_tokenized: Optional[bool] = None,
     ):
         self.model_name = model_name
         self.revision = revision
         self.dtype_str = dtype
         self.final_mode = final_mode
+        self.max_seq_length = max_seq_length
+        self.is_vietnamese_tokenized = is_vietnamese_tokenized
         if device is None:
             if torch is not None and torch.cuda.is_available():
                 self.device = "cuda"
@@ -152,12 +156,62 @@ class DenseRetriever:
             return 1024
         return 768
 
+    def _needs_vietnamese_tokenization(self) -> bool:
+        """Determine if model requires Vietnamese word segmentation (PyVi/ViTokenizer)."""
+        if self.is_vietnamese_tokenized is not None:
+            return bool(self.is_vietnamese_tokenized)
+        name = str(self.model_name).lower()
+        if any(k in name for k in ("dek21", "encoder_ft", "phobert", "huydang")):
+            return True
+        if os.path.isdir(self.model_name):
+            cfg_path = os.path.join(self.model_name, "config.json")
+            if os.path.isfile(cfg_path):
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg_data = json.load(f)
+                    tok_cls = str(cfg_data.get("tokenizer_class", "")).lower()
+                    m_type = str(cfg_data.get("model_type", "")).lower()
+                    if "phobert" in tok_cls or m_type == "roberta":
+                        return True
+                except Exception:
+                    pass
+        return False
+
     def _lazy_init(self) -> None:
-        if self.model is None and self.model_name != "mock" and SentenceTransformer is not None:
+        if self.model is None and self.model_name != "mock":
+            if SentenceTransformer is None:
+                raise ImportError(
+                    f"Cannot load dense model '{self.model_name}': sentence_transformers is missing."
+                )
             kwargs = {"device": self.device}
             if self.revision:
                 kwargs["revision"] = self.revision
-            self.model = SentenceTransformer(self.model_name, **kwargs)
+
+            is_local_dir = os.path.isdir(self.model_name)
+            has_modules = is_local_dir and os.path.isfile(os.path.join(self.model_name, "modules.json"))
+
+            if is_local_dir and not has_modules:
+                # Raw Transformer export (e.g. PhoBERT/DEk21 export from notebook v13)
+                # Reconstruct Transformer + Mean Pooling + L2 Normalization (v13 recipe)
+                try:
+                    from sentence_transformers import models
+                    max_len = self.max_seq_length or 256
+                    wm = models.Transformer(self.model_name, max_seq_length=max_len)
+                    hid = wm.get_word_embedding_dimension()
+                    self.model = SentenceTransformer(
+                        modules=[
+                            wm,
+                            models.Pooling(hid, pooling_mode="mean"),
+                            models.Normalize(),
+                        ],
+                        device=self.device,
+                    )
+                except Exception as e:
+                    logger.warning("Custom Transformer loading failed, falling back to SentenceTransformer: %s", e)
+                    self.model = SentenceTransformer(self.model_name, **kwargs)
+            else:
+                self.model = SentenceTransformer(self.model_name, **kwargs)
+
             if self.device.startswith("cuda") and torch is not None and hasattr(self.model, "half"):
                 self.model.half()
 
@@ -173,15 +227,19 @@ class DenseRetriever:
         if not texts:
             return np.empty((0, dim), dtype=np.float32)
 
-        if self.model_name == "mock" or SentenceTransformer is None:
+        if self.model_name == "mock":
             np.random.seed(42)
             emb = np.random.randn(len(texts), dim).astype(np.float32)
             norms = np.linalg.norm(emb, axis=1, keepdims=True)
             return emb / np.maximum(norms, 1e-12)
 
+        if SentenceTransformer is None:
+            raise RuntimeError(
+                f"Cannot encode real texts with model '{self.model_name}': sentence_transformers is missing."
+            )
+
         self._lazy_init()
-        # DEk21 uses Vietnamese word tokenization; BGE-M3 handles raw text
-        if "dek21" in self.model_name.lower() and not pre_tokenized:
+        if self._needs_vietnamese_tokenization() and not pre_tokenized:
             processed_texts = [tokenize_vietnamese(t) for t in texts]
         else:
             processed_texts = texts
@@ -422,9 +480,17 @@ class DenseRetriever:
 
                 # Verify expected model name
                 if expected_model_name and manifest_model != expected_model_name:
-                    raise ValueError(
-                        f"FINAL_PIPELINE_ERROR: Dense model mismatch! Expected '{expected_model_name}', but index has '{manifest_model}'"
+                    m1, m2 = manifest_model.lower(), expected_model_name.lower()
+                    is_compatible = (
+                        (m1 == m2)
+                        or ("dek21" in m1 and "dek21" in m2)
+                        or ("encoder_ft" in m1 and "encoder_ft" in m2)
+                        or (os.path.basename(m1) == os.path.basename(m2))
                     )
+                    if not is_compatible:
+                        raise ValueError(
+                            f"FINAL_PIPELINE_ERROR: Dense model mismatch! Expected '{expected_model_name}', but index has '{manifest_model}'"
+                        )
                 model_name = manifest_model
 
         retriever = cls(model_name=model_name, revision=revision, device=device, dtype=dtype, final_mode=final_mode)

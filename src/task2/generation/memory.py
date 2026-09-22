@@ -64,6 +64,7 @@ def snapshot_cuda_memory(label: str = "", devices: Sequence[int] = (0, 1)) -> Di
                 allocated = torch.cuda.memory_allocated(dev) / (1024**2)
                 reserved = torch.cuda.memory_reserved(dev) / (1024**2)
                 max_allocated = torch.cuda.max_memory_allocated(dev) / (1024**2)
+                max_reserved = torch.cuda.max_memory_reserved(dev) / (1024**2) if hasattr(torch.cuda, "max_memory_reserved") else reserved
 
                 free_mb = 0.0
                 total_mb = 0.0
@@ -80,18 +81,27 @@ def snapshot_cuda_memory(label: str = "", devices: Sequence[int] = (0, 1)) -> Di
                     "allocated_mb": round(allocated, 2),
                     "reserved_mb": round(reserved, 2),
                     "max_allocated_mb": round(max_allocated, 2),
+                    "max_reserved_mb": round(max_reserved, 2),
                     "free_mb": round(free_mb, 2),
                     "total_mb": round(total_mb, 2),
                 }
             except Exception as e:
                 logger.debug(f"Failed to read CUDA memory info for device {dev}: {e}")
 
-    return {
+    res_snap = {
         "cuda_available": True,
         "label": label,
         "timestamp": time.time(),
         "devices": out_devices,
     }
+    # Add string aliases e.g. cuda_0, cuda_1 for direct indexing
+    for dev, stats in out_devices.items():
+        res_snap[f"cuda_{dev}"] = {
+            "peak_allocated_mb": stats.get("max_allocated_mb", 0.0),
+            "peak_reserved_mb": stats.get("max_reserved_mb", 0.0),
+            **stats,
+        }
+    return res_snap
 
 
 class TrainerMemoryCallback(TrainerCallback):

@@ -187,6 +187,8 @@ def recipe_to_train_config(cfg: Any, device: str = "cuda:0") -> Any:
         gradient_checkpointing=bool(algo.generator.gradient_checkpointing),
         completion_only_loss=bool(algo.generator.completion_only_loss),
         trainer_n_gpu=1,
+        warmup_ratio=float(getattr(algo.generator, "warmup_ratio", 0.05)),
+        lr_scheduler_type=str(getattr(algo.generator, "lr_scheduler_type", "cosine")),
     )
 
 

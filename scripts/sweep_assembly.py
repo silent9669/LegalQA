@@ -111,8 +111,9 @@ def evaluate_assembly_strategies(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sweep assembly strategies over cached prose.")
-    parser.add_argument("--cache-jsonl", required=True, help="Path to gen_raw_cache.jsonl")
+    parser = argparse.ArgumentParser(description="Sweep assembly strategies over cached prose or evaluation trace.")
+    parser.add_argument("--cache-jsonl", required=True, help="Path to gen_raw_cache.jsonl or eval_trace.jsonl")
+    parser.add_argument("--qa-path", default=None, help="Optional path to qa_unique.parquet to backfill references")
     parser.add_argument("--output-json", default="artifacts/labs/assembly_sweep.json", help="Path to save sweep report")
     args = parser.parse_args()
 
@@ -125,6 +126,24 @@ def main() -> None:
         for line in f:
             if line.strip():
                 items.append(json.loads(line))
+
+    # If raw cache format (has 'raw' and 'qa_id' but lacks 'reference'), backfill from qa-path
+    if items and not any(it.get("reference") for it in items):
+        qa_p = args.qa_path or "artifacts/task2/data/qa_unique.parquet"
+        if os.path.exists(qa_p):
+            import pandas as pd
+            df_qa = pd.read_parquet(qa_p)
+            id_to_ref = dict(zip(df_qa["qa_id"].astype(str), df_qa["answer_raw"].astype(str)))
+            for it in items:
+                qid = str(it.get("qa_id", ""))
+                if qid in id_to_ref:
+                    it["reference"] = id_to_ref[qid]
+                if "prose" not in it and "raw" in it:
+                    it["prose"] = it["raw"]
+
+    if not items or not any(it.get("reference") for it in items):
+        print("Error: Input items lack 'reference' answers for evaluation. Pass an evaluation trace or provide a valid --qa-path.", file=sys.stderr)
+        sys.exit(1)
 
     sweep_res = evaluate_assembly_strategies(items)
     os.makedirs(os.path.dirname(os.path.abspath(args.output_json)), exist_ok=True)

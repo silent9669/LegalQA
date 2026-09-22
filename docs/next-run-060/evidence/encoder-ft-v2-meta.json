@@ -1,0 +1,38 @@
+{
+ "tag": "ft_v2",
+ "base": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+ "init": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+ "dims": [
+  768,
+  512,
+  256
+ ],
+ "epochs": 2,
+ "batch": 64,
+ "lr": 2e-05,
+ "rows": 4166,
+ "n_neg": 2,
+ "denoise": true,
+ "negatives": {
+  "vetoed as probable false negatives": 24333,
+  "hard": 5291,
+  "random (no clean hard one)": 3041
+ },
+ "loss": [
+  9.5573,
+  8.1906,
+  7.2534,
+  7.2969,
+  7.0692,
+  7.3625,
+  6.3802,
+  6.0661,
+  5.9799,
+  6.1003,
+  5.5467,
+  5.7218,
+  6.0723
+ ],
+ "pooling": "mean+l2",
+ "max_len": 256
+}

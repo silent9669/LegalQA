@@ -43,6 +43,8 @@ class GeneratorTrainConfig:
     gradient_checkpointing: bool = True
     completion_only_loss: bool = True
     trainer_n_gpu: int = 1
+    warmup_ratio: float = 0.05
+    lr_scheduler_type: str = "cosine" 
 
 
 def validate_generator_config_for_profile(config: GeneratorTrainConfig, profile: str) -> None:

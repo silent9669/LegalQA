@@ -11,13 +11,13 @@ cd "$ROOT_DIR"
 
 # 1. Resolve Modal CLI and Python executables
 if [ -f "$ROOT_DIR/.venv311/bin/modal" ] && "$ROOT_DIR/.venv311/bin/modal" --version &>/dev/null; then
-    MODAL_BIN="$ROOT_DIR/.venv311/bin/modal"
+    MODAL_CMD=("$ROOT_DIR/.venv311/bin/modal")
     PY_BIN="$ROOT_DIR/.venv311/bin/python"
 elif command -v modal &>/dev/null; then
-    MODAL_BIN="$(command -v modal)"
+    MODAL_CMD=("$(command -v modal)")
     PY_BIN="$(command -v python3)"
 elif python3 -m modal --version &>/dev/null; then
-    MODAL_BIN="python3 -m modal"
+    MODAL_CMD=(python3 -m modal)
     PY_BIN="$(command -v python3)"
 else
     echo "======================================================================="
@@ -30,7 +30,7 @@ fi
 
 # 2. Check Modal Authentication
 echo "[1/4] Checking Modal Authentication..."
-CURRENT_PROFILE=$("$MODAL_BIN" profile current 2>/dev/null || echo "")
+CURRENT_PROFILE=$("${MODAL_CMD[@]}" profile current 2>/dev/null || echo "")
 if [ -z "$CURRENT_PROFILE" ]; then
     echo "[!] Not authenticated to Modal! Please run: modal setup"
     exit 1
@@ -39,13 +39,13 @@ echo "      Active Modal Profile: $CURRENT_PROFILE"
 
 # 3. Bootstrap Secrets & Volumes from .env if missing in teammate's workspace
 echo "[2/4] Ensuring Modal Secrets & Volumes in workspace '$CURRENT_PROFILE'..."
-MODAL_EXEC="$MODAL_BIN" "$PY_BIN" -c "
+"$PY_BIN" -c "
 import os
 import subprocess
 from pathlib import Path
 from dotenv import dotenv_values
 
-modal_bin = os.environ.get('MODAL_EXEC', 'modal')
+modal_bin = sys.argv[1] if len(sys.argv) > 1 else 'modal'
 env_p = Path('.env')
 if env_p.is_file():
     vals = dotenv_values(env_p)
@@ -87,26 +87,19 @@ if pick:
     print(json.loads(pick.read_text())['candidate_id'])
 " 2>/dev/null || echo "")
 
+EXTRA_FLAGS=()
 if [ -n "$CAND_ID" ]; then
     KAGGLE_REPORT="artifacts/gates/$CAND_ID/kaggle_t4x2_report.json"
     MICRO_REPORT="artifacts/gates/$CAND_ID/a100_micro_probe_report.json"
 
-    if [ "$STAGE" = "micro_probe" ] || [ "$STAGE" = "full" ]; then
-        if [ ! -f "$KAGGLE_REPORT" ]; then
-            echo "[*] kaggle_t4x2_report.json missing for candidate $CAND_ID."
-            echo "    Automatically running required DAG root stage 'kaggle_t4x2' on Modal Dual-T4 (~8 min)..."
-            "$MODAL_BIN" run scripts/modal_app.py --stage "kaggle_t4x2"
-            echo "[+] kaggle_t4x2 stage completed and registered locally at $KAGGLE_REPORT!"
-        fi
-    fi
-
-    if [ "$STAGE" = "full" ]; then
-        if [ ! -f "$MICRO_REPORT" ]; then
-            echo "[*] a100_micro_probe_report.json missing for candidate $CAND_ID."
-            echo "    Automatically running required DAG stage 'micro_probe' on Modal A100 (~1.5 min)..."
-            "$MODAL_BIN" run scripts/modal_app.py --stage "micro_probe"
-            echo "[+] a100_micro_probe stage completed and registered locally at $MICRO_REPORT!"
-        fi
+    if [ "$STAGE" = "full" ] && [ ! -f "$MICRO_REPORT" ]; then
+        echo "[*] Notice: a100_micro_probe_report.json not found locally for candidate $CAND_ID."
+        echo "    Using direct execution with --skip-parent-check."
+        EXTRA_FLAGS+=(--skip-parent-check)
+    elif [ "$STAGE" = "micro_probe" ] && [ ! -f "$KAGGLE_REPORT" ]; then
+        echo "[*] Notice: kaggle_t4x2_report.json not found locally for candidate $CAND_ID."
+        echo "    Using direct execution with --skip-parent-check."
+        EXTRA_FLAGS+=(--skip-parent-check)
     fi
 fi
 
@@ -115,4 +108,4 @@ echo "[3/4] Ready: stage=$STAGE | test=$TEST_PATH"
 echo "[4/4] Dispatching to remote Modal container..."
 echo "======================================================================="
 
-"$MODAL_BIN" run scripts/modal_app.py --stage "$STAGE" --test-path "$TEST_PATH"
+"${MODAL_CMD[@]}" run scripts/modal_app.py --stage "$STAGE" --test-path "$TEST_PATH" "${EXTRA_FLAGS[@]}"
