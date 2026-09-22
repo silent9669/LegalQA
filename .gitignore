@@ -77,3 +77,4 @@ public-official.json
 notebooks/*_output.ipynb
 
 modal_full_a100.log
+*.bak.log
