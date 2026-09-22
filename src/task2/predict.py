@@ -730,10 +730,17 @@ class LegalQAPipeline:
                         try:
                             os.makedirs(os.path.dirname(os.path.abspath(raw_cache_path)), exist_ok=True)
                             with open(raw_cache_path, "a", encoding="utf-8") as f:
+                                rec_slot = evidence_records[slot]
                                 f.write(json.dumps({
-                                    "qa_id": evidence_records[slot]["qa_id"],
+                                    "qa_id": rec_slot["qa_id"],
                                     "prompt_hash": h_key,
                                     "raw": ans,
+                                    "prose": ans,
+                                    "evidence": rec_slot.get("primary_evidence", ""),
+                                    "doc_name": rec_slot.get("top_doc", ""),
+                                    "art_num": rec_slot.get("top_art", ""),
+                                    "clause_num": rec_slot.get("top_clause", ""),
+                                    "evidence_packs": rec_slot.get("evidence_packs", {}),
                                 }, ensure_ascii=False) + "\n")
                                 f.flush()
                         except Exception as e:

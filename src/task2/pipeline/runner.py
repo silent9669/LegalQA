@@ -107,11 +107,16 @@ def run_pipeline(
         print("Preflight dataset schema validation: PASS")
 
     print("Executing pre-training strict Dense index probe...")
+    dense_expected = (
+        resolved_config.algorithm.models.dense.id
+        if resolved_config is not None
+        else "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    )
     probe_dense = DenseRetriever.load_index(
         dek21_dir,
         corpus_path=chunks_path,
         device=retrieval_device,
-        expected_model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        expected_model_name=dense_expected,
         expected_dtype="float16",
         final_mode=True,
         verify_self_consistency=True,
@@ -480,7 +485,7 @@ def run_pipeline(
             dek21_dir,
             corpus_path=chunks_path,
             device=retrieval_device,
-            expected_model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+            expected_model_name=dense_expected,
             expected_dtype="float16",
             final_mode=True,
             verify_self_consistency=True,

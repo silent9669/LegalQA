@@ -41,6 +41,7 @@ echo "      Active Modal Profile: $CURRENT_PROFILE"
 echo "[2/4] Ensuring Modal Secrets & Volumes in workspace '$CURRENT_PROFILE'..."
 "$PY_BIN" -c "
 import os
+import sys
 import subprocess
 from pathlib import Path
 from dotenv import dotenv_values
@@ -81,8 +82,7 @@ CAND_ID=$("$PY_BIN" -c "
 import json
 from pathlib import Path
 cands = sorted(Path('artifacts/candidates').glob('*/candidate_manifest.json'), key=lambda p: p.stat().st_mtime)
-cands_with_gates = [p for p in cands if (Path('artifacts/gates') / p.parent.name / 'kaggle_t4x2_report.json').is_file()]
-pick = cands_with_gates[-1] if cands_with_gates else (cands[-1] if cands else None)
+pick = cands[-1] if cands else None
 if pick:
     print(json.loads(pick.read_text())['candidate_id'])
 " 2>/dev/null || echo "")

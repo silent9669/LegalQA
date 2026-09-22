@@ -45,6 +45,7 @@ def run_kaggle_smoke(
     adapter_path: str = "",
     num_queries: int = 8,
     max_corpus_passages: int = 200,
+    allow_mock: bool = False,
 ) -> Dict[str, Any]:
     """Execute end-to-end lightweight smoke test on real components."""
     t0 = time.time()
@@ -111,6 +112,8 @@ def run_kaggle_smoke(
         dense.fit(corpus_chunks, batch_size=32, show_progress=False)
         print(f"      Dense retriever fitted ({dense_model}) on {dense_dev}.")
     except Exception as e:
+        if not allow_mock:
+            raise RuntimeError(f"Dense model '{dense_model}' failed to load: {e}. Refusing mock fallback in strict smoke mode.") from e
         print(f"      [!] Dense real fit skipped ({e}); using mock embeddings for smoke...")
         dense = DenseRetriever(model_name="mock")
         dense.fit_mock(corpus_chunks)
@@ -134,9 +137,13 @@ def run_kaggle_smoke(
             )
             print("      Neural Qwen generator loaded.")
         except Exception as e:
+            if not allow_mock:
+                raise RuntimeError(f"Neural generator '{generator_model}' failed to load: {e}. Refusing fallback in strict smoke mode.") from e
             print(f"      [!] Neural generator load skipped ({e}); using fast fallback generator.")
             generator = QwenGenerator(runtime="fallback")
     else:
+        if not allow_mock:
+            raise RuntimeError("CUDA is not available. Refusing fallback generator in strict smoke mode.")
         generator = QwenGenerator(runtime="fallback")
 
     selector = CandidateSelector(policy="fixed_baseline", best_fixed_candidate="dual_assembled")
@@ -212,6 +219,7 @@ def main() -> None:
     parser.add_argument("--generator-model", default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--adapter-path", default="")
     parser.add_argument("--num-queries", type=int, default=8)
+    parser.add_argument("--allow-mock", action="store_true", help="Allow fallback/mock models when running on CPU without weights")
     args = parser.parse_args()
 
     res = run_kaggle_smoke(
@@ -222,6 +230,7 @@ def main() -> None:
         generator_model=args.generator_model,
         adapter_path=args.adapter_path,
         num_queries=args.num_queries,
+        allow_mock=args.allow_mock,
     )
     if res.get("status") != "PASS":
         sys.exit(1)

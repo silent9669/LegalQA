@@ -336,12 +336,32 @@ def evaluate_checkpoint(
         )
 
     # 7. Candidate Selector
+    best_cand = best_fixed_candidate or "dual_assembled"
     if selector_path and os.path.exists(selector_path):
         selector = CandidateSelector.load(selector_path)
     else:
-        selector = CandidateSelector(policy="fixed_baseline", best_fixed_candidate="stitched_extract")
+        selector = CandidateSelector(policy="fixed_baseline", best_fixed_candidate=best_cand)
 
-    pipeline = LegalQAPipeline(isolated_mem, bm25, dense, reranker, packer, generator, selector)
+    legal_index = None
+    legal_rows = None
+    if retrieval_options is not None and retrieval_options.get("use_legal_reference"):
+        from src.common.legal_reference import build_legal_reference_index
+        legal_rows = list(bm25.corpus)
+        legal_index, _ = build_legal_reference_index(legal_rows)
+
+    pipeline = LegalQAPipeline(
+        isolated_mem,
+        bm25,
+        dense,
+        reranker,
+        packer,
+        generator,
+        selector,
+        legal_index=legal_index,
+        legal_rows=legal_rows,
+        retrieval_options=retrieval_options,
+        retrieval_weights=retrieval_weights,
+    )
 
     # 8. Evaluation Loop
     results = []

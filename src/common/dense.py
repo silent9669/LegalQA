@@ -485,6 +485,8 @@ class DenseRetriever:
                         (m1 == m2)
                         or ("dek21" in m1 and "dek21" in m2)
                         or ("encoder_ft" in m1 and "encoder_ft" in m2)
+                        or ("encoder_ft" in m1 and "dek21" in m2)
+                        or ("dek21" in m1 and "encoder_ft" in m2)
                         or (os.path.basename(m1) == os.path.basename(m2))
                     )
                     if not is_compatible:
