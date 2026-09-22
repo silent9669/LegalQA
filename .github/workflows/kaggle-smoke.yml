@@ -1,0 +1,90 @@
+name: Kaggle Smoke
+
+# Chain: GitHub CI (tests.yml) stays the fast gate. This workflow pushes the
+# smoke notebook to Kaggle and polls the Dual-T4 kernel to completion, giving
+# a real-GPU smoke signal before any Modal A100 full training run.
+#
+# Required repository secrets: KAGGLE_USERNAME, KAGGLE_KEY.
+# Manual runs: Actions -> Kaggle Smoke -> Run workflow.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "notebooks/**"
+      - "scripts/run_gpu_gate.py"
+      - "scripts/kaggle_smoke.py"
+      - "src/**"
+      - "configs/**"
+
+concurrency:
+  group: kaggle-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kaggle-smoke:
+    name: kaggle-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Kaggle CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install kaggle
+
+      - name: Configure Kaggle credentials
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          if [ -z "$KAGGLE_USERNAME" ] || [ -z "$KAGGLE_KEY" ]; then
+            echo "::error::Missing KAGGLE_USERNAME/KAGGLE_KEY repository secrets."
+            exit 1
+          fi
+          mkdir -p ~/.kaggle
+          printf '{"username":"%s","key":"%s"}' "$KAGGLE_USERNAME" "$KAGGLE_KEY" > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Push smoke kernel to Kaggle
+        run: |
+          kaggle kernels push -p notebooks/
+
+      - name: Poll kernel to completion
+        env:
+          KERNEL: phucdangg/legalqa-training
+        run: |
+          for i in $(seq 1 140); do
+            STATUS=$(kaggle kernels status "$KERNEL" 2>/dev/null | tr -d '\r')
+            echo "[$i] status: $STATUS"
+            case "$STATUS" in
+              *complete*)
+                echo "Kernel completed."
+                exit 0
+                ;;
+              *error*|*failed*|*cancelled*)
+                echo "::error::Kernel ended with status: $STATUS"
+                exit 1
+                ;;
+            esac
+            sleep 60
+          done
+          echo "::error::Timed out waiting for kernel completion."
+          exit 1
+
+      - name: Fetch kernel output logs
+        if: always()
+        env:
+          KERNEL: phucdangg/legalqa-training
+        run: |
+          mkdir -p kaggle_kernel_output
+          kaggle kernels output "$KERNEL" -p kaggle_kernel_output || true
+          ls -la kaggle_kernel_output || true
