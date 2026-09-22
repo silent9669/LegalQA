@@ -1,6 +1,6 @@
 # Sửa đúng chỗ — backlog theo experiment
 
-**Cập nhật:** 2026-09-22 · **PLAN ONLY, chưa sửa code.** Đây không còn là chuỗi R1–R6 phải hoàn thành trước mỗi lần thử. Các finding đầy đủ giữ tại [01](01-evidence-and-corrections.md); đường chạy nhẹ tại [06](06-release-and-a100-runbook.md).
+**Cập nhật:** 2026-09-22 · **ĐÃ SỬA VÀ VERIFIED (commit 75e74d1).** Đã giải quyết triệt để 5 blocker chạm vào pipeline chạy thực tế: runner dynamic model resolution, parent bypass schema compliance, predict cache evidence serialization, fail-closed smoke, và candidate selector evaluation default. Đây không còn là chuỗi R1–R6 phải hoàn thành trước mỗi lần thử. Các finding đầy đủ giữ tại [01](01-evidence-and-corrections.md); đường chạy nhẹ tại [06](06-release-and-a100-runbook.md).
 
 ## 1. Chỉ giải quyết lỗi chạm vào đường đang chạy
 

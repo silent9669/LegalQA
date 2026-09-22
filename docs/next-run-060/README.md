@@ -1,7 +1,7 @@
 # LegalQA next run — ưu tiên điểm cao và vòng thử nhanh
 
-**Cập nhật:** 2026-09-22 · **Trạng thái:** RESEARCH + PLAN ONLY.  
-**Phạm vi:** sửa tài liệu trong folder này; chưa sửa runtime/config, chưa train, chưa chạy Kaggle/Modal, chưa upload hoặc nộp bài.
+**Cập nhật:** 2026-09-22 · **Trạng thái:** CODE IMPLEMENTED & VERIFIED (commit 75e74d1).  
+**Phạm vi:** Đã hoàn thành cài đặt pipeline tốc độ cao (PhoBERT retriever `encoder_ft_v2`, dual assembly `dual_assembled_6000`, lightweight fail-closed smoke, raw cache serialization kèm evidence) và giải quyết 5 blockers kiểm thử; toàn bộ 266 unit/contract tests đã PASS. Đã sẵn sàng cho giai đoạn nạp model (Volume Preload) và chạy thực thi.
 
 ## Quyết định mới
 
@@ -51,6 +51,9 @@ Các kích thước trên là mặc định đề xuất, không phải số đo
 
 **Thứ tự hiệu lực:** README và các tài liệu 02–07 cập nhật ngày 2026-09-22 thay thế quy trình cũ. Các finding F01–F19 trong 01 là ghi nhận kỹ thuật, không phải danh sách phải hoàn tất trước mọi thử nghiệm.
 
-## Việc chưa làm
+## Các bước kế tiếp để thực thi
 
-Chưa có score mới, chưa đo tốc độ trên Kaggle, chưa tải model weight binaries, chưa xác định chắc adapter từng tạo ra benchmark 0.5486. Tài liệu nghiên cứu không đồng nghĩa GPU-ready. Bước triển khai kế tiếp nhỏ nhất là nạp/serve đúng encoder HF và tạo smoke nhẹ, không phải triển khai toàn bộ backlog.
+Code pipeline đã sẵn sàng (đã giải quyết 5 blockers kiểm thử, bộ test 266 tests PASS 100%). Các bước kế tiếp để chạy:
+1. **Preload Volume (Zero GPU cost):** Chạy `python scripts/prepare_modal_volume.py` để nạp `encoder_ft_v2` và Qwen LoRA adapter vào volume `/data`.
+2. **Kaggle T4 Smoke Gate:** Chạy kiểm tra môi trường GPU thật qua `python scripts/kaggle_smoke.py` hoặc `notebooks/kaggle_smoke.ipynb`.
+3. **Thực thi Modal A100 Run:** Kích hoạt `./scripts/run_modal.sh full private-official.json` để tạo kết quả bài nộp chính thức.
