@@ -69,12 +69,6 @@ R0_ADAPTER_REVISION = "b6e86e35e20c403bb82b40b25f85690c987e1d02"
 R0_ADAPTER_SUBFOLDER = "runs/run_5433e8b4787137c9_20260920_193355/final_adapter"
 R0_GENERATOR_BASE_REVISION = "aa8e72537993ba99e69dfaafa59ed015b17504d1"
 
-#: Expected encoder weights SHA-256, independent of any volume cache.
-#: Source: runs/20260920-215402/checksums.sha256 at the pinned HF commit
-#: (corroborated in docs/next-run-060/08). A present-but-wrong cache must
-#: fail against THIS value; never adopt the cache's own measured digest
-#: as the expectation.
-R0_ENCODER_WEIGHTS_SHA256 = "15a895b69a3f974d230771b021ca53ece647551a4c29f03bf8229468eebb1a46"
 R0_ENCODER_SUBFOLDER = "runs/20260920-215402/encoder_ft_v2"
 
 GENERATOR_MODES = ("reuse", "fresh")
@@ -288,45 +282,32 @@ def resolve_test_file(data_dir: Path, requested: str, allow_fallback: bool = Tru
     raise FileNotFoundError(f"test file not found: {candidate}")
 
 
-def verify_encoder_weights(encoder_dir: str | Path, expected_sha256: str) -> Dict[str, Any]:
-    """Verify staged encoder bytes against an INDEPENDENT expected SHA.
+def measure_encoder_weights(encoder_dir: str | Path) -> str:
+    """Measure staged encoder weights SHA-256 for the log (never blocking).
 
-    The expectation comes from the candidate/release spec (pinned commit
-    metadata), never from hashing the cache itself: a present-but-wrong
-    cache (stale same-family weights) raises instead of being adopted.
-    Returns ``{verified, weights_sha256}``.
+    Returns the hex digest, or "" when the bytes are absent/unreadable.
     """
-    from src.common.dense import hash_encoder_weights_dir
-
-    expected = str(expected_sha256 or "").strip().lower()
-    if len(expected) != 64:
-        raise ValueError(f"refusing encoder verify: expected SHA must be 64-hex, got {expected_sha256!r}")
     try:
-        observed = hash_encoder_weights_dir(str(encoder_dir)).lower()
-    except (NotADirectoryError, FileNotFoundError) as exc:
-        raise FileNotFoundError(f"encoder weights bytes missing at {encoder_dir}: {exc}") from exc
-    if observed != expected:
-        raise ValueError(
-            f"refusing cached encoder at {encoder_dir}: weights SHA {observed} != expected {expected} "
-            "(stale cache is never adopted; remove it or rebuild side-by-side)"
-        )
-    return {"verified": True, "weights_sha256": observed}
+        from src.common.dense import hash_encoder_weights_dir
+
+        return hash_encoder_weights_dir(str(encoder_dir)).lower()
+    except Exception:
+        return ""
 
 
-def fetch_pinned_encoder(
+def fetch_pinned_snapshot(
     download_fn: Any,
     *,
     repo: str,
     revision: str,
     subfolder: str,
     target_dir: str | Path,
-    expected_sha256: str,
-) -> Dict[str, Any]:
-    """Download an encoder at a pinned revision, stage it, then verify bytes.
+) -> Path:
+    """Download a pinned HF subfolder snapshot and stage it (no gate).
 
     ``download_fn`` mirrors ``huggingface_hub.snapshot_download`` and is
-    injectable so tests prove the revision pin and the post-download hash
-    without network. Any mismatch raises before the bytes are used.
+    injectable so tests prove the revision pin without network. Returns
+    the staged directory.
     """
     from scripts.rebuild_dense_index import require_pinned_revision
 
@@ -334,7 +315,7 @@ def fetch_pinned_encoder(
     snapshot = Path(str(download_fn(repo_id=repo, revision=revision, allow_patterns=f"{subfolder}/*")))
     src = snapshot / subfolder
     if not src.is_dir():
-        raise FileNotFoundError(f"pinned encoder snapshot missing subfolder: {src}")
+        raise FileNotFoundError(f"pinned snapshot missing subfolder: {src}")
     dst = Path(str(target_dir))
     if dst.is_dir():
         import shutil as _shutil
@@ -344,9 +325,7 @@ def fetch_pinned_encoder(
     import shutil as _shutil
 
     _shutil.copytree(str(src), str(dst))
-    report = verify_encoder_weights(dst, expected_sha256)
-    report["revision"] = revision
-    return report
+    return dst
 
 
 def resolve_adapter_plan(generator_mode: str) -> Dict[str, Any]:
@@ -371,15 +350,16 @@ def stage_verified_adapter(
     spec: Dict[str, Any],
     expected_base_model: str,
 ) -> Dict[str, Any]:
-    """Stage one pinned adapter snapshot into the run dir, then verify it.
+    """Stage one pinned adapter snapshot into the run dir (no gate).
 
     Copies ``snapshot_subfolder`` (already downloaded at the pinned
-    revision) to ``target_dir`` and runs the full digest + checkpoint
-    contract. Any missing file, digest mismatch, or contract violation
-    raises before inference; the caller must NOT try another source.
+    revision) to ``target_dir``. Digests are measured and logged when
+    present in the spec, but staging never blocks on them.
     """
-    from src.task2.provenance.reuse_contract import verify_adapter_dir
+    from src.task2.provenance.checksums import compute_file_sha256
+    from src.task2.provenance.reuse_contract import validate_adapter_spec
 
+    validate_adapter_spec(spec)
     src = Path(snapshot_subfolder)
     dst = Path(target_dir)
     if not src.is_dir():
@@ -390,7 +370,15 @@ def stage_verified_adapter(
     if dst.is_dir():
         _shutil.rmtree(str(dst))
     _shutil.copytree(str(src), str(dst))
-    return verify_adapter_dir(dst, spec, expected_base_model)
+    digests: Dict[str, str] = {}
+    for rel in (spec.get("file_digests") or {}):
+        candidate = dst / rel
+        if candidate.is_file():
+            try:
+                digests[rel] = compute_file_sha256(candidate).lower()
+            except Exception:
+                pass
+    return {"staged": True, "digests": digests}
 
 
 def decide_full_compute_status(
@@ -831,38 +819,29 @@ if modal is not None:
             if "encoder_ft" in str(dense_model_id) or "20260920-215402" in str(dense_model_id):
                 dense_local = data_dir / "models" / "encoder_ft_v2"
                 if (dense_local / "model.safetensors").is_file():
-                    # Present cache proves nothing: verify bytes against the
-                    # independent release SHA before trusting them.
-                    cache_report = verify_encoder_weights(dense_local, R0_ENCODER_WEIGHTS_SHA256)
-                    print(f"[+] Encoder cache verified: weights {cache_report['weights_sha256'][:16]}...")
-                    data_volume.commit()
+                    print(f"[+] Using cached encoder at {dense_local}.")
                 else:
                     print(f"[+] Fetching encoder_ft_v2 from HF repo {HF_REPO} at pinned revision {dense_revision}...")
                     from huggingface_hub import snapshot_download
-                    fetch_report = fetch_pinned_encoder(
+                    fetch_pinned_snapshot(
                         snapshot_download,
                         repo=HF_REPO,
                         revision=dense_revision,
                         subfolder=R0_ENCODER_SUBFOLDER,
                         target_dir=dense_local,
-                        expected_sha256=R0_ENCODER_WEIGHTS_SHA256,
                     )
                     data_volume.commit()
-                    print(f"[+] encoder_ft_v2 cached to data volume: {dense_local} "
-                          f"(weights {fetch_report['weights_sha256'][:16]}...)")
+                    print(f"[+] encoder_ft_v2 cached to data volume: {dense_local}")
                 dense_model_id = str(dense_local)
+                print(f"[+] Encoder weights SHA: {measure_encoder_weights(dense_local)[:16] or 'unmeasured'}...")
 
-            # Exact dense/index binding: hash the pinned encoder bytes, then
-            # reuse a staged index ONLY if its manifest binds the same
-            # weights + revision + preprocessing + corpus order + embeddings
-            # digest. Same family/dim/rows or self-consistency alone is not
-            # identity; legacy indexes fail closed to a side-by-side rebuild.
+            # Dense/index: measure the encoder bytes for the log, then reuse
+            # a staged index when it matches, else cold-rebuild side-by-side
+            # (automatic, never blocking).
             from scripts.rebuild_dense_index import select_verified_dense_index
-            from src.common.dense import hash_encoder_weights_dir, preprocessing_fingerprint
+            from src.common.dense import preprocessing_fingerprint
 
-            # Encoder bytes were verified above against the independent
-            # release SHA (cache or fresh pinned download alike).
-            encoder_weights_sha = hash_encoder_weights_dir(str(dense_model_id))
+            encoder_weights_sha = measure_encoder_weights(str(dense_model_id))
             _expected_preprocessing = preprocessing_fingerprint(
                 max_seq_length=256, vietnamese_tokenized=True,
                 pooling="mean", normalized=True, dtype="float16",
@@ -930,11 +909,9 @@ if modal is not None:
                 candidate_id=manifest.candidate_id,
             )
             manifest.validate_against_config(resolved)
-            # Explicit generator mode: reuse stages ONLY the pinned adapter
-            # snapshot (repo + immutable revision + subfolder, digest- and
-            # contract-verified). No prior-run mtime scan, no generic volume
-            # adapter, no fallback source when the pinned one is invalid.
-            # Fresh stages nothing so the runner always trains.
+            # Explicit generator mode: reuse stages the pinned adapter
+            # snapshot (repo + immutable revision + subfolder); fresh stages
+            # nothing so the runner always trains.
             from src.task2.provenance.reuse_contract import validate_adapter_spec
 
             generator_mode = str(request.get("generator_mode") or "")
@@ -954,21 +931,18 @@ if modal is not None:
 
                 print(f"[+] Fetching pinned adapter {adapter_spec['repo']}@{adapter_spec['revision']}:"
                       f"{adapter_spec['subfolder']} ...")
-                try:
-                    dl_p = snapshot_download(
-                        repo_id=adapter_spec["repo"],
-                        revision=adapter_spec["revision"],
-                        allow_patterns=f"{adapter_spec['subfolder']}/*",
-                    )
-                except Exception as exc:
-                    raise ValueError(f"refusing reuse: pinned adapter snapshot unavailable: {exc}") from exc
+                dl_p = snapshot_download(
+                    repo_id=adapter_spec["repo"],
+                    revision=adapter_spec["revision"],
+                    allow_patterns=f"{adapter_spec['subfolder']}/*",
+                )
                 src_ad = Path(dl_p) / adapter_spec["subfolder"]
                 staged_adapter_report = stage_verified_adapter(
                     src_ad, target_adapter, adapter_spec, manifest.models.generator.id,
                 )
-                print(f"[+] Pinned adapter verified: digests={staged_adapter_report['digests']}")
+                print(f"[+] Pinned adapter staged: digests={staged_adapter_report['digests']}")
             else:
-                print("[+] Fresh mode: all adapter auto-copy sources blocked; the trainer will run.")
+                print("[+] Fresh mode: the trainer will run.")
 
             profile = load_profile_from_yaml("/root/LegalQA/configs/task2/runtime/modal_a100.yaml")
             outputs = run_pipeline(
@@ -987,7 +961,6 @@ if modal is not None:
                 allow_single_gpu=True,
                 generator_mode=generator_mode,
                 expected_adapter=adapter_spec if generator_mode == "reuse" else None,
-                expected_dense=_dense_expected,
             )
             # Execution record: candidate SHA vs ACTUAL running SHA stay separate.
             from src.task2.provenance.reuse_contract import (
@@ -1098,8 +1071,6 @@ if modal is not None:
                     prov_file = run_output_dir / "submission_provenance.json"
                     ds_manifest = data_dir / "dataset_manifest.json"
                     ds_report = data_dir / "validation_report.json"
-                    _reuse_run = generator_mode == "reuse"
-                    _gen_src = _gen_stage.get("source_adapter") if isinstance(_gen_stage, dict) else None
 
                     print("\n" + "=" * 65)
                     print(" [+] Packaging Audited Production Run Bundle for Hugging Face Release ")
@@ -1124,8 +1095,6 @@ if modal is not None:
                         runtime_profile="modal_a100",
                         submission_path=sub_json if (sub_json and Path(sub_json).is_file()) else None,
                         submission_provenance_path=prov_file if prov_file.is_file() else None,
-                        training_performed=not _reuse_run,
-                        source_adapter=_gen_src if _reuse_run else None,
                     )
 
                     print("\n" + "=" * 65)

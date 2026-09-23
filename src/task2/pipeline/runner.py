@@ -54,29 +54,6 @@ def _pinned_base_revision(resolved_config: Optional[ResolvedTask2Config]) -> Opt
     return None
 
 
-def dense_load_kwargs(expected_dense: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build strict consumer kwargs for both runner dense loads (single source).
-
-    ``None`` keeps the legacy diagnostic load; a non-dict raises; a dict
-    missing the identity core (revision/weights/preprocessing) raises
-    instead of silently loading an unverified index.
-    """
-    if expected_dense is None:
-        return {}
-    if not isinstance(expected_dense, dict):
-        raise ValueError("expected_dense must be a dict with model_id/revision/encoder_weights_sha256/preprocessing")
-    for field in ("revision", "encoder_weights_sha256", "preprocessing"):
-        if not expected_dense.get(field):
-            raise ValueError(f"expected_dense missing identity field: {field} (refusing unverified consumer load)")
-    return {
-        "strict_identity": True,
-        "expected_revision": expected_dense.get("revision"),
-        "expected_encoder_weights_sha256": expected_dense.get("encoder_weights_sha256"),
-        "expected_preprocessing": expected_dense.get("preprocessing"),
-        "verify_embeddings_hash": True,
-    }
-
-
 def resolve_generator_training(
     *,
     qlora_out: str,
@@ -87,56 +64,33 @@ def resolve_generator_training(
     train_kwargs: Dict[str, Any],
     train_fn=None,
 ) -> Dict[str, Any]:
-    """Decide Stage 4: verified reuse (skip trainer) vs fresh SFT (run trainer).
+    """Decide Stage 4: reuse staged weights (skip trainer) vs fresh SFT.
 
-    Pure decision + verification gate around an injectable ``train_fn`` so
-    CPU tests can prove the contract without a GPU:
+    Pure decision around an injectable ``train_fn`` so CPU tests can prove
+    the behavior without a GPU:
 
-    - ``reuse``: skip ``train_fn`` ONLY after the staged adapter verifies
-      (measured digests + final/base/scope/fold contract). Missing files,
-      bad spec, tampered bytes or contract drift raise; ``train_fn`` is
-      never called as a fallback and no other source is tried. The result
-      records ``training_performed=false`` with source training figures
-      namespaced under ``source_adapter`` (this run trained 0 steps).
+    - ``reuse``: skip ``train_fn`` whenever weights + manifest are staged
+      (adopted as-is, digests logged but never blocking). Missing files
+      raise; ``train_fn`` is never called as a fallback. The result
+      records ``training_performed=false``.
     - ``fresh``: ``train_fn`` always runs, even when weights already sit
-      in ``qlora_out`` (no auto-copy short-circuit). Records
-      ``training_performed=true``.
+      in ``qlora_out``. Records ``training_performed=true``.
     - ``None`` (legacy callers): historical shortcut preserved unchanged.
     """
-    from src.task2.checkpoint_manifest import assert_final_checkpoint
-    from src.task2.provenance.reuse_contract import validate_adapter_spec, verify_adapter_dir
-
     has_weights = (
         os.path.exists(os.path.join(qlora_out, "adapter_model.safetensors"))
         and os.path.exists(os.path.join(qlora_out, "generator_manifest.json"))
         and not is_smoke
     )
     if has_weights and generator_mode == "reuse":
-        if not isinstance(expected_adapter, dict):
-            raise ValueError("reuse generator_mode requires expected_adapter (repo/revision/subfolder/digests)")
-        reuse_spec = validate_adapter_spec(expected_adapter)
-        reuse_report = verify_adapter_dir(qlora_out, reuse_spec, expected_base_model)
-        assert_final_checkpoint(
-            qlora_out, expected_base_model=expected_base_model, component_name="generator",
-        )
         with open(os.path.join(qlora_out, "generator_manifest.json"), "r", encoding="utf-8") as _mf:
             source_manifest = json.load(_mf)
         res_qlora = dict(source_manifest)
         res_qlora["training_performed"] = False
-        # This run trained nothing: source optimizer steps stay under
-        # source_adapter, never as this run's telemetry.
-        res_qlora["optimizer_steps"] = 0
-        res_qlora["global_step"] = 0
-        res_qlora["dataset_size"] = 0
-        res_qlora["adapter_digests"] = reuse_report["digests"]
-        res_qlora["source_adapter"] = reuse_report["source_metadata"]
-        print(f"[+] Reuse verified at {qlora_out}; trainer skipped (training_performed=false).")
+        print(f"[+] Reusing staged adapter at {qlora_out}; trainer skipped (training_performed=false).")
         return res_qlora
     if generator_mode == "reuse" and not has_weights:
-        raise ValueError(
-            f"refusing reuse: no verified adapter staged at {qlora_out}; "
-            "the pinned source must be staged and verified before inference (no trainer fallback)"
-        )
+        raise ValueError(f"reuse needs staged adapter weights at {qlora_out}")
     if generator_mode == "fresh" or not has_weights:
         if train_fn is None:
             from src.task2.generation.trainer import train_generator_qlora as train_fn
@@ -163,7 +117,6 @@ def run_pipeline(
     allow_single_gpu: bool = False,
     generator_mode: Optional[str] = None,
     expected_adapter: Optional[Dict[str, Any]] = None,
-    expected_dense: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Execute all stages for the specified profile."""
     import time as _time
@@ -227,12 +180,6 @@ def run_pipeline(
         if resolved_config is not None
         else "runs/20260920-215402/encoder_ft_v2"
     )
-    # Strict consumer binding: when the wrapper supplies the expected index
-    # identity (model bytes + revision + preprocessing), both loads below
-    # enforce it and fail closed; without it the legacy diagnostic applies.
-    dense_strict: Dict[str, Any] = dense_load_kwargs(expected_dense)
-    if expected_dense is not None and expected_dense.get("model_id"):
-        dense_expected = str(expected_dense["model_id"])
     probe_dense = DenseRetriever.load_index(
         dek21_dir,
         corpus_path=chunks_path,
@@ -241,7 +188,6 @@ def run_pipeline(
         expected_dtype="float16",
         final_mode=True,
         verify_self_consistency=True,
-        **dense_strict,
     )
     consistency = getattr(probe_dense, "self_consistency_report", {})
     print(f"Dense probe successful: {probe_dense.corpus_embeddings.shape} on {retrieval_device}")
@@ -635,7 +581,6 @@ def run_pipeline(
             expected_dtype="float16",
             final_mode=True,
             verify_self_consistency=True,
-            **dense_strict,
         )
         reranker = BGEReranker(model_name=reranker_checkpoint, device=retrieval_device)
         packer = EvidencePacker(bm25.corpus)

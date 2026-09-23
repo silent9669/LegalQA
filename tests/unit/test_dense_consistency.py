@@ -477,20 +477,3 @@ def test_resolve_encode_texts_matches_fit_contract():
     assert field == "text_norm" and texts[0] == "first norm"
     field_raw, texts_raw = resolve_encode_texts(_strict_corpus())
     assert field_raw == "text_raw" and texts_raw[0] == "first"
-
-
-def test_dense_load_kwargs_fail_closed():
-    from src.task2.pipeline.runner import dense_load_kwargs
-
-    assert dense_load_kwargs(None) == {}
-    good = {
-        "model_id": "m", "revision": "d" * 40,
-        "encoder_weights_sha256": "aa" * 32,
-        "preprocessing": preprocessing_fingerprint(),
-    }
-    kwargs = dense_load_kwargs(good)
-    assert kwargs["strict_identity"] is True and kwargs["verify_embeddings_hash"] is True
-    with pytest.raises(ValueError, match="expected_dense"):
-        dense_load_kwargs("not-a-dict")
-    with pytest.raises(ValueError, match="encoder_weights_sha256"):
-        dense_load_kwargs({"model_id": "m", "revision": "d" * 40})

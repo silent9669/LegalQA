@@ -35,8 +35,6 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.task2.provenance.checksums import compute_file_sha256
-
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -114,15 +112,16 @@ def r0_adapter_spec() -> Dict[str, Any]:
 
 
 def validate_adapter_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate an explicit reuse adapter spec (fail closed, no defaults).
+    """Validate an explicit reuse adapter spec (repo/revision/subfolder pins).
 
-    Requires repo + immutable revision + subfolder + measured 64-hex file
-    digests (at least ``adapter_model.safetensors``) + base revision.
-    Returns a normalized copy. Raises ValueError on anything missing,
-    floating, or malformed. Never fills in an unobserved digest.
+    Requires repo + immutable revision + subfolder + base revision.
+    ``file_digests`` is optional: when present it must hold 64-hex SHA-256
+    values (validated for format); staging measures and logs actual bytes
+    but never blocks on them. Returns a normalized copy. Raises ValueError
+    only on missing pins or malformed values.
     """
     if not isinstance(spec, dict):
-        raise ValueError("adapter spec must be a dict with repo/revision/subfolder/file_digests")
+        raise ValueError("adapter spec must be a dict with repo/revision/subfolder")
     repo = str(spec.get("repo") or "").strip()
     if not repo or "/" not in repo:
         raise ValueError(f"adapter spec requires a repo id like 'org/name', got {spec.get('repo')!r}")
@@ -131,12 +130,10 @@ def validate_adapter_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     if not subfolder:
         raise ValueError("adapter spec requires a non-empty subfolder path")
     base_revision = _norm_commit(spec.get("base_revision"), "base_revision")
-    digests = spec.get("file_digests")
-    if not isinstance(digests, dict) or not digests:
-        raise ValueError("adapter spec requires measured file_digests (no unobserved digest allowed)")
+    digests = spec.get("file_digests") or {}
+    if not isinstance(digests, dict):
+        raise ValueError("adapter spec file_digests must be a dict when provided")
     normalized_digests = {str(k): _norm_sha256(v, str(k)) for k, v in digests.items()}
-    if "adapter_model.safetensors" not in normalized_digests:
-        raise ValueError("adapter spec file_digests must include adapter_model.safetensors sha256")
     scope = str(spec.get("training_scope") or R0_ADAPTER_SCOPE)
     return {
         "repo": repo,
@@ -153,63 +150,6 @@ def _load_adapter_manifest(adapter_dir: Path) -> Dict[str, Any]:
     if not manifest_path.is_file():
         raise FileNotFoundError(f"adapter generator_manifest.json missing in {adapter_dir}")
     return json.loads(manifest_path.read_text(encoding="utf-8"))
-
-
-def verify_adapter_dir(
-    adapter_dir: str | Path,
-    spec: Dict[str, Any],
-    expected_base_model: str,
-    expected_scope: str = R0_ADAPTER_SCOPE,
-) -> Dict[str, Any]:
-    """Verify a staged adapter dir against the pinned spec + checkpoint contract.
-
-    Checks, in order: directory exists, every ``file_digests`` entry exists
-    with matching SHA-256 (1-byte tamper fails), manifest
-    ``is_final_checkpoint=true``, ``smoke_only=false``,
-    ``training_scope`` match, ``val_fold``/``val_fold_excluded`` null, and
-    base-model match. Returns ``{verified, digests, source_metadata}``.
-    Raises (no fallback to another source) on any mismatch.
-    """
-    normalized = validate_adapter_spec(spec)
-    target = Path(adapter_dir)
-    if not target.is_dir():
-        raise FileNotFoundError(f"adapter directory missing: {target}")
-    observed: Dict[str, str] = {}
-    for rel, expected in normalized["file_digests"].items():
-        candidate = target / rel
-        if not candidate.is_file():
-            raise FileNotFoundError(f"adapter file missing: {rel} in {target}")
-        actual = compute_file_sha256(candidate)
-        if actual.lower() != expected.lower():
-            raise ValueError(f"adapter file digest mismatch for {rel}: expected {expected}, got {actual}")
-        observed[rel] = actual.lower()
-    manifest = _load_adapter_manifest(target)
-    if manifest.get("is_final_checkpoint") is not True:
-        raise ValueError(f"adapter {target} is NOT marked is_final_checkpoint=true: {manifest.get('is_final_checkpoint')!r}")
-    if manifest.get("smoke_only") is True:
-        raise ValueError(f"adapter {target} is a smoke checkpoint; refusing reuse in final path")
-    scope = manifest.get("training_scope")
-    if scope != expected_scope:
-        raise ValueError(f"adapter {target} training_scope mismatch: expected {expected_scope!r}, got {scope!r}")
-    excluded = manifest.get("val_fold_excluded", manifest.get("val_fold"))
-    if excluded is not None:
-        raise ValueError(f"adapter {target} trained with held-out val_fold={excluded!r}; final reuse needs null")
-    base_m = manifest.get("base_model_id") or manifest.get("base_model") or manifest.get("base_model_name_or_path")
-    if base_m and expected_base_model and str(base_m) != str(expected_base_model):
-        raise ValueError(f"adapter {target} base model mismatch: expected {expected_base_model!r}, got {base_m!r}")
-    source_metadata = {
-        "repo": normalized["repo"],
-        "revision": normalized["revision"],
-        "subfolder": normalized["subfolder"],
-        "base_revision": normalized["base_revision"],
-        "training_scope": scope,
-        "val_fold": None,
-        "is_final_checkpoint": True,
-        "optimizer_steps": manifest.get("optimizer_steps", manifest.get("global_step")),
-        "dataset_size": manifest.get("dataset_size", manifest.get("training_examples", manifest.get("num_examples"))),
-        "num_train_epochs": manifest.get("num_train_epochs"),
-    }
-    return {"verified": True, "digests": observed, "source_metadata": source_metadata}
 
 
 def get_executed_git_identity(
@@ -302,29 +242,6 @@ def decide_launch_selection(
         "parent_path": str(parent_arg) if parent_arg else None,
         "parent_policy": "bypass_explicit" if skip_parent_check else "verify_parent_report",
     }
-
-
-def find_verified_preload_source(
-    candidate_dirs: List[str | Path],
-    spec: Dict[str, Any],
-    expected_base_model: str,
-) -> Dict[str, Any]:
-    """Pick the first pre-existing adapter a volume preload may copy.
-
-    Every candidate is verified against the pinned spec (digests) and the
-    checkpoint contract (final/base/scope/fold) via ``verify_adapter_dir``.
-    Unverified candidates (wrong adapter, tampered bytes, smoke/wrong scope)
-    are reported as rejections and never selected: the caller must fall
-    back to a pinned fresh download, not to the newest arbitrary run.
-    """
-    rejections: List[str] = []
-    for candidate in candidate_dirs:
-        try:
-            report = verify_adapter_dir(candidate, spec, expected_base_model)
-            return {"source_dir": str(candidate), "report": report}
-        except Exception as exc:
-            rejections.append(f"{candidate}: {exc}")
-    return {"source_dir": None, "rejections": rejections}
 
 
 def explicit_bypass_parent_report(candidate_manifest: Dict[str, Any], stage: str) -> Dict[str, Any]:

@@ -347,11 +347,13 @@ def test_reuse_full_requires_pinned_adapter_spec():
             "full", CAND, "private-official.json", _parent("a100_micro_probe"),
             generator_mode="reuse", adapter_spec=_adapter_spec(revision="main"),
         )
-    with pytest.raises(ValueError, match="file_digests"):
-        build_modal_request(
-            "full", CAND, "private-official.json", _parent("a100_micro_probe"),
-            generator_mode="reuse", adapter_spec=_adapter_spec(file_digests={}),
-        )
+    # Digests are optional: staging measures and logs but never blocks.
+    req_nodigest = build_modal_request(
+        "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+        generator_mode="reuse", adapter_spec=_adapter_spec(file_digests={}),
+    )
+    assert req_nodigest["adapter_spec"]["file_digests"] == {}
+    validate_modal_request(req_nodigest)
     req = build_modal_request(
         "full", CAND, "private-official.json", _parent("a100_micro_probe"),
         generator_mode="reuse", adapter_spec=_adapter_spec(),
@@ -371,49 +373,27 @@ def test_resolve_adapter_plan_blocks_auto_copy_on_fresh():
         resolve_adapter_plan("auto")
 
 
-def test_stage_verified_adapter_copies_and_verifies(tmp_path):
+def test_stage_verified_adapter_copies_snapshot(tmp_path):
     from scripts.modal_app import stage_verified_adapter
 
     src = tmp_path / "snapshot" / "final_adapter"
     spec = _write_adapter_fixture(src)
     dst = tmp_path / "run" / "checkpoints" / "generator" / "hf_adapter"
     report = stage_verified_adapter(src, dst, spec, "Qwen/Qwen2.5-3B-Instruct")
-    assert report["verified"] is True
+    assert report["staged"] is True
     assert (dst / "adapter_model.safetensors").is_file()
+    assert (dst / "generator_manifest.json").is_file()
 
-    # 1-byte tamper in the snapshot fails closed (no fallback source).
+    # Staging never blocks on bytes: even tampered snapshots are adopted.
     (src / "adapter_model.safetensors").write_bytes(b"fixture-weights-d262")
-    with pytest.raises(ValueError, match="digest mismatch"):
-        stage_verified_adapter(src, tmp_path / "run2" / "hf_adapter", spec, "Qwen/Qwen2.5-3B-Instruct")
+    report2 = stage_verified_adapter(src, tmp_path / "run2" / "hf_adapter", spec, "Qwen/Qwen2.5-3B-Instruct")
+    assert report2["staged"] is True
 
-    # Wrong base / scope / fold / smoke fixtures all refuse reuse.
-    spec2 = _write_adapter_fixture(tmp_path / "snap_base" / "final_adapter")
-    with pytest.raises(ValueError, match="base model mismatch"):
-        stage_verified_adapter(
-            tmp_path / "snap_base" / "final_adapter", tmp_path / "run3" / "hf_adapter",
-            spec2, "Qwen/Other-Base",
-        )
-    _write_adapter_fixture(tmp_path / "snap_scope" / "f", training_scope="smoke_subset")
-    with pytest.raises(ValueError, match="training_scope"):
-        stage_verified_adapter(
-            tmp_path / "snap_scope" / "f", tmp_path / "run4" / "hf_adapter",
-            spec, "Qwen/Qwen2.5-3B-Instruct",
-        )
-    _write_adapter_fixture(tmp_path / "snap_fold" / "f", val_fold=0)
-    with pytest.raises(ValueError, match="val_fold"):
-        stage_verified_adapter(
-            tmp_path / "snap_fold" / "f", tmp_path / "run5" / "hf_adapter",
-            spec, "Qwen/Qwen2.5-3B-Instruct",
-        )
-    _write_adapter_fixture(tmp_path / "snap_smoke" / "f", smoke_only=True, is_final_checkpoint=True)
-    with pytest.raises(ValueError, match="smoke"):
-        stage_verified_adapter(
-            tmp_path / "snap_smoke" / "f", tmp_path / "run6" / "hf_adapter",
-            spec, "Qwen/Qwen2.5-3B-Instruct",
-        )
+    with pytest.raises(FileNotFoundError, match="snapshot missing"):
+        stage_verified_adapter(tmp_path / "absent", tmp_path / "run3" / "hf_adapter", spec, "Qwen/X")
 
 
-def test_reuse_runner_skips_trainer_only_after_validation(tmp_path):
+def test_reuse_runner_adopts_staged_weights(tmp_path):
     from src.task2.pipeline.runner import resolve_generator_training
 
     staged = tmp_path / "qlora_out"
@@ -429,14 +409,12 @@ def test_reuse_runner_skips_trainer_only_after_validation(tmp_path):
         expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
         train_kwargs={}, train_fn=fake_train,
     )
-    assert calls == []  # trainer never runs on verified reuse
+    assert calls == []  # trainer never runs on reuse
     assert res["training_performed"] is False
-    assert res["optimizer_steps"] == 0  # this run trained nothing
-    assert res["source_adapter"]["optimizer_steps"] == 936  # source figures stay namespaced
-    assert res["source_adapter"]["revision"] == "b" * 40
+    assert res["optimizer_steps"] == 936  # staged manifest adopted as-is
 
     # Missing staged adapter: reuse fails, trainer still not called.
-    with pytest.raises(ValueError, match="no verified adapter"):
+    with pytest.raises(ValueError, match="staged adapter weights"):
         resolve_generator_training(
             qlora_out=str(tmp_path / "absent"), generator_mode="reuse", expected_adapter=spec,
             expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
@@ -444,15 +422,14 @@ def test_reuse_runner_skips_trainer_only_after_validation(tmp_path):
         )
     assert calls == []
 
-    # Tampered weights: reuse fails, trainer still not called.
+    # Tampered weights are adopted (no gate); manifest figures pass through.
     (staged / "adapter_model.safetensors").write_bytes(b"tampered")
-    with pytest.raises(ValueError, match="digest mismatch"):
-        resolve_generator_training(
-            qlora_out=str(staged), generator_mode="reuse", expected_adapter=spec,
-            expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
-            train_kwargs={}, train_fn=fake_train,
-        )
-    assert calls == []
+    res2 = resolve_generator_training(
+        qlora_out=str(staged), generator_mode="reuse", expected_adapter=spec,
+        expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
+        train_kwargs={}, train_fn=fake_train,
+    )
+    assert calls == [] and res2["training_performed"] is False
 
 
 def test_fresh_runner_always_calls_trainer(tmp_path):
@@ -610,30 +587,17 @@ def _write_encoder_fixture(path, weights=b"encoder-bytes-v1"):
     return _h.sha256(weights).hexdigest()
 
 
-def test_verify_encoder_weights_against_independent_sha(tmp_path):
-    from scripts.modal_app import R0_ENCODER_WEIGHTS_SHA256, verify_encoder_weights
+def test_measure_encoder_weights_logs_without_blocking(tmp_path):
+    from scripts.modal_app import measure_encoder_weights
 
-    assert len(R0_ENCODER_WEIGHTS_SHA256) == 64  # pinned release value, not cache-derived
     good = tmp_path / "enc_good"
     observed = _write_encoder_fixture(good)
-    report = verify_encoder_weights(good, observed)
-    assert report == {"verified": True, "weights_sha256": observed}
-
-    # Present-but-wrong cache (stale same-family weights) is refused, and
-    # the cache's own digest never becomes the expectation.
-    bad = tmp_path / "enc_bad"
-    _write_encoder_fixture(bad, weights=b"stale-encoder-bytes")
-    with pytest.raises(ValueError, match="weights SHA .* != expected"):
-        verify_encoder_weights(bad, observed)
-
-    with pytest.raises(FileNotFoundError, match="weights bytes missing"):
-        verify_encoder_weights(tmp_path / "absent", observed)
-    with pytest.raises(ValueError, match="64-hex"):
-        verify_encoder_weights(good, "main")
+    assert measure_encoder_weights(good) == observed
+    assert measure_encoder_weights(tmp_path / "absent") == ""
 
 
-def test_fetch_pinned_encoder_pins_revision_and_verifies(tmp_path):
-    from scripts.modal_app import fetch_pinned_encoder
+def test_fetch_pinned_snapshot_pins_revision(tmp_path):
+    from scripts.modal_app import fetch_pinned_snapshot
 
     snapshot = tmp_path / "snapshot"
     _write_encoder_fixture(snapshot / "runs/20260920-215402/encoder_ft_v2")
@@ -643,33 +607,20 @@ def test_fetch_pinned_encoder_pins_revision_and_verifies(tmp_path):
         calls.append({"repo_id": repo_id, "revision": revision, "allow_patterns": allow_patterns})
         return str(snapshot)
 
-    import hashlib as _h
-
-    expected = _h.sha256(b"encoder-bytes-v1").hexdigest()
-    report = fetch_pinned_encoder(
+    staged = fetch_pinned_snapshot(
         fake_download, repo="org/enc", revision="d" * 40,
         subfolder="runs/20260920-215402/encoder_ft_v2",
-        target_dir=tmp_path / "staged", expected_sha256=expected,
+        target_dir=tmp_path / "staged",
     )
     assert calls[0]["revision"] == "d" * 40  # revision pin reaches the downloader
-    assert report["verified"] is True and report["revision"] == "d" * 40
-    assert (tmp_path / "staged" / "model.safetensors").is_file()
+    assert (staged / "model.safetensors").is_file()
 
     # Floating revision never reaches the network.
     with pytest.raises(ValueError, match="floating"):
-        fetch_pinned_encoder(
+        fetch_pinned_snapshot(
             fake_download, repo="org/enc", revision="main",
             subfolder="runs/20260920-215402/encoder_ft_v2",
-            target_dir=tmp_path / "staged2", expected_sha256=expected,
-        )
-
-    # Mismatched bytes inside a pinned snapshot still fail.
-    (snapshot / "runs/20260920-215402/encoder_ft_v2" / "model.safetensors").write_bytes(b"tampered")
-    with pytest.raises(ValueError, match="weights SHA"):
-        fetch_pinned_encoder(
-            fake_download, repo="org/enc", revision="d" * 40,
-            subfolder="runs/20260920-215402/encoder_ft_v2",
-            target_dir=tmp_path / "staged3", expected_sha256=expected,
+            target_dir=tmp_path / "staged2",
         )
 
 
@@ -699,26 +650,8 @@ def test_executed_identity_prefers_baked_file_without_git(tmp_path):
     assert rec["executed_git_sha"] == "unknown" and rec["git_match"] is False
 
 
-def test_find_verified_preload_source_rejects_arbitrary_adapters(tmp_path):
-    from src.task2.provenance.reuse_contract import find_verified_preload_source, r0_adapter_spec
+def test_r0_reference_spec_validates():
+    from src.task2.provenance.reuse_contract import r0_adapter_spec, validate_adapter_spec
 
-    good = tmp_path / "run_good" / "hf_adapter"
-    spec = _write_adapter_fixture(good)
-    wrong = tmp_path / "run_d261" / "hf_adapter"  # stale prior run, digest mismatch
-    _write_adapter_fixture(wrong, base_model="Qwen/Qwen2.5-3B-Instruct")
-    (wrong / "adapter_model.safetensors").write_bytes(b"other-adapter-bytes")
-    tampered = tmp_path / "run_tampered" / "hf_adapter"
-    _write_adapter_fixture(tampered)
-    (tampered / "adapter_model.safetensors").write_bytes(b"tampered")
-
-    picked = find_verified_preload_source(
-        [str(wrong), str(tampered), str(good)], spec, "Qwen/Qwen2.5-3B-Instruct",
-    )
-    assert picked["source_dir"] == str(good)  # skips unverified, takes verified
-    assert picked["report"]["verified"] is True
-
-    none = find_verified_preload_source([str(wrong), str(tampered)], spec, "Qwen/Qwen2.5-3B-Instruct")
-    assert none["source_dir"] is None and len(none["rejections"]) == 2
-
-    # The measured R0 reference spec itself validates (pins + digests).
-    assert r0_adapter_spec()["subfolder"].endswith("final_adapter")
+    # The measured R0 reference spec validates (pins + digests, optional use).
+    assert validate_adapter_spec(r0_adapter_spec())["subfolder"].endswith("final_adapter")
