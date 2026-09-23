@@ -307,3 +307,70 @@ def test_build_production_run_bundle_modal_runtime_and_submission(tmp_path):
     assert verify_run_bundle(output_bundle_dir) is True
 
 
+def test_reuse_bundle_separates_source_training_metadata(tmp_path):
+    """Reuse bundles record 0 new steps; source figures stay namespaced (P1)."""
+    candidate = sample_candidate()
+    run_id = f"run_reuse_{candidate.candidate_id}"
+    output_bundle_dir = tmp_path / "runs" / run_id
+
+    adapter_src = tmp_path / "src_adapter_reuse"
+    adapter_src.mkdir()
+    (adapter_src / "adapter_config.json").write_text(json.dumps({"lora_r": 16}))
+    (adapter_src / "adapter_model.safetensors").write_bytes(b"reused_adapter_bytes")
+
+    k_rep = sample_gate_report("kaggle_t4x2", candidate.candidate_id, candidate.git_commit_sha)
+    a_rep = sample_gate_report("a100_micro_probe", candidate.candidate_id, candidate.git_commit_sha, k_rep.compute_sha256())
+    k_path = tmp_path / "k_reuse.json"
+    a_path = tmp_path / "a_reuse.json"
+    k_rep.save_json(k_path)
+    a_rep.save_json(a_path)
+
+    source_adapter = {
+        "repo": "dangphuc2109/legalqa-qwen2.5-3b-adapter",
+        "revision": "b" * 40,
+        "optimizer_steps": 1188,
+        "dataset_size": 4748,
+    }
+    manifest = build_production_run_bundle(
+        run_id=run_id,
+        candidate=candidate,
+        adapter_source_dir=adapter_src,
+        kaggle_report_path=k_path,
+        colab_t4_report_path=None,
+        a100_micro_probe_report_path=a_path,
+        train_log_path=tmp_path / "missing_train.log",
+        output_dir=output_bundle_dir,
+        metrics={"meteor": None, "reason": "reuse run carries no new training telemetry"},
+        optimizer_steps=0,
+        training_sample_count=0,
+        training_performed=False,
+        source_adapter=source_adapter,
+    )
+    assert manifest["training_performed"] is False
+    assert manifest["optimizer_steps"] == 0
+    assert manifest["source_adapter"]["optimizer_steps"] == 1188
+    train_log = (output_bundle_dir / "logs" / "train.log").read_text(encoding="utf-8")
+    assert "training_performed=false" in train_log  # honest marker, not a fake training log
+    assert verify_run_bundle(output_bundle_dir) is True
+
+
+def test_reuse_bundle_without_source_metadata_refused(tmp_path):
+    candidate = sample_candidate()
+    with pytest.raises(ValueError, match="source_adapter"):
+        build_production_run_bundle(
+            run_id=f"run_reuse_bad_{candidate.candidate_id}",
+            candidate=candidate,
+            adapter_source_dir=tmp_path,
+            kaggle_report_path=tmp_path / "missing.json",
+            colab_t4_report_path=None,
+            a100_micro_probe_report_path=tmp_path / "missing2.json",
+            train_log_path=tmp_path / "missing.log",
+            output_dir=tmp_path / "bad_bundle",
+            metrics={},
+            optimizer_steps=0,
+            training_sample_count=0,
+            training_performed=False,
+            source_adapter=None,
+        )
+
+

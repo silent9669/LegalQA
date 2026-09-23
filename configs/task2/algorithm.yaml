@@ -39,7 +39,7 @@ generator:
 # Retrieval recipe (score-affecting; hashed into the candidate).
 # Prescribed by fix/03 (Modal scale-down): legal-reference arm + weighted
 # RRF + article diversification. Acronym expansion and lost-in-middle stay
-# off pending A/B evidence. One full epoch per fix/02 timing envelope.
+# off pending A/B evidence. Two full epochs per the generator config below.
 retrieval:
   rrf_k: 60
   candidate_pool: 50

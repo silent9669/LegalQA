@@ -37,6 +37,78 @@ PROMOTION_GATED_PROFILES = ("final_train_and_submit", "reuse_final_checkpoints_a
 STRICT_CONTRACT_PROFILES = PROMOTION_GATED_PROFILES + ("modal_a100",)
 
 
+def resolve_generator_training(
+    *,
+    qlora_out: str,
+    generator_mode: Optional[str],
+    expected_adapter: Optional[Dict[str, Any]],
+    expected_base_model: str,
+    is_smoke: bool,
+    train_kwargs: Dict[str, Any],
+    train_fn=None,
+) -> Dict[str, Any]:
+    """Decide Stage 4: verified reuse (skip trainer) vs fresh SFT (run trainer).
+
+    Pure decision + verification gate around an injectable ``train_fn`` so
+    CPU tests can prove the contract without a GPU:
+
+    - ``reuse``: skip ``train_fn`` ONLY after the staged adapter verifies
+      (measured digests + final/base/scope/fold contract). Missing files,
+      bad spec, tampered bytes or contract drift raise; ``train_fn`` is
+      never called as a fallback and no other source is tried. The result
+      records ``training_performed=false`` with source training figures
+      namespaced under ``source_adapter`` (this run trained 0 steps).
+    - ``fresh``: ``train_fn`` always runs, even when weights already sit
+      in ``qlora_out`` (no auto-copy short-circuit). Records
+      ``training_performed=true``.
+    - ``None`` (legacy callers): historical shortcut preserved unchanged.
+    """
+    from src.task2.checkpoint_manifest import assert_final_checkpoint
+    from src.task2.provenance.reuse_contract import validate_adapter_spec, verify_adapter_dir
+
+    has_weights = (
+        os.path.exists(os.path.join(qlora_out, "adapter_model.safetensors"))
+        and os.path.exists(os.path.join(qlora_out, "generator_manifest.json"))
+        and not is_smoke
+    )
+    if has_weights and generator_mode == "reuse":
+        if not isinstance(expected_adapter, dict):
+            raise ValueError("reuse generator_mode requires expected_adapter (repo/revision/subfolder/digests)")
+        reuse_spec = validate_adapter_spec(expected_adapter)
+        reuse_report = verify_adapter_dir(qlora_out, reuse_spec, expected_base_model)
+        assert_final_checkpoint(
+            qlora_out, expected_base_model=expected_base_model, component_name="generator",
+        )
+        with open(os.path.join(qlora_out, "generator_manifest.json"), "r", encoding="utf-8") as _mf:
+            source_manifest = json.load(_mf)
+        res_qlora = dict(source_manifest)
+        res_qlora["training_performed"] = False
+        # This run trained nothing: source optimizer steps stay under
+        # source_adapter, never as this run's telemetry.
+        res_qlora["optimizer_steps"] = 0
+        res_qlora["global_step"] = 0
+        res_qlora["dataset_size"] = 0
+        res_qlora["adapter_digests"] = reuse_report["digests"]
+        res_qlora["source_adapter"] = reuse_report["source_metadata"]
+        print(f"[+] Reuse verified at {qlora_out}; trainer skipped (training_performed=false).")
+        return res_qlora
+    if generator_mode == "reuse" and not has_weights:
+        raise ValueError(
+            f"refusing reuse: no verified adapter staged at {qlora_out}; "
+            "the pinned source must be staged and verified before inference (no trainer fallback)"
+        )
+    if generator_mode == "fresh" or not has_weights:
+        if train_fn is None:
+            from src.task2.generation.trainer import train_generator_qlora as train_fn
+        res_qlora = train_fn(**train_kwargs)
+        if generator_mode == "fresh" and isinstance(res_qlora, dict):
+            res_qlora["training_performed"] = True
+        return res_qlora
+    print(f"[+] Found existing verified generator checkpoint at {qlora_out}; reusing.")
+    with open(os.path.join(qlora_out, "generator_manifest.json"), "r", encoding="utf-8") as _mf:
+        return json.load(_mf)
+
+
 def run_pipeline(
     *,
     profile: ExecutionProfile,
@@ -49,6 +121,8 @@ def run_pipeline(
     seed: int = 42,
     code_root: Optional[str] = None,
     allow_single_gpu: bool = False,
+    generator_mode: Optional[str] = None,
+    expected_adapter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Execute all stages for the specified profile."""
     import time as _time
@@ -240,10 +314,32 @@ def run_pipeline(
             os.path.exists(os.path.join(qlora_out, "adapter_model.safetensors"))
             and os.path.exists(os.path.join(qlora_out, "generator_manifest.json"))
             and not is_smoke
-        ):
-            print(f"[+] Found existing verified generator checkpoint at {qlora_out}; reusing.")
-            with open(os.path.join(qlora_out, "generator_manifest.json"), "r", encoding="utf-8") as _mf:
-                res_qlora = json.load(_mf)
+        ) or generator_mode in ("reuse", "fresh"):
+            res_qlora = resolve_generator_training(
+                qlora_out=qlora_out,
+                generator_mode=generator_mode,
+                expected_adapter=expected_adapter,
+                expected_base_model=production_cfg.generator_base_model,
+                is_smoke=is_smoke,
+                train_kwargs={
+                    "model_name_or_path": model_path,
+                    "qa_path": qa_path,
+                    "labels_path": labels_path,
+                    "chunks_path": chunks_path,
+                    "output_dir": qlora_out,
+                    "config": gen_cfg,
+                    "resolved_config": resolved_config,
+                    "val_fold": profile.val_fold,
+                    "max_steps": profile.max_generator_steps,
+                    "max_train_examples": profile.max_generator_examples,
+                    "probe_mode": profile.probe_selection,
+                    "execution_profile": profile.name,
+                    "device": gen_device,
+                    "fail_on_error": True,
+                    "seed": seed,
+                },
+                train_fn=train_generator_qlora,
+            )
         else:
             res_qlora = train_generator_qlora(
                 model_name_or_path=model_path,

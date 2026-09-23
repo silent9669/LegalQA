@@ -93,14 +93,16 @@ if [ -n "$CAND_ID" ]; then
     MICRO_REPORT="artifacts/gates/$CAND_ID/a100_micro_probe_report.json"
 
     if [ "$STAGE" = "full" ] && [ ! -f "$MICRO_REPORT" ]; then
-        echo "[*] Notice: a100_micro_probe_report.json not found locally for candidate $CAND_ID."
-        echo "    Using direct execution with --skip-parent-check."
-        EXTRA_FLAGS+=(--skip-parent-check)
+        echo "[X] Refusing full dispatch: a100_micro_probe_report.json not found locally for candidate $CAND_ID."
+        echo "    Pass an explicit --parent-report (or an explicit opt-in bypass flag) to scripts/modal_app.py;"
+        echo "    this launcher no longer auto-adds --skip-parent-check on the full path."
+        exit 1
     elif [ "$STAGE" = "micro_probe" ] && [ ! -f "$KAGGLE_REPORT" ]; then
         echo "[*] Notice: kaggle_t4x2_report.json not found locally for candidate $CAND_ID."
         echo "    Using direct execution with --skip-parent-check."
         EXTRA_FLAGS+=(--skip-parent-check)
     fi
+fi
 fi
 
 # 5. Dispatch Modal Pipeline

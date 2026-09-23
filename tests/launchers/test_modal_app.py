@@ -24,6 +24,50 @@ def _parent(stage="colab_t4"):
     return {"status": "PASS", "candidate_sha": "c" * 16, "stage": stage, "report_sha256": "e" * 64}
 
 
+def _adapter_spec(**overrides):
+    spec = {
+        "repo": "dangphuc2109/legalqa-qwen2.5-3b-adapter",
+        "revision": "b" * 40,
+        "subfolder": "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter",
+        "base_revision": "a" * 40,
+        "file_digests": {"adapter_model.safetensors": "ab" * 32},
+    }
+    spec.update(overrides)
+    return spec
+
+
+def _write_adapter_fixture(path, base_model="Qwen/Qwen2.5-3B-Instruct", **manifest_overrides):
+    from pathlib import Path as _P
+
+    target = _P(path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "adapter_model.safetensors").write_bytes(b"fixture-weights-d261")
+    (target / "adapter_config.json").write_text('{"r": 16}', encoding="utf-8")
+    manifest = {
+        "is_final_checkpoint": True,
+        "smoke_only": False,
+        "training_scope": "all_allowed_task2_data",
+        "val_fold": None,
+        "base_model": base_model,
+        "optimizer_steps": 1188,
+        "dataset_size": 4748,
+        "num_train_epochs": 2,
+    }
+    manifest.update(manifest_overrides)
+    (target / "generator_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    import hashlib as _h
+
+    return {
+        "repo": "dangphuc2109/legalqa-qwen2.5-3b-adapter",
+        "revision": "b" * 40,
+        "subfolder": "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter",
+        "base_revision": "a" * 40,
+        "file_digests": {
+            "adapter_model.safetensors": _h.sha256(b"fixture-weights-d261").hexdigest(),
+        },
+    }
+
+
 def test_modal_request_requires_parent_chain():
     with pytest.raises(ValueError, match="unknown Modal stage"):
         build_modal_request("invalid_stage", CAND, "private-official.json", None)
@@ -57,8 +101,12 @@ def test_modal_request_requires_parent_chain():
     validate_modal_request(req)
     req_kaggle = build_modal_request("micro_probe", CAND, "private-official.json", _parent("kaggle_t4x2"))
     validate_modal_request(req_kaggle)
-    full = build_modal_request("full", CAND, "private-official.json", _parent("a100_micro_probe"))
+    full = build_modal_request(
+        "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+        generator_mode="reuse", adapter_spec=_adapter_spec(),
+    )
     validate_modal_request(full)
+    assert full["upload_policy"] == "disabled"  # experiments never upload by default
     with pytest.raises(ValueError, match="unknown test file"):
         validate_modal_request(dict(full, test_filename="evil.json"))
 
@@ -239,3 +287,281 @@ def test_modal_request_kaggle_t4x2_stage_contracts():
 
     with pytest.raises(ValueError, match="takes no parent report"):
         build_modal_request("kaggle_t4x2", CAND, "private-official.json", _parent("kaggle_t4x2"))
+
+
+# ----------------------------------------------------------------------
+# P0-A: explicit generator mode + adapter provenance (reuse-first)
+# ----------------------------------------------------------------------
+
+def test_full_requires_explicit_generator_mode():
+    with pytest.raises(ValueError, match="generator_mode"):
+        build_modal_request("full", CAND, "private-official.json", _parent("a100_micro_probe"))
+    with pytest.raises(ValueError, match="generator_mode"):
+        build_modal_request(
+            "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+            generator_mode="auto",
+        )
+    fresh = build_modal_request(
+        "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+        generator_mode="fresh",
+    )
+    assert fresh["generator_mode"] == "fresh" and fresh["adapter_spec"] is None
+    validate_modal_request(fresh)
+
+
+def test_reuse_full_requires_pinned_adapter_spec():
+    with pytest.raises(ValueError, match="adapter_spec"):
+        build_modal_request(
+            "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+            generator_mode="reuse",
+        )
+    with pytest.raises(ValueError, match="40-hex revision"):
+        build_modal_request(
+            "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+            generator_mode="reuse", adapter_spec=_adapter_spec(revision="main"),
+        )
+    with pytest.raises(ValueError, match="file_digests"):
+        build_modal_request(
+            "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+            generator_mode="reuse", adapter_spec=_adapter_spec(file_digests={}),
+        )
+    req = build_modal_request(
+        "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+        generator_mode="reuse", adapter_spec=_adapter_spec(),
+    )
+    assert req["adapter_spec"]["revision"] == "b" * 40
+    validate_modal_request(req)
+
+
+def test_resolve_adapter_plan_blocks_auto_copy_on_fresh():
+    from scripts.modal_app import resolve_adapter_plan
+
+    fresh = resolve_adapter_plan("fresh")
+    assert fresh["allowed_sources"] == [] and fresh["trainer_runs"] is True
+    reuse = resolve_adapter_plan("reuse")
+    assert reuse["allowed_sources"] == ["pinned_hf_snapshot"] and reuse["trainer_runs"] is False
+    with pytest.raises(ValueError, match="generator_mode"):
+        resolve_adapter_plan("auto")
+
+
+def test_stage_verified_adapter_copies_and_verifies(tmp_path):
+    from scripts.modal_app import stage_verified_adapter
+
+    src = tmp_path / "snapshot" / "final_adapter"
+    spec = _write_adapter_fixture(src)
+    dst = tmp_path / "run" / "checkpoints" / "generator" / "hf_adapter"
+    report = stage_verified_adapter(src, dst, spec, "Qwen/Qwen2.5-3B-Instruct")
+    assert report["verified"] is True
+    assert (dst / "adapter_model.safetensors").is_file()
+
+    # 1-byte tamper in the snapshot fails closed (no fallback source).
+    (src / "adapter_model.safetensors").write_bytes(b"fixture-weights-d262")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        stage_verified_adapter(src, tmp_path / "run2" / "hf_adapter", spec, "Qwen/Qwen2.5-3B-Instruct")
+
+    # Wrong base / scope / fold / smoke fixtures all refuse reuse.
+    spec2 = _write_adapter_fixture(tmp_path / "snap_base" / "final_adapter")
+    with pytest.raises(ValueError, match="base model mismatch"):
+        stage_verified_adapter(
+            tmp_path / "snap_base" / "final_adapter", tmp_path / "run3" / "hf_adapter",
+            spec2, "Qwen/Other-Base",
+        )
+    _write_adapter_fixture(tmp_path / "snap_scope" / "f", training_scope="smoke_subset")
+    with pytest.raises(ValueError, match="training_scope"):
+        stage_verified_adapter(
+            tmp_path / "snap_scope" / "f", tmp_path / "run4" / "hf_adapter",
+            spec, "Qwen/Qwen2.5-3B-Instruct",
+        )
+    _write_adapter_fixture(tmp_path / "snap_fold" / "f", val_fold=0)
+    with pytest.raises(ValueError, match="val_fold"):
+        stage_verified_adapter(
+            tmp_path / "snap_fold" / "f", tmp_path / "run5" / "hf_adapter",
+            spec, "Qwen/Qwen2.5-3B-Instruct",
+        )
+    _write_adapter_fixture(tmp_path / "snap_smoke" / "f", smoke_only=True, is_final_checkpoint=True)
+    with pytest.raises(ValueError, match="smoke"):
+        stage_verified_adapter(
+            tmp_path / "snap_smoke" / "f", tmp_path / "run6" / "hf_adapter",
+            spec, "Qwen/Qwen2.5-3B-Instruct",
+        )
+
+
+def test_reuse_runner_skips_trainer_only_after_validation(tmp_path):
+    from src.task2.pipeline.runner import resolve_generator_training
+
+    staged = tmp_path / "qlora_out"
+    spec = _write_adapter_fixture(staged)
+    calls = []
+
+    def fake_train(**kwargs):
+        calls.append(kwargs)
+        return {"status": "completed", "optimizer_steps": 10, "dataset_size": 20}
+
+    res = resolve_generator_training(
+        qlora_out=str(staged), generator_mode="reuse", expected_adapter=spec,
+        expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
+        train_kwargs={}, train_fn=fake_train,
+    )
+    assert calls == []  # trainer never runs on verified reuse
+    assert res["training_performed"] is False
+    assert res["optimizer_steps"] == 0  # this run trained nothing
+    assert res["source_adapter"]["optimizer_steps"] == 1188  # source figures stay namespaced
+    assert res["source_adapter"]["revision"] == "b" * 40
+
+    # Missing staged adapter: reuse fails, trainer still not called.
+    with pytest.raises(ValueError, match="no verified adapter"):
+        resolve_generator_training(
+            qlora_out=str(tmp_path / "absent"), generator_mode="reuse", expected_adapter=spec,
+            expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
+            train_kwargs={}, train_fn=fake_train,
+        )
+    assert calls == []
+
+    # Tampered weights: reuse fails, trainer still not called.
+    (staged / "adapter_model.safetensors").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        resolve_generator_training(
+            qlora_out=str(staged), generator_mode="reuse", expected_adapter=spec,
+            expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
+            train_kwargs={}, train_fn=fake_train,
+        )
+    assert calls == []
+
+
+def test_fresh_runner_always_calls_trainer(tmp_path):
+    from src.task2.pipeline.runner import resolve_generator_training
+
+    staged = tmp_path / "qlora_out"
+    _write_adapter_fixture(staged)  # pre-existing weights must NOT short-circuit fresh
+    calls = []
+
+    def fake_train(**kwargs):
+        calls.append(kwargs)
+        return {"status": "completed", "optimizer_steps": 5, "dataset_size": 8}
+
+    res = resolve_generator_training(
+        qlora_out=str(staged), generator_mode="fresh", expected_adapter=None,
+        expected_base_model="Qwen/Qwen2.5-3B-Instruct", is_smoke=False,
+        train_kwargs={}, train_fn=fake_train,
+    )
+    assert len(calls) == 1  # trainer ran despite staged weights
+    assert res["training_performed"] is True
+
+
+# ----------------------------------------------------------------------
+# P0-C: terminal status + submission parity (no silent PASS)
+# ----------------------------------------------------------------------
+
+def _write_submission_fixture(path, ids=("1", "2")):
+    from pathlib import Path as _P
+    import zipfile as _z
+
+    payload = {i: {"answer": f"Answer text number {i} with enough words to be valid"} for i in ids}
+    loose = _P(path)
+    loose.write_text(json.dumps(payload), encoding="utf-8")
+    zpath = loose.parent / (loose.name + ".zip")
+    with _z.ZipFile(zpath, "w", _z.ZIP_DEFLATED) as z:
+        z.write(loose, arcname="submission.json")
+    return loose, zpath, payload
+
+
+def test_decide_full_compute_status_gates(tmp_path):
+    from scripts.modal_app import decide_full_compute_status
+
+    loose, zpath, _ = _write_submission_fixture(tmp_path / "submission.json")
+    ok_outputs = {"stages": {"submission": {"submission_json": str(loose)}}}
+    ok = decide_full_compute_status(ok_outputs, loose, zpath, ["1", "2"])
+    assert ok["compute_status"] == "PASS"
+
+    inc = decide_full_compute_status({"status": "INCOMPLETE", "stages": {}}, loose, zpath, ["1", "2"])
+    assert inc["compute_status"] == "INCOMPLETE"
+
+    missing = decide_full_compute_status({"stages": {}}, loose, zpath, ["1", "2"])
+    assert missing["compute_status"] == "FAIL"
+
+    id_mismatch = decide_full_compute_status(ok_outputs, loose, zpath, ["1", "3"])
+    assert id_mismatch["compute_status"] == "FAIL"
+
+    # ZIP/member byte mismatch is not a PASS.
+    import zipfile as _z
+
+    bad_zip = tmp_path / "bad.zip"
+    with _z.ZipFile(bad_zip, "w", _z.ZIP_DEFLATED) as z:
+        z.writestr("submission.json", '{"1": {"answer": "different"}}')
+    tampered = decide_full_compute_status(ok_outputs, loose, bad_zip, ["1", "2"])
+    assert tampered["compute_status"] == "FAIL"
+
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+    empty_zip = tmp_path / "empty.json.zip"
+    with _z.ZipFile(empty_zip, "w", _z.ZIP_DEFLATED) as z:
+        z.write(empty, arcname="submission.json")
+    assert decide_full_compute_status(ok_outputs, empty, empty_zip, [])["compute_status"] == "FAIL"
+
+
+def test_resolve_test_file_strict_refuses_silent_fallback(tmp_path):
+    (tmp_path / "public-official.json").write_text('{"q1": {"question": "Q"}}', encoding="utf-8")
+    assert resolve_test_file(tmp_path, "public-official.json").name == "public-official.json"
+    with pytest.raises(FileNotFoundError, match="no fallback"):
+        resolve_test_file(tmp_path, "private-official.json", allow_fallback=False)
+
+
+# ----------------------------------------------------------------------
+# P0-D: source identity + gate policy (no synthetic PASS, no auto-pick)
+# ----------------------------------------------------------------------
+
+def test_skip_parent_check_never_synthesizes_pass():
+    req = build_modal_request("micro_probe", CAND, "private-official.json", None, skip_parent_check=True)
+    assert req["parent_report"]["status"] == "BYPASSED_EXPLICIT"
+    assert req["parent_report"]["status"] != "PASS"
+    assert req["parent_policy"] == "bypass_explicit"
+
+    full = build_modal_request(
+        "full", CAND, "private-official.json", None, skip_parent_check=True,
+        generator_mode="reuse", adapter_spec=_adapter_spec(),
+    )
+    assert full["parent_report"]["status"] == "BYPASSED_EXPLICIT"
+    assert full["parent_policy"] == "bypass_explicit"
+
+
+def test_launch_selection_rejects_auto_pick_on_reuse():
+    from src.task2.provenance.reuse_contract import decide_launch_selection
+
+    with pytest.raises(ValueError, match="explicit --candidate"):
+        decide_launch_selection(
+            stage="full", generator_mode="reuse", candidate_arg="",
+            parent_arg="p.json", skip_parent_check=False,
+            available_candidates=["auto/manifest.json"],
+        )
+    with pytest.raises(ValueError, match="explicit --parent-report"):
+        decide_launch_selection(
+            stage="full", generator_mode="reuse", candidate_arg="c.json",
+            parent_arg="", skip_parent_check=False, available_candidates=[],
+        )
+    ok = decide_launch_selection(
+        stage="full", generator_mode="reuse", candidate_arg="c.json",
+        parent_arg="", skip_parent_check=True, available_candidates=[],
+    )
+    assert ok["parent_policy"] == "bypass_explicit"
+    legacy = decide_launch_selection(
+        stage="micro_probe", generator_mode="", candidate_arg="",
+        parent_arg="", skip_parent_check=False,
+        available_candidates=["auto/manifest.json"],
+    )
+    assert legacy["candidate_path"] == "auto/manifest.json"
+
+
+def test_source_identity_keeps_candidate_and_executed_separate():
+    from src.task2.provenance.reuse_contract import build_source_identity
+
+    rec = build_source_identity(
+        {"candidate_id": "c" * 16, "git_commit_sha": "a" * 40, "algorithm_sha256": "d" * 64},
+        "e" * 40, True, {"generator_mode": "reuse"},
+    )
+    assert rec["candidate_git_sha"] == "a" * 40
+    assert rec["executed_git_sha"] == "e" * 40
+    assert rec["git_match"] is False  # drift is recorded, never equated
+    same = build_source_identity(
+        {"candidate_id": "c" * 16, "git_commit_sha": "a" * 40}, "a" * 40, False, None,
+    )
+    assert same["git_match"] is True

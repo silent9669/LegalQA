@@ -141,17 +141,25 @@ def build_production_run_bundle(
     runtime_profile: str = "colab_a100",
     submission_path: Optional[Union[Path, str]] = None,
     submission_provenance_path: Optional[Union[Path, str]] = None,
+    training_performed: bool = True,
+    source_adapter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build and package the complete immutable production run bundle.
 
     optimizer_steps and training_sample_count must be measured trainer
     outputs; fabricated defaults are refused (missing telemetry cannot
-    yield a release claim).
+    yield a release claim). Reuse runs pass ``training_performed=False``
+    with the verified ``source_adapter`` metadata: this run's
+    optimizer_steps is 0 and the source training figures stay namespaced
+    under ``source_adapter`` (never presented as new telemetry, and no
+    fake train.log is written).
     """
     if optimizer_steps is None or training_sample_count is None:
         raise ValueError(
             "build_production_run_bundle requires measured optimizer_steps and training_sample_count"
         )
+    if not training_performed and not isinstance(source_adapter, dict):
+        raise ValueError("reuse bundles (training_performed=False) require the verified source_adapter metadata")
     out_root = Path(output_dir)
     out_root.mkdir(parents=True, exist_ok=True)
 
@@ -250,9 +258,16 @@ def build_production_run_bundle(
         }, indent=2), encoding="utf-8"
     )
 
-    # 6. Copy train log
+    # 6. Copy train log (reuse runs never fabricate one: the marker states
+    # no new trainer steps ran and points at the verified source adapter).
     if Path(train_log_path).exists():
         shutil.copy(str(train_log_path), str(logs_dir / "train.log"))
+    elif not training_performed:
+        (logs_dir / "train.log").write_text(
+            f"Run {run_id}: training_performed=false (reuse). No new optimizer steps ran; "
+            f"source adapter: {json.dumps(source_adapter, indent=2)}\n",
+            encoding="utf-8",
+        )
     else:
         (logs_dir / "train.log").write_text(f"Run {run_id} completed successfully.\n", encoding="utf-8")
 
@@ -323,6 +338,7 @@ def build_production_run_bundle(
         },
         "training_scope": "all_allowed_train",
         "training_sample_count": training_sample_count,
+        "training_performed": bool(training_performed),
         "optimizer_steps": optimizer_steps,
         "num_train_epochs": num_train_epochs,
         "effective_batch_size": effective_batch_size,
@@ -331,6 +347,7 @@ def build_production_run_bundle(
             "model_file": "adapter_model.safetensors",
             "sha256": adapter_hash,
         },
+        "source_adapter": source_adapter if not training_performed else None,
         "metrics": metrics,
         "huggingface": {
             "repository": hf_repository,

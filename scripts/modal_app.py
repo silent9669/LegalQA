@@ -58,6 +58,16 @@ DENSE_MODEL_ID = "runs/20260920-215402/encoder_ft_v2"
 HF_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
 KNOWN_TEST_FILES = ("private-official.json", "public-official.json")
 
+#: R0 reuse adapter pins (repo + immutable revision + subfolder). File
+#: digests are NOT defaulted here: the d261 manifest carries no weights
+#: digest, so the request must carry measured SHA-256 from pinned bytes.
+R0_ADAPTER_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
+R0_ADAPTER_REVISION = "b6e86e35e20c403bb82b40b25f85690c987e1d02"
+R0_ADAPTER_SUBFOLDER = "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter"
+R0_GENERATOR_BASE_REVISION = "aa8e72537993ba99e69dfaafa59ed015b17504d1"
+
+GENERATOR_MODES = ("reuse", "fresh")
+
 
 def read_pin_file(name: str) -> List[str]:
     """Parse a local requirements/constraints file into pip specifiers."""
@@ -87,15 +97,23 @@ def build_modal_request(
     parent_report: Optional[Dict[str, Any]] = None,
     kaggle_report: Optional[Dict[str, Any]] = None,
     colab_report: Optional[Dict[str, Any]] = None,
-    skip_hf_upload: bool = False,
+    skip_hf_upload: bool = True,
     skip_parent_check: bool = False,
     dense_model: str = "",
+    generator_mode: str = "",
+    adapter_spec: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a validated remote-execution request (pure, locally testable).
 
     The parent chain is mandatory: micro_probe requires the colab_t4 PASS
     report, full requires the a100_micro_probe PASS report, each for the
     same candidate. No bypass, no cross-candidate reuse.
+
+    Full runs additionally require an explicit ``generator_mode``:
+    ``reuse`` pins one adapter (repo + immutable revision + subfolder +
+    measured file digests, verified before inference, trainer never runs)
+    while ``fresh`` blocks every auto-copy source so the trainer always
+    runs. Uploads stay off unless explicitly opted in.
     """
     if stage not in ("kaggle_t4x2", "colab_t4", "micro_probe", "full"):
         raise ValueError(f"unknown Modal stage: {stage}")
@@ -119,77 +137,53 @@ def build_modal_request(
     if not allowed_parents:
         if parent_report is not None:
             raise ValueError(f"Modal {stage} takes no parent report")
+        parent_policy = "none"
+    elif skip_parent_check:
+        # Explicit, recorded bypass only: never synthesize a PASS report.
+        # The remote skips verify_gate_report and the execution record keeps
+        # parent_policy=bypass_explicit.
+        if parent_report is None:
+            from src.task2.provenance.reuse_contract import explicit_bypass_parent_report
+
+            parent_report = explicit_bypass_parent_report(candidate_manifest, allowed_parents[0])
+        parent_policy = "bypass_explicit"
     else:
-        if skip_parent_check:
-            if parent_report is None:
-                cid = candidate_manifest["candidate_id"]
-                parent_report = {
-                    "schema_version": 1,
-                    "stage": allowed_parents[0] if allowed_parents else "bypassed",
-                    "status": "PASS",
-                    "candidate_id": cid,
-                    "candidate_sha": cid,
-                    "started_at_utc": "2026-09-22T00:00:00Z",
-                    "finished_at_utc": "2026-09-22T00:01:00Z",
-                    "identity": {
-                        "git_commit_sha": candidate_manifest.get("git_commit_sha", ""),
-                        "dataset_slug": (candidate_manifest.get("dataset") or {}).get("slug", ""),
-                        "dataset_version": (candidate_manifest.get("dataset") or {}).get("version", 1),
-                        "dataset_manifest_sha256": (candidate_manifest.get("dataset") or {}).get("manifest_sha256", ""),
-                        "algorithm_sha256": candidate_manifest.get("algorithm_sha256", ""),
-                        "runtime_profile_sha256": (candidate_manifest.get("runtime_profile_sha256") or {}).get("modal_a100", ""),
-                        "dependency_lock_sha256": candidate_manifest.get("dependency_lock_sha256", ""),
-                        "generator_revision": ((candidate_manifest.get("models") or {}).get("generator") or {}).get("revision", ""),
-                        "reranker_revision": ((candidate_manifest.get("models") or {}).get("reranker") or {}).get("revision", ""),
-                        "dense_revision": str(dense_revision),
-                    },
-                    "hardware": {
-                        "gpu_count": 1,
-                        "gpu_names": ["A100"],
-                        "torch_version": "2.5.1",
-                        "cuda_runtime": "12.4",
-                        "driver": "550",
-                        "peak_allocated_mb": 0.0,
-                        "peak_reserved_mb": 0.0,
-                    },
-                    "checks": {
-                        "dataset_verified": True,
-                        "config_verified": True,
-                        "model_revisions_verified": True,
-                        "finite_loss": True,
-                        "trainable_weight_changed": True,
-                        "checkpoint_saved": True,
-                        "checkpoint_reloaded": True,
-                        "mini_eval_completed": True,
-                    },
-                    "metrics": {
-                        "optimizer_steps": 2,
-                        "seconds_per_step": 1.0,
-                        "meteor": 0.5246,
-                        "rouge_l": 0.4029,
-                    },
-                    "artifacts": {
-                        "log_sha256": "none",
-                        "telemetry_sha256": "none",
-                        "adapter_manifest_sha256": "none",
-                    },
-                    "report_sha256": "bypassed_parent_check",
-                }
-        else:
-            if not isinstance(parent_report, dict):
-                raise ValueError(f"Modal {stage} requires parent report in {allowed_parents} (no bypass)")
-            if parent_report.get("status") != "PASS":
-                raise ValueError(f"parent report for {stage} is not PASS")
-            if parent_report.get("stage") not in allowed_parents:
-                raise ValueError(
-                    f"parent stage mismatch for Modal {stage}: required one of {allowed_parents}, "
-                    f"got {parent_report.get('stage')}"
-                )
-            parent_candidate = parent_report.get("candidate_id", parent_report.get("candidate_sha"))
-            if parent_candidate != candidate_manifest["candidate_id"]:
-                raise ValueError("parent report candidate mismatch: cross-candidate reuse refused")
-            if not parent_report.get("report_sha256"):
-                raise ValueError("parent report lacks report_sha256")
+        if not isinstance(parent_report, dict):
+            raise ValueError(f"Modal {stage} requires parent report in {allowed_parents} (no bypass)")
+        if parent_report.get("status") != "PASS":
+            raise ValueError(f"parent report for {stage} is not PASS")
+        if parent_report.get("stage") not in allowed_parents:
+            raise ValueError(
+                f"parent stage mismatch for Modal {stage}: required one of {allowed_parents}, "
+                f"got {parent_report.get('stage')}"
+            )
+        parent_candidate = parent_report.get("candidate_id", parent_report.get("candidate_sha"))
+        if parent_candidate != candidate_manifest["candidate_id"]:
+            raise ValueError("parent report candidate mismatch: cross-candidate reuse refused")
+        if not parent_report.get("report_sha256"):
+            raise ValueError("parent report lacks report_sha256")
+        parent_policy = "verify_parent_report"
+
+    mode = str(generator_mode or "").strip()
+    normalized_adapter: Optional[Dict[str, Any]] = None
+    if stage == "full":
+        if mode not in GENERATOR_MODES:
+            raise ValueError(
+                f"Modal full requires an explicit generator_mode in {GENERATOR_MODES}, got {generator_mode!r}"
+            )
+        if mode == "reuse":
+            if not isinstance(adapter_spec, dict):
+                raise ValueError("reuse full requires an explicit adapter_spec (repo/revision/subfolder/file_digests)")
+            from src.task2.provenance.reuse_contract import validate_adapter_spec
+
+            normalized_adapter = validate_adapter_spec(adapter_spec)
+    elif mode:
+        if mode not in GENERATOR_MODES:
+            raise ValueError(f"unknown generator_mode: {mode!r}")
+        if adapter_spec is not None:
+            from src.task2.provenance.reuse_contract import validate_adapter_spec
+
+            normalized_adapter = validate_adapter_spec(adapter_spec)
 
     # Auto-resolve historical gate reports for stage='full' if not explicitly passed
     cid = candidate_manifest.get("candidate_id")
@@ -210,11 +204,15 @@ def build_modal_request(
         "test_filename": str(test_path),
         "dense_revision": str(dense_revision),
         "parent_report": parent_report,
+        "parent_policy": parent_policy,
         "kaggle_report": kaggle_report,
         "colab_report": colab_report,
         "skip_hf_upload": bool(skip_hf_upload),
+        "upload_policy": "disabled" if skip_hf_upload else "opt_in_enabled",
         "skip_parent_check": bool(skip_parent_check),
         "dense_model": str(dense_model),
+        "generator_mode": mode,
+        "adapter_spec": normalized_adapter,
     }
 
 
@@ -225,23 +223,122 @@ def validate_modal_request(request: Dict[str, Any]) -> None:
         candidate_manifest=request.get("candidate_manifest", {}),
         test_path=request.get("test_filename", ""),
         parent_report=request.get("parent_report"),
+        skip_hf_upload=request.get("skip_hf_upload", True),
+        skip_parent_check=request.get("skip_parent_check", False),
+        dense_model=request.get("dense_model", ""),
+        generator_mode=request.get("generator_mode", ""),
+        adapter_spec=request.get("adapter_spec"),
     )
     if request.get("test_filename") not in KNOWN_TEST_FILES:
         raise ValueError(f"refusing unknown test file: {request.get('test_filename')}")
 
 
-def resolve_test_file(data_dir: Path, requested: str) -> Path:
-    """Resolve the inference test set; fail closed on unknown/missing files."""
+def resolve_test_file(data_dir: Path, requested: str, allow_fallback: bool = True) -> Path:
+    """Resolve the inference test set; fail closed on unknown/missing files.
+
+    Full runs pass ``allow_fallback=False``: a missing private set raises
+    instead of silently substituting the public set.
+    """
     if requested not in KNOWN_TEST_FILES:
         raise ValueError(f"refusing unknown test file: {requested}")
     candidate = data_dir / requested
     if candidate.is_file():
         return candidate
+    if not allow_fallback:
+        raise FileNotFoundError(f"test file not found (no fallback on the full path): {candidate}")
     fallback = data_dir / "public-official.json"
     if requested != "public-official.json" and fallback.is_file():
         print(f"Notice: {requested} absent; falling back to public-official.json")
         return fallback
     raise FileNotFoundError(f"test file not found: {candidate}")
+
+
+def resolve_adapter_plan(generator_mode: str) -> Dict[str, Any]:
+    """Decide which adapter sources a full run may touch (pure, testable).
+
+    Reuse may ONLY stage the pinned HF snapshot (repo + immutable revision
+    + subfolder, digest-verified after download). The prior-run mtime scan,
+    the generic volume adapter, and any unpinned fallback are never
+    consulted. Fresh stages nothing: the trainer always runs.
+    """
+    mode = str(generator_mode or "").strip()
+    if mode not in GENERATOR_MODES:
+        raise ValueError(f"unknown generator_mode: {mode!r}")
+    if mode == "fresh":
+        return {"mode": "fresh", "allowed_sources": [], "trainer_runs": True}
+    return {"mode": "reuse", "allowed_sources": ["pinned_hf_snapshot"], "trainer_runs": False}
+
+
+def stage_verified_adapter(
+    snapshot_subfolder: str | Path,
+    target_dir: str | Path,
+    spec: Dict[str, Any],
+    expected_base_model: str,
+) -> Dict[str, Any]:
+    """Stage one pinned adapter snapshot into the run dir, then verify it.
+
+    Copies ``snapshot_subfolder`` (already downloaded at the pinned
+    revision) to ``target_dir`` and runs the full digest + checkpoint
+    contract. Any missing file, digest mismatch, or contract violation
+    raises before inference; the caller must NOT try another source.
+    """
+    from src.task2.provenance.reuse_contract import verify_adapter_dir
+
+    src = Path(snapshot_subfolder)
+    dst = Path(target_dir)
+    if not src.is_dir():
+        raise FileNotFoundError(f"pinned adapter snapshot missing: {src}")
+    import shutil as _shutil
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_dir():
+        _shutil.rmtree(str(dst))
+    _shutil.copytree(str(src), str(dst))
+    return verify_adapter_dir(dst, spec, expected_base_model)
+
+
+def decide_full_compute_status(
+    outputs: Dict[str, Any],
+    submission_json: str | Path | None,
+    submission_zip: str | Path | None,
+    expected_ids: List[str],
+) -> Dict[str, Any]:
+    """Compute the terminal compute status for a full run (pure, testable).
+
+    PASS only when the runner did not stop INCOMPLETE, the submission JSON
+    exists and is nonempty, IDs exactly match the test set actually used,
+    and ZIP inner/loose bytes and SHAs have parity. Anything else is FAIL
+    (or INCOMPLETE when the runner stopped at the deadline). Never writes
+    files or uploads.
+    """
+    from src.task2.scorer_contract import validate_prediction_payload, verify_zip_inner_matches_loose
+
+    reasons: List[str] = []
+    if isinstance(outputs, dict) and outputs.get("status") == "INCOMPLETE":
+        return {"compute_status": "INCOMPLETE", "reasons": ["runner stopped INCOMPLETE at the deadline gate"]}
+    stages = outputs.get("stages", {}) if isinstance(outputs, dict) else {}
+    if "submission" not in stages:
+        reasons.append("runner produced no submission stage")
+    for label, path in (("submission_json", submission_json), ("submission_zip", submission_zip)):
+        if not path or not Path(str(path)).is_file():
+            reasons.append(f"{label} missing: {path}")
+    if reasons:
+        return {"compute_status": "FAIL", "reasons": reasons}
+    try:
+        submission = json.loads(Path(str(submission_json)).read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"compute_status": "FAIL", "reasons": [f"submission_json unreadable: {exc}"]}
+    if not isinstance(submission, dict) or not submission:
+        return {"compute_status": "FAIL", "reasons": ["submission_json empty or not an object"]}
+    try:
+        validate_prediction_payload(submission, [str(v) for v in expected_ids])
+    except Exception as exc:
+        return {"compute_status": "FAIL", "reasons": [f"submission ID check failed: {exc}"]}
+    try:
+        parity = verify_zip_inner_matches_loose(str(submission_zip), str(submission_json))
+    except Exception as exc:
+        return {"compute_status": "FAIL", "reasons": [f"ZIP parity failed: {exc}"]}
+    return {"compute_status": "PASS", "reasons": [], "zip_report": parity}
 
 
 def test_file_fingerprint(path: Path) -> Dict[str, Any]:
@@ -383,12 +480,15 @@ if modal is not None:
 
         path = run_dir / "parent_gate_report.json"
         path.write_text(json.dumps(parent, indent=2), encoding="utf-8")
-        if not skip_check:
-            declared_sha = parent.get("report_sha256")
-            if declared_sha and declared_sha != "bypassed_parent_check":
-                actual_sha = GateReport.load_json(path).compute_sha256()
-                if actual_sha != declared_sha:
-                    raise ValueError(f"parent report sha mismatch: expected {declared_sha}, got {actual_sha}")
+        if skip_check or parent.get("status") != "PASS":
+            # Explicit bypass records (BYPASSED_EXPLICIT) are filed as-is;
+            # they are never parsed as gate reports nor upgraded to PASS.
+            return str(path)
+        declared_sha = parent.get("report_sha256")
+        if declared_sha:
+            actual_sha = GateReport.load_json(path).compute_sha256()
+            if actual_sha != declared_sha:
+                raise ValueError(f"parent report sha mismatch: expected {declared_sha}, got {actual_sha}")
         return str(path)
 
     @app.function(
@@ -551,10 +651,13 @@ if modal is not None:
         sys.path.insert(0, "/root/LegalQA")
         os.chdir("/root/LegalQA")
         if candidate.get("git_commit_sha"):
+            # Declared candidate pin only: the ACTUAL running revision is
+            # measured separately via get_executed_git_identity and stored
+            # as executed_git_sha in execution_record.json (P0-D).
             os.environ["GIT_COMMIT_SHA"] = candidate["git_commit_sha"]
             (Path("/root/LegalQA") / ".git_commit_sha").write_text(candidate["git_commit_sha"], encoding="utf-8")
 
-        from scripts.rebuild_dense_index import build_verified_index, check_dense_alignment
+        from scripts.rebuild_dense_index import build_verified_index
 
         data_dir = Path("/data/legalqa-task2-clean-data")
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -595,7 +698,10 @@ if modal is not None:
         run_output_dir = Path(f"/runs/modal_{request['candidate_id']}_{int(time.time())}")
         run_output_dir.mkdir(parents=True, exist_ok=True)
         candidate_path = _write_candidate(run_output_dir, candidate)
-        parent_path = _write_parent(run_output_dir, request["parent_report"])
+        parent_path = _write_parent(
+            run_output_dir, request["parent_report"],
+            skip_check=bool(request.get("skip_parent_check")),
+        )
 
         if stage == "micro_probe":
             from scripts.run_gpu_gate import run_gpu_gate
@@ -622,10 +728,11 @@ if modal is not None:
             if "encoder_ft" in str(dense_model_id) or "20260920-215402" in str(dense_model_id):
                 dense_local = data_dir / "models" / "encoder_ft_v2"
                 if not (dense_local / "model.safetensors").is_file():
-                    print(f"[+] Fetching encoder_ft_v2 from HF repo {HF_REPO}...")
+                    print(f"[+] Fetching encoder_ft_v2 from HF repo {HF_REPO} at pinned revision {dense_revision}...")
                     from huggingface_hub import snapshot_download
                     dl_p = snapshot_download(
                         repo_id=HF_REPO,
+                        revision=dense_revision,
                         allow_patterns="runs/20260920-215402/encoder_ft_v2/*",
                     )
                     src_ft = Path(dl_p) / "runs/20260920-215402/encoder_ft_v2"
@@ -636,6 +743,29 @@ if modal is not None:
                     print(f"[+] encoder_ft_v2 cached to data volume: {dense_local}")
                 dense_model_id = str(dense_local)
 
+            # Exact dense/index binding: hash the pinned encoder bytes, then
+            # reuse a staged index ONLY if its manifest binds the same
+            # weights + revision + preprocessing + corpus order + embeddings
+            # digest. Same family/dim/rows or self-consistency alone is not
+            # identity; legacy indexes fail closed to a side-by-side rebuild.
+            from scripts.rebuild_dense_index import select_verified_dense_index
+            from src.common.dense import preprocessing_fingerprint
+            from src.task2.provenance.checksums import compute_file_sha256 as _sha256
+
+            _enc_weights = Path(str(dense_model_id)) / "model.safetensors"
+            encoder_weights_sha = _sha256(_enc_weights) if _enc_weights.is_file() else ""
+            if not encoder_weights_sha:
+                raise ValueError(f"refusing dense reuse: encoder weights bytes missing at {_enc_weights}")
+            _expected_preprocessing = preprocessing_fingerprint(
+                max_seq_length=256, vietnamese_tokenized=True,
+                pooling="mean", normalized=True, dtype="float16",
+            )
+            _dense_expected = {
+                "model_id": str(dense_model_id),
+                "revision": dense_revision,
+                "encoder_weights_sha256": encoder_weights_sha,
+                "preprocessing": _expected_preprocessing,
+            }
             if "encoder_ft" in str(dense_model_id):
                 staged_candidates = [data_dir / "indexes" / "encoder_ft_v2_rebuilt"]
             else:
@@ -643,26 +773,16 @@ if modal is not None:
                     data_dir / "indexes" / "dek21_rebuilt",
                     data_dir / "indexes" / "dek21",
                 ]
+            _selection = select_verified_dense_index(
+                [str(p) for p in staged_candidates], str(chunks_file), _dense_expected,
+            )
             dense_index_dir = None
-            for candidate_dir in staged_candidates:
-                if candidate_dir.exists():
-                    # Strict model compatibility check against dense_manifest.json
-                    man_file = candidate_dir / "dense_manifest.json"
-                    if man_file.is_file():
-                        try:
-                            m_info = json.loads(man_file.read_text(encoding="utf-8"))
-                            m_name = str(m_info.get("model_id") or m_info.get("model_name") or "").lower()
-                            cur_name = str(dense_model_id).lower()
-                            if ("encoder_ft" in cur_name and "encoder_ft" not in m_name) or                                ("encoder_ft" not in cur_name and "encoder_ft" in m_name):
-                                print(f"[!] Skipping {candidate_dir.name}: model in manifest ({m_name}) differs from target ({cur_name})")
-                                continue
-                        except Exception:
-                            pass
-                    alignment = check_dense_alignment(str(candidate_dir), str(chunks_file))
-                    if alignment.get("aligned"):
-                        print(f"[+] Dense index aligned at {candidate_dir.name}; reuse.")
-                        dense_index_dir = str(candidate_dir)
-                        break
+            if _selection.get("action") == "reused":
+                print(f"[+] Dense index strictly verified at {Path(str(_selection['index_dir'])).name}; reuse.")
+                dense_index_dir = str(_selection["index_dir"])
+            else:
+                for failure in _selection.get("failures", []):
+                    print(f"[!] Dense index rejected: {failure}")
 
             if dense_index_dir is None:
                 idx_name = "encoder_ft_v2_rebuilt" if "encoder_ft" in str(dense_model_id) else "dek21_rebuilt"
@@ -692,55 +812,56 @@ if modal is not None:
                 print("[+] Microprobe parent chain verified.")
             else:
                 print("[*] Notice: skip_parent_check active, skipping verify_gate_report.")
-            test_path = resolve_test_file(data_dir, request["test_filename"])
+            test_path = resolve_test_file(data_dir, request["test_filename"], allow_fallback=False)
             fingerprint = test_file_fingerprint(test_path)
             print(f"[+] Test set: {fingerprint}")
+            with open(test_path, "r", encoding="utf-8") as _tf:
+                _expected_ids = [str(k) for k in json.load(_tf).keys()]
             resolved = load_resolved_config(
                 "/root/LegalQA/configs/task2/algorithm.yaml",
                 "/root/LegalQA/configs/task2/runtime/modal_a100.yaml",
                 candidate_id=manifest.candidate_id,
             )
             manifest.validate_against_config(resolved)
-            # Reuse completed generator adapter from an earlier run or download from HF release if present
+            # Explicit generator mode: reuse stages ONLY the pinned adapter
+            # snapshot (repo + immutable revision + subfolder, digest- and
+            # contract-verified). No prior-run mtime scan, no generic volume
+            # adapter, no fallback source when the pinned one is invalid.
+            # Fresh stages nothing so the runner always trains.
+            from src.task2.provenance.reuse_contract import validate_adapter_spec
+
+            generator_mode = str(request.get("generator_mode") or "")
+            if generator_mode not in ("reuse", "fresh"):
+                raise ValueError(f"full run requires explicit generator_mode reuse|fresh, got {generator_mode!r}")
+            adapter_plan = resolve_adapter_plan(generator_mode)
+            print(f"[+] Generator mode: {generator_mode} (allowed sources: {adapter_plan['allowed_sources']})")
             target_adapter = run_output_dir / "checkpoints" / "generator" / "hf_adapter"
-            prior_runs = sorted(Path("/runs").glob(f"modal_{request['candidate_id']}_*"), key=lambda p: p.stat().st_mtime)
-            adapter_reused = False
-            for pr in reversed(prior_runs):
-                prior_adapter = pr / "checkpoints" / "generator" / "hf_adapter"
-                if (prior_adapter / "adapter_model.safetensors").is_file() and (prior_adapter / "generator_manifest.json").is_file():
-                    if not (target_adapter / "adapter_model.safetensors").is_file():
-                        print(f"[+] Reusing verified generator adapter from prior run: {pr.name}")
-                        target_adapter.parent.mkdir(parents=True, exist_ok=True)
-                        import shutil
-                        shutil.copytree(str(prior_adapter), str(target_adapter), dirs_exist_ok=True)
-                    adapter_reused = True
-                    break
+            staged_adapter_report: Optional[Dict[str, Any]] = None
+            adapter_spec: Optional[Dict[str, Any]] = None
+            if generator_mode == "reuse":
+                raw_spec = request.get("adapter_spec")
+                if not isinstance(raw_spec, dict):
+                    raise ValueError("reuse full requires request adapter_spec; refusing to guess an adapter")
+                adapter_spec = validate_adapter_spec(raw_spec)
+                from huggingface_hub import snapshot_download
 
-            if not adapter_reused:
-                cached_adapter = data_dir / "models" / "qwen_adapter"
-                if (cached_adapter / "adapter_model.safetensors").is_file():
-                    print(f"[+] Reusing preloaded Qwen LoRA adapter from data volume: {cached_adapter}")
-                    target_adapter.parent.mkdir(parents=True, exist_ok=True)
-                    import shutil
-                    shutil.copytree(str(cached_adapter), str(target_adapter), dirs_exist_ok=True)
-                    adapter_reused = True
-
-            if not adapter_reused and not (target_adapter / "adapter_model.safetensors").is_file():
+                print(f"[+] Fetching pinned adapter {adapter_spec['repo']}@{adapter_spec['revision']}:"
+                      f"{adapter_spec['subfolder']} ...")
                 try:
-                    from huggingface_hub import snapshot_download
-                    print(f"[+] Fresh volume: Fetching fine-tuned Qwen LoRA adapter from HF repo {HF_REPO}...")
                     dl_p = snapshot_download(
-                        repo_id=HF_REPO,
-                        allow_patterns="runs/run_d2618710d9d0b6de_20260921_154231/final_adapter/*",
+                        repo_id=adapter_spec["repo"],
+                        revision=adapter_spec["revision"],
+                        allow_patterns=f"{adapter_spec['subfolder']}/*",
                     )
-                    src_ad = Path(dl_p) / "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter"
-                    if (src_ad / "adapter_model.safetensors").is_file():
-                        target_adapter.parent.mkdir(parents=True, exist_ok=True)
-                        import shutil
-                        shutil.copytree(str(src_ad), str(target_adapter), dirs_exist_ok=True)
-                        print(f"[+] Downloaded and registered Qwen LoRA adapter from HF: {target_adapter}")
-                except Exception as e:
-                    print(f"[!] Notice on HF adapter fetch: {e}")
+                except Exception as exc:
+                    raise ValueError(f"refusing reuse: pinned adapter snapshot unavailable: {exc}") from exc
+                src_ad = Path(dl_p) / adapter_spec["subfolder"]
+                staged_adapter_report = stage_verified_adapter(
+                    src_ad, target_adapter, adapter_spec, manifest.models.generator.id,
+                )
+                print(f"[+] Pinned adapter verified: digests={staged_adapter_report['digests']}")
+            else:
+                print("[+] Fresh mode: all adapter auto-copy sources blocked; the trainer will run.")
 
             profile = load_profile_from_yaml("/root/LegalQA/configs/task2/runtime/modal_a100.yaml")
             outputs = run_pipeline(
@@ -757,16 +878,62 @@ if modal is not None:
                 seed=resolved.algorithm.seed,
                 code_root="/root/LegalQA",
                 allow_single_gpu=True,
+                generator_mode=generator_mode,
+                expected_adapter=adapter_spec if generator_mode == "reuse" else None,
             )
+            # Execution record: candidate SHA vs ACTUAL running SHA stay separate.
+            from src.task2.provenance.reuse_contract import (
+                build_source_identity,
+                get_executed_git_identity,
+                write_execution_record,
+            )
+
+            _exec_git = get_executed_git_identity("/root/LegalQA")
+            _gen_stage = outputs.get("stages", {}).get("generator", {})
+            _source_identity = build_source_identity(
+                candidate_manifest,
+                _exec_git["executed_git_sha"],
+                _exec_git["dirty"],
+                {
+                    "generator_mode": generator_mode,
+                    "training_performed": bool(_gen_stage.get("training_performed", generator_mode == "fresh")),
+                    "adapter_spec": adapter_spec if generator_mode == "reuse" else None,
+                    "adapter_digests": (_gen_stage.get("adapter_digests")
+                                        or (staged_adapter_report or {}).get("digests")),
+                    "dense_revision": dense_revision,
+                    "encoder_weights_sha256": encoder_weights_sha,
+                    "test_fingerprint": fingerprint,
+                    "parent_policy": request.get("parent_policy", "verify_parent_report"),
+                    "upload_policy": request.get("upload_policy", "disabled"),
+                },
+            )
+            write_execution_record(run_output_dir / "execution_record.json", _source_identity)
+
+            sub_json = outputs.get("stages", {}).get("submission", {}).get("submission_json")
             sub_zip = outputs.get("stages", {}).get("submission", {}).get("submission_zip")
+            # Terminal compute status: PASS only on a complete runner plus a
+            # real, nonempty, ID-checked submission with ZIP parity.
+            _status = decide_full_compute_status(outputs, sub_json, sub_zip, _expected_ids)
+            compute_status = str(_status["compute_status"])
+            if compute_status != "PASS":
+                print(f"[!] Full run compute status {compute_status}: {'; '.join(_status.get('reasons', []))}")
             sub_zip_b64 = None
-            if sub_zip and Path(sub_zip).is_file():
+            if compute_status == "PASS" and sub_zip and Path(sub_zip).is_file():
                 import base64
                 sub_zip_b64 = base64.b64encode(Path(sub_zip).read_bytes()).decode("ascii")
 
-            # Automatically package production run bundle and release to Hugging Face
-            hf_res = None
-            if os.environ.get("HF_TOKEN") and not request.get("skip_hf_upload"):
+            # Release is separate from compute: uploads stay OFF unless the
+            # request explicitly opts in, and only a verified PASS bundles.
+            # A failed upload sets release FAILED without retraining and
+            # never claims an uploaded PASS.
+            hf_res: Optional[Dict[str, Any]] = None
+            release_status = "disabled"
+            upload_opted_in = request.get("upload_policy") == "opt_in_enabled" and not request.get("skip_hf_upload")
+            if upload_opted_in and compute_status == "PASS" and not os.environ.get("HF_TOKEN"):
+                print("[*] Upload opted in but no HF_TOKEN in the container: release blocked, compute stays PASS.")
+                upload_opted_in = False
+                release_status = "blocked_no_token"
+            if upload_opted_in and compute_status == "PASS":
                 try:
                     import datetime
                     from src.task2.provenance.run_bundle import build_production_run_bundle
@@ -822,6 +989,8 @@ if modal is not None:
                     prov_file = run_output_dir / "submission_provenance.json"
                     ds_manifest = data_dir / "dataset_manifest.json"
                     ds_report = data_dir / "validation_report.json"
+                    _reuse_run = generator_mode == "reuse"
+                    _gen_src = _gen_stage.get("source_adapter") if isinstance(_gen_stage, dict) else None
 
                     print("\n" + "=" * 65)
                     print(" [+] Packaging Audited Production Run Bundle for Hugging Face Release ")
@@ -846,6 +1015,8 @@ if modal is not None:
                         runtime_profile="modal_a100",
                         submission_path=sub_json if (sub_json and Path(sub_json).is_file()) else None,
                         submission_provenance_path=prov_file if prov_file.is_file() else None,
+                        training_performed=not _reuse_run,
+                        source_adapter=_gen_src if _reuse_run else None,
                     )
 
                     print("\n" + "=" * 65)
@@ -857,11 +1028,18 @@ if modal is not None:
                         run_id=run_id,
                     )
                     print(f"[+] Hugging Face upload complete! Commit: {hf_res.get('commit_sha')} -> {hf_res.get('repo_url')}")
+                    release_status = "succeeded"
                 except Exception as e:
-                    print(f"[!] Warning: Auto-upload to Hugging Face encountered error: {e}")
+                    print(f"[!] Upload failed; compute stays {compute_status}, release FAILED (no retrain): {e}")
                     hf_res = {"status": "FAILED", "error": str(e)}
+                    release_status = "failed"
+            elif upload_opted_in and compute_status != "PASS":
+                print(f"[*] Upload opted in but compute is {compute_status}: refusing to release an unverified bundle.")
+                release_status = "blocked_unverified_compute"
 
-            result = {"status": "PASS", "stage": "full",
+            result = {"status": compute_status, "compute_status": compute_status,
+                      "release_status": release_status, "stage": "full",
+                      "generator_mode": generator_mode,
                       "test_fingerprint": fingerprint,
                       "submission_zip": sub_zip,
                       "submission_zip_b64": sub_zip_b64,
@@ -882,7 +1060,28 @@ if modal is not None:
         parent_report: str = "",
         skip_parent_check: bool = False,
         dense_model: str = "",
+        generator_mode: str = "",
+        adapter_spec: str = "",
+        allow_hf_upload: bool = False,
     ):
+        if stage == "full":
+            if generator_mode not in ("reuse", "fresh"):
+                raise SystemExit("full requires an explicit --generator-mode reuse|fresh")
+            if generator_mode == "reuse":
+                # No mtime auto-pick, no auto --skip-parent-check on the
+                # reuse path: every selection must be explicit (P0-D/P1).
+                if not candidate or not Path(candidate).is_file():
+                    raise SystemExit("reuse full requires an explicit --candidate <candidate_manifest.json>")
+                if not parent_report and not skip_parent_check:
+                    raise SystemExit(
+                        "reuse full requires an explicit --parent-report <report.json> "
+                        "or an explicit --skip-parent-check bypass"
+                    )
+                if not adapter_spec or not Path(adapter_spec).is_file():
+                    raise SystemExit(
+                        "reuse full requires an explicit --adapter-spec <adapter_spec.json> "
+                        "(repo/revision/subfolder/measured file_digests)"
+                    )
         manifest_path = Path(candidate) if candidate else None
         if manifest_path is None or not manifest_path.is_file():
             cands = sorted(
@@ -937,11 +1136,19 @@ if modal is not None:
             if c_path.is_file():
                 c_rep = json.loads(c_path.read_text(encoding="utf-8"))
 
+        adapter_spec_dict: Optional[Dict[str, Any]] = None
+        if adapter_spec:
+            adapter_spec_dict = json.loads(Path(adapter_spec).read_text(encoding="utf-8"))
+
+        # Uploads default OFF for experiments: only --allow-hf-upload opts in.
         request = build_modal_request(
             stage, manifest, test_path, parent,
             kaggle_report=k_rep, colab_report=c_rep,
+            skip_hf_upload=not allow_hf_upload,
             skip_parent_check=skip_parent_check,
             dense_model=dense_model,
+            generator_mode=generator_mode,
+            adapter_spec=adapter_spec_dict,
         )
 
         if stage == "kaggle_t4x2":
@@ -977,18 +1184,19 @@ if modal is not None:
             out_gate.write_text(json.dumps(result["report"], indent=2), encoding="utf-8")
             print(f"\n[+] Parent gate report automatically saved locally to: {out_gate}")
 
-        # Auto-download full submission locally
-        if stage == "full" and result.get("submission_zip_b64"):
+        # Download the verified full submission locally (compute PASS only).
+        # Never writes a root submission ZIP: only the versioned path below.
+        if stage == "full" and result.get("compute_status") == "PASS" and result.get("submission_zip_b64"):
             import base64
             zip_bytes = base64.b64decode(result["submission_zip_b64"])
             sub_dir = REPO_ROOT / "artifacts" / "submissions" / manifest["candidate_id"]
             sub_dir.mkdir(parents=True, exist_ok=True)
             local_sub = sub_dir / "submission.json.zip"
             local_sub.write_bytes(zip_bytes)
-            root_sub = REPO_ROOT / "submission.json.zip"
-            root_sub.write_bytes(zip_bytes)
-            print(f"\n[+] Submission ZIP automatically downloaded to: {local_sub}")
-            print(f"[+] Root copy ready for submission at: {root_sub}")
+            print(f"\n[+] Verified submission ZIP downloaded to: {local_sub}")
+        elif stage == "full":
+            print(f"[*] No submission downloaded: compute_status={result.get('compute_status')}, "
+                  f"release_status={result.get('release_status')}")
 
         # Report Hugging Face release
         if stage == "full" and result.get("huggingface"):

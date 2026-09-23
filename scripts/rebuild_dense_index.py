@@ -127,6 +127,77 @@ def build_verified_index(
     return build_manifest
 
 
+def select_verified_dense_index(
+    candidate_dirs: list,
+    corpus_path: str,
+    expected: dict,
+    max_pairs: int = 400,
+) -> dict:
+    """Pick the first staged index that strictly binds the expected encoder.
+
+    ``expected`` carries model_id, revision, encoder_weights_sha256 and
+    preprocessing (see ``verify_dense_manifest_identity``). For each
+    candidate dir: manifest identity must verify, ``embeddings.npy`` SHA
+    must match the manifest, corpus order/content hash must match the live
+    corpus, and the self-consistency diagnostic must pass. Anything else
+    (legacy manifest without identity, tampered bytes/order, stale
+    same-family weights) returns ``{"action": "rebuild_needed", ...}``
+    instead of reusing — never overwrites the old production index.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from src.common.dense import (
+        build_embedding_row_keys,
+        compute_embedding_order_hash,
+        duplicate_text_pairs,
+        embedding_self_consistency,
+        verify_dense_manifest_identity,
+    )
+
+    failures = []
+    for candidate in candidate_dirs:
+        index_dir = Path(candidate)
+        manifest_path = index_dir / "dense_manifest.json"
+        if not manifest_path.is_file():
+            manifest_path = index_dir / "dek21_manifest.json"
+        if not manifest_path.is_file():
+            failures.append(f"{index_dir.name}: no dense manifest")
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            verify_dense_manifest_identity(manifest, expected)
+            emb_path = index_dir / "embeddings.npy"
+            if not emb_path.is_file():
+                raise ValueError("embeddings.npy absent")
+            import hashlib as _hashlib
+
+            with open(emb_path, "rb") as f:
+                current_emb_sha = _hashlib.sha256(f.read()).hexdigest()
+            if manifest.get("embeddings_sha256") and current_emb_sha != manifest["embeddings_sha256"]:
+                raise ValueError("embeddings bytes differ from manifest digest")
+            df = pd.read_parquet(str(corpus_path), columns=["chunk_id", "text_raw"])
+            embeddings = np.load(str(emb_path), mmap_mode="r")
+            if embeddings.shape[0] != len(df):
+                raise ValueError(f"rows {embeddings.shape} vs corpus {len(df)}")
+            corpus = [{"chunk_id": c, "text_raw": t} for c, t in
+                      zip(df["chunk_id"].astype(str), df["text_raw"].astype(str))]
+            if manifest.get("embedding_order_sha256"):
+                current_order = compute_embedding_order_hash(build_embedding_row_keys(corpus))
+                if current_order != manifest["embedding_order_sha256"]:
+                    raise ValueError("corpus order/content differs from the indexed map")
+            pairs = duplicate_text_pairs(corpus, max_pairs=max_pairs)
+            consistency = embedding_self_consistency(embeddings, pairs)
+            if not consistency.get("aligned"):
+                raise ValueError(f"self-consistency failed: {consistency}")
+            return {"action": "reused", "index_dir": str(index_dir), "aligned": True,
+                    "self_consistency": consistency}
+        except Exception as exc:
+            failures.append(f"{index_dir.name}: {exc}")
+            continue
+    return {"action": "rebuild_needed", "aligned": False, "failures": failures}
+
+
 def ensure_dense_index(
     index_dir: str,
     corpus_path: str,

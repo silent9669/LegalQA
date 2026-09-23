@@ -118,6 +118,79 @@ def embedding_self_consistency(
     }
 
 
+def preprocessing_fingerprint(
+    max_seq_length: Optional[int] = 256,
+    vietnamese_tokenized: bool = True,
+    pooling: str = "mean",
+    normalized: bool = True,
+    dtype: str = "float16",
+) -> Dict[str, Any]:
+    """Fingerprint the exact encode-time preprocessing bound into the index.
+
+    Same family + dim + row count is NOT identity: tokenizer/segmentation,
+    max length, pooling and normalization change every vector. The index
+    manifest stores this dict; strict reuse rejects any drift.
+    """
+    return {
+        "max_seq_length": int(max_seq_length) if max_seq_length else 256,
+        "vietnamese_tokenized": bool(vietnamese_tokenized),
+        "pooling": str(pooling),
+        "normalized": bool(normalized),
+        "dtype": str(dtype),
+    }
+
+
+def verify_dense_manifest_identity(manifest: Dict[str, Any], expected: Dict[str, Any]) -> None:
+    """Fail closed when an index manifest does not bind the expected encoder.
+
+    ``expected`` may carry: model_id (exact), revision (exact 40-hex),
+    encoder_weights_sha256 (exact 64-hex), preprocessing (exact dict),
+    embeddings_sha256 / embedding_order_sha256 / corpus_rows / dim.
+    A legacy manifest missing weights/revision/preprocessing fails with a
+    "missing identity ... rebuild side-by-side" error instead of reuse.
+    Family-only similarity never passes.
+    """
+    if not isinstance(manifest, dict) or not isinstance(expected, dict):
+        raise ValueError("dense identity check requires manifest and expected dicts")
+    if expected.get("model_id"):
+        got = str(manifest.get("model_id") or manifest.get("model_name") or "")
+        want = str(expected["model_id"])
+        if got.lower() != want.lower():
+            raise ValueError(
+                f"dense index model mismatch: expected exact '{want}', got '{got}' "
+                "(family-only match is not identity)"
+            )
+    if expected.get("revision"):
+        got_rev = str(manifest.get("revision") or "").strip().lower()
+        want_rev = str(expected["revision"]).strip().lower()
+        if not got_rev:
+            raise ValueError("dense index missing identity: no encoder revision in manifest; rebuild side-by-side")
+        if got_rev != want_rev:
+            raise ValueError(f"dense index revision mismatch: expected {want_rev}, got {got_rev}")
+    if expected.get("encoder_weights_sha256"):
+        got_w = str(manifest.get("encoder_weights_sha256") or "").strip().lower()
+        want_w = str(expected["encoder_weights_sha256"]).strip().lower()
+        if not got_w:
+            raise ValueError("dense index missing identity: no encoder_weights_sha256 in manifest; rebuild side-by-side")
+        if got_w != want_w:
+            raise ValueError("dense index encoder weights mismatch: same family/dim is not the same bytes")
+    if expected.get("preprocessing") is not None:
+        got_p = manifest.get("preprocessing")
+        if not isinstance(got_p, dict):
+            raise ValueError("dense index missing identity: no preprocessing fingerprint in manifest; rebuild side-by-side")
+        want_p = dict(expected["preprocessing"])
+        for key, want_val in want_p.items():
+            if got_p.get(key) != want_val:
+                raise ValueError(f"dense index preprocessing mismatch on {key}: expected {want_val!r}, got {got_p.get(key)!r}")
+    for key in ("embeddings_sha256", "embedding_order_sha256"):
+        if expected.get(key):
+            if str(manifest.get(key) or "") != str(expected[key]):
+                raise ValueError(f"dense index {key} mismatch: index does not encode this exact corpus")
+    for key in ("corpus_rows", "dim"):
+        if expected.get(key) is not None and manifest.get(key) != expected[key]:
+            raise ValueError(f"dense index {key} mismatch: expected {expected[key]!r}, got {manifest.get(key)!r}")
+
+
 class DenseRetriever:
     """Dense Retriever with exact GPU FP16 top-K search, row verification, and multi-model support."""
 
@@ -398,7 +471,13 @@ class DenseRetriever:
             all_results.append(self.search(q, top_k=top_k))
         return all_results
 
-    def save_index(self, index_dir: str, dtype: str = "float16") -> None:
+    def save_index(
+        self,
+        index_dir: str,
+        dtype: str = "float16",
+        encoder_weights_sha256: str = "",
+        preprocessing: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Save precomputed corpus embeddings in FP16/FP32 with complete hash and provenance manifest."""
         os.makedirs(index_dir, exist_ok=True)
         emb_sha = ""
@@ -413,11 +492,21 @@ class DenseRetriever:
         doc_ids_sha = compute_chunk_ids_hash(self.doc_ids)
         row_keys = build_embedding_row_keys(self.corpus)
         order_hash = compute_embedding_order_hash(row_keys)
+        if preprocessing is None:
+            preprocessing = preprocessing_fingerprint(
+                max_seq_length=self.max_seq_length,
+                vietnamese_tokenized=self._needs_vietnamese_tokenization(),
+                pooling="mean",
+                normalized=True,
+                dtype=dtype,
+            )
 
         meta = {
             "model_id": self.model_name,
             "model_name": self.model_name,
             "revision": self.revision,
+            "encoder_weights_sha256": str(encoder_weights_sha256 or "").lower(),
+            "preprocessing": dict(preprocessing),
             "dim": self._get_dim(),
             "dtype": dtype,
             "normalized": True,
@@ -447,6 +536,10 @@ class DenseRetriever:
         verify_embeddings_hash: bool = False,
         verify_self_consistency: bool = False,
         consistency_pairs: int = 400,
+        expected_revision: Optional[str] = None,
+        expected_encoder_weights_sha256: str = "",
+        expected_preprocessing: Optional[Dict[str, Any]] = None,
+        strict_identity: bool = False,
     ) -> DenseRetriever:
         """Load precomputed embeddings from disk using mmap and verify row alignment and hash integrity.
 
@@ -454,6 +547,13 @@ class DenseRetriever:
         duplicate pairs must score cosine ≥ 0.95, proving the matrix actually
         encodes this corpus in this order. A permuted or foreign matrix fails
         here instead of silently poisoning retrieval; final_mode raises.
+
+        Self-consistency is only a diagnostic: strict reuse additionally
+        requires exact encoder bytes (weights SHA), exact revision,
+        preprocessing fingerprint, corpus order/content and embeddings
+        digest via ``strict_identity=True`` (or any expected_* pin). Legacy
+        manifests lacking that identity fail closed so callers rebuild
+        side-by-side instead of reusing a same-family stale index.
         """
         meta_path = os.path.join(index_dir, "dense_manifest.json")
         if not os.path.exists(meta_path):
@@ -481,6 +581,11 @@ class DenseRetriever:
                 # Verify expected model name
                 if expected_model_name and manifest_model != expected_model_name:
                     m1, m2 = manifest_model.lower(), expected_model_name.lower()
+                    if strict_identity:
+                        raise ValueError(
+                            f"FINAL_PIPELINE_ERROR: Dense model mismatch! Expected exact '{expected_model_name}', "
+                            f"but index has '{manifest_model}' (family-only match is not identity)"
+                        )
                     is_compatible = (
                         (m1 == m2)
                         or ("dek21" in m1 and "dek21" in m2)
@@ -494,6 +599,26 @@ class DenseRetriever:
                             f"FINAL_PIPELINE_ERROR: Dense model mismatch! Expected '{expected_model_name}', but index has '{manifest_model}'"
                         )
                 model_name = manifest_model
+                wants_strict = bool(strict_identity or expected_revision or expected_encoder_weights_sha256 or expected_preprocessing)
+                if wants_strict:
+                    if strict_identity:
+                        if not str(meta.get("revision") or "").strip():
+                            raise ValueError("dense index missing identity: no encoder revision in manifest; rebuild side-by-side")
+                        if not str(meta.get("encoder_weights_sha256") or "").strip():
+                            raise ValueError("dense index missing identity: no encoder_weights_sha256 in manifest; rebuild side-by-side")
+                        if not isinstance(meta.get("preprocessing"), dict):
+                            raise ValueError("dense index missing identity: no preprocessing fingerprint in manifest; rebuild side-by-side")
+                    verify_dense_manifest_identity(
+                        meta,
+                        {
+                            "model_id": expected_model_name or manifest_model,
+                            "revision": expected_revision,
+                            "encoder_weights_sha256": expected_encoder_weights_sha256,
+                            "preprocessing": expected_preprocessing,
+                        },
+                    )
+                    if expected_revision:
+                        revision = expected_revision
 
         retriever = cls(model_name=model_name, revision=revision, device=device, dtype=dtype, final_mode=final_mode)
 
