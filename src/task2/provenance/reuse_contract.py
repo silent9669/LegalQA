@@ -7,13 +7,23 @@ building + remote strict loading) and ``src/task2/pipeline/runner.py``
 R0 baseline (to IMPLEMENT AND MEASURE, not a proven best score):
 - candidate ``94aed6911490a9c3`` (config anchor only, not a full recipe id)
 - Qwen adapter ``dangphuc2109/legalqa-qwen2.5-3b-adapter``
-  subfolder ``runs/run_d2618710d9d0b6de_20260921_154231/final_adapter/``
+  subfolder ``runs/run_5433e8b4787137c9_20260920_193355/final_adapter/``
   pinned commit ``b6e86e35e20c403bb82b40b25f85690c987e1d02``
 - base Qwen revision ``aa8e72537993ba99e69dfaafa59ed015b17504d1``
 
-The d261 manifest carries no weights digest, so digests must be measured
-from bytes downloaded at the pinned revision and stored/checked here;
-never invent a digest.
+The 5433 adapter is the generator behind the ``runs/20260920-215402``
+notebook outputs (which reused ``/vol/kaggle_data/lora`` instead of
+training) and the ``run_v16_dual_assembled`` release manifest
+(``candidate_id 5433e8b4787137c9``). Its manifest records 7.483
+examples / 936 optimizer steps, final, full scope, null val fold.
+No 0.56 *answer* score was found in the run artifacts — the 0.56x
+figures present are retrieval-side (hit@12 0.562, ctx-recall); local
+answer METEOR observed there is ~0.52. Do not attach an official or
+>0.60 claim to this adapter.
+
+File digests below were MEASURED 2026-09-23 from bytes downloaded at
+the pinned revision (never invented); verification still re-hashes the
+staged bytes and compares.
 """
 
 from __future__ import annotations
@@ -35,10 +45,19 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 #: explicitly in the request spec.
 R0_ADAPTER_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
 R0_ADAPTER_REVISION = "b6e86e35e20c403bb82b40b25f85690c987e1d02"
-R0_ADAPTER_SUBFOLDER = "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter"
+R0_ADAPTER_SUBFOLDER = "runs/run_5433e8b4787137c9_20260920_193355/final_adapter"
 R0_GENERATOR_BASE_ID = "Qwen/Qwen2.5-3B-Instruct"
 R0_GENERATOR_BASE_REVISION = "aa8e72537993ba99e69dfaafa59ed015b17504d1"
 R0_ADAPTER_SCOPE = "all_allowed_task2_data"
+
+#: Measured 2026-09-23 from pinned-revision bytes (59.934.640-byte weights;
+#: weights SHA equals the git-LFS oid). Reference only: launch requests
+#: must still carry explicit digests; verification re-hashes staged bytes.
+R0_ADAPTER_FILE_DIGESTS = {
+    "adapter_model.safetensors": "dd5af2848f23234e7bd7cb7987b0b199c6832a4f5fde5dbe59a3e21ee379484e",
+    "adapter_config.json": "301cac83325dbc5e6a60d5bcf86c0ebb509e46f8f7e7c2a2837031690dc1256b",
+    "generator_manifest.json": "1f46415bb5db5633e7bb6b7d4b0da27a3adc7d22b3e22ea775060978725e36a5",
+}
 
 #: Files whose digests bind the reused adapter bytes.
 REQUIRED_ADAPTER_FILES = ("adapter_model.safetensors", "adapter_config.json", "generator_manifest.json")
@@ -73,6 +92,24 @@ def default_r0_adapter_identity() -> Dict[str, Any]:
         "subfolder": R0_ADAPTER_SUBFOLDER,
         "base_revision": R0_GENERATOR_BASE_REVISION,
         "file_digests": {},
+    }
+
+
+def r0_adapter_spec() -> Dict[str, Any]:
+    """Return the full R0 adapter spec with MEASURED file digests.
+
+    Reference for building explicit ``--adapter-spec`` launch files and
+    for tests; the measured digests above were observed at the pinned
+    revision on 2026-09-23. Launch code still requires the spec to be
+    passed explicitly (no silent default fills it in).
+    """
+    return {
+        "repo": R0_ADAPTER_REPO,
+        "revision": R0_ADAPTER_REVISION,
+        "subfolder": R0_ADAPTER_SUBFOLDER,
+        "base_revision": R0_GENERATOR_BASE_REVISION,
+        "training_scope": R0_ADAPTER_SCOPE,
+        "file_digests": dict(R0_ADAPTER_FILE_DIGESTS),
     }
 
 

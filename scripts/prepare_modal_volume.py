@@ -20,6 +20,11 @@ runs_volume = modal.Volume.from_name("legalqa-runs-vol", create_if_missing=True)
 hf_secret = modal.Secret.from_name("huggingface-secret")
 
 HF_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
+#: Immutable pins: encoder from candidate 94aed, R0 reuse adapter 5433
+#: (generator behind runs/20260920-215402). Never float these.
+HF_ENCODER_REVISION = "6a2721e34a083eae202dbb80e4fe529707ec4097"
+HF_ADAPTER_REVISION = "b6e86e35e20c403bb82b40b25f85690c987e1d02"
+HF_ADAPTER_SUBFOLDER = "runs/run_5433e8b4787137c9_20260920_193355/final_adapter"
 
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "huggingface_hub",
@@ -44,12 +49,13 @@ def preload_assets():
     models_dir = data_dir / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Check / Download encoder_ft_v2
+    # 1. Check / Download encoder_ft_v2 (pinned revision only)
     ft_target = models_dir / "encoder_ft_v2"
     if not (ft_target / "model.safetensors").is_file():
-        print(f"[+] Downloading encoder_ft_v2 from {HF_REPO}...")
+        print(f"[+] Downloading encoder_ft_v2 from {HF_REPO}@{HF_ENCODER_REVISION}...")
         dl_p = snapshot_download(
             repo_id=HF_REPO,
+            revision=HF_ENCODER_REVISION,
             allow_patterns="runs/20260920-215402/encoder_ft_v2/*",
         )
         src_ft = Path(dl_p) / "runs/20260920-215402/encoder_ft_v2"
@@ -59,11 +65,11 @@ def preload_assets():
     else:
         print(f"[+] encoder_ft_v2 already cached on volume: {ft_target}")
 
-    # 2. Check / Copy Generator Adapter
+    # 2. Check / Copy Generator Adapter (R0 5433; pinned revision only)
     gen_target = data_dir / "models" / "qwen_adapter"
     if not (gen_target / "adapter_model.safetensors").is_file():
         # Check if already in /runs
-        prior_runs = sorted(Path("/runs").glob("modal_d2618710d9d0b6de_*/checkpoints/generator/hf_adapter"))
+        prior_runs = sorted(Path("/runs").glob("modal_*_*/checkpoints/generator/hf_adapter"))
         found = False
         for pr in reversed(prior_runs):
             if (pr / "adapter_model.safetensors").is_file():
@@ -72,12 +78,13 @@ def preload_assets():
                 found = True
                 break
         if not found:
-            print(f"[+] Fetching Qwen adapter from HF {HF_REPO}...")
+            print(f"[+] Fetching Qwen adapter {HF_ADAPTER_SUBFOLDER} from HF {HF_REPO}...")
             dl_p = snapshot_download(
                 repo_id=HF_REPO,
-                allow_patterns="runs/run_d2618710d9d0b6de_20260921_154231/final_adapter/*",
+                revision=HF_ADAPTER_REVISION,
+                allow_patterns=f"{HF_ADAPTER_SUBFOLDER}/*",
             )
-            src_ad = Path(dl_p) / "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter"
+            src_ad = Path(dl_p) / HF_ADAPTER_SUBFOLDER
             shutil.copytree(str(src_ad), str(gen_target), dirs_exist_ok=True)
 
         data_volume.commit()

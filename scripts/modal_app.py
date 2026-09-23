@@ -58,12 +58,14 @@ DENSE_MODEL_ID = "runs/20260920-215402/encoder_ft_v2"
 HF_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
 KNOWN_TEST_FILES = ("private-official.json", "public-official.json")
 
-#: R0 reuse adapter pins (repo + immutable revision + subfolder). File
-#: digests are NOT defaulted here: the d261 manifest carries no weights
-#: digest, so the request must carry measured SHA-256 from pinned bytes.
+#: R0 reuse adapter pins (repo + immutable revision + subfolder). The 5433
+#: adapter is the generator behind the runs/20260920-215402 outputs and
+#: the run_v16_dual_assembled manifest. File digests are NOT defaulted
+#: here: requests must carry measured SHA-256 from pinned bytes
+#: (see R0_ADAPTER_FILE_DIGESTS in reuse_contract for observed values).
 R0_ADAPTER_REPO = "dangphuc2109/legalqa-qwen2.5-3b-adapter"
 R0_ADAPTER_REVISION = "b6e86e35e20c403bb82b40b25f85690c987e1d02"
-R0_ADAPTER_SUBFOLDER = "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter"
+R0_ADAPTER_SUBFOLDER = "runs/run_5433e8b4787137c9_20260920_193355/final_adapter"
 R0_GENERATOR_BASE_REVISION = "aa8e72537993ba99e69dfaafa59ed015b17504d1"
 
 GENERATOR_MODES = ("reuse", "fresh")

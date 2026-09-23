@@ -328,8 +328,8 @@ def test_reuse_bundle_separates_source_training_metadata(tmp_path):
     source_adapter = {
         "repo": "dangphuc2109/legalqa-qwen2.5-3b-adapter",
         "revision": "b" * 40,
-        "optimizer_steps": 1188,
-        "dataset_size": 4748,
+        "optimizer_steps": 936,
+        "dataset_size": 7483,
     }
     manifest = build_production_run_bundle(
         run_id=run_id,
@@ -348,7 +348,7 @@ def test_reuse_bundle_separates_source_training_metadata(tmp_path):
     )
     assert manifest["training_performed"] is False
     assert manifest["optimizer_steps"] == 0
-    assert manifest["source_adapter"]["optimizer_steps"] == 1188
+    assert manifest["source_adapter"]["optimizer_steps"] == 936
     train_log = (output_bundle_dir / "logs" / "train.log").read_text(encoding="utf-8")
     assert "training_performed=false" in train_log  # honest marker, not a fake training log
     assert verify_run_bundle(output_bundle_dir) is True

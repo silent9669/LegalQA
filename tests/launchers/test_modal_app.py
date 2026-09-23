@@ -28,7 +28,7 @@ def _adapter_spec(**overrides):
     spec = {
         "repo": "dangphuc2109/legalqa-qwen2.5-3b-adapter",
         "revision": "b" * 40,
-        "subfolder": "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter",
+        "subfolder": "runs/run_5433e8b4787137c9_20260920_193355/final_adapter",
         "base_revision": "a" * 40,
         "file_digests": {"adapter_model.safetensors": "ab" * 32},
     }
@@ -41,7 +41,7 @@ def _write_adapter_fixture(path, base_model="Qwen/Qwen2.5-3B-Instruct", **manife
 
     target = _P(path)
     target.mkdir(parents=True, exist_ok=True)
-    (target / "adapter_model.safetensors").write_bytes(b"fixture-weights-d261")
+    (target / "adapter_model.safetensors").write_bytes(b"fixture-weights-5433")
     (target / "adapter_config.json").write_text('{"r": 16}', encoding="utf-8")
     manifest = {
         "is_final_checkpoint": True,
@@ -49,8 +49,8 @@ def _write_adapter_fixture(path, base_model="Qwen/Qwen2.5-3B-Instruct", **manife
         "training_scope": "all_allowed_task2_data",
         "val_fold": None,
         "base_model": base_model,
-        "optimizer_steps": 1188,
-        "dataset_size": 4748,
+        "optimizer_steps": 936,
+        "dataset_size": 7483,
         "num_train_epochs": 2,
     }
     manifest.update(manifest_overrides)
@@ -60,10 +60,10 @@ def _write_adapter_fixture(path, base_model="Qwen/Qwen2.5-3B-Instruct", **manife
     return {
         "repo": "dangphuc2109/legalqa-qwen2.5-3b-adapter",
         "revision": "b" * 40,
-        "subfolder": "runs/run_d2618710d9d0b6de_20260921_154231/final_adapter",
+        "subfolder": "runs/run_5433e8b4787137c9_20260920_193355/final_adapter",
         "base_revision": "a" * 40,
         "file_digests": {
-            "adapter_model.safetensors": _h.sha256(b"fixture-weights-d261").hexdigest(),
+            "adapter_model.safetensors": _h.sha256(b"fixture-weights-5433").hexdigest(),
         },
     }
 
@@ -293,6 +293,33 @@ def test_modal_request_kaggle_t4x2_stage_contracts():
 # P0-A: explicit generator mode + adapter provenance (reuse-first)
 # ----------------------------------------------------------------------
 
+def test_r0_5433_baseline_pins_validate():
+    """Lock the R0 baseline: 5433 adapter pins + measured digests (P0-A)."""
+    from src.task2.provenance.reuse_contract import (
+        R0_ADAPTER_FILE_DIGESTS,
+        R0_ADAPTER_REPO,
+        R0_ADAPTER_REVISION,
+        R0_ADAPTER_SUBFOLDER,
+        r0_adapter_spec,
+        validate_adapter_spec,
+    )
+
+    assert R0_ADAPTER_REPO == "dangphuc2109/legalqa-qwen2.5-3b-adapter"
+    assert R0_ADAPTER_REVISION == "b6e86e35e20c403bb82b40b25f85690c987e1d02"
+    assert R0_ADAPTER_SUBFOLDER == "runs/run_5433e8b4787137c9_20260920_193355/final_adapter"
+    assert R0_ADAPTER_FILE_DIGESTS["adapter_model.safetensors"] == (
+        "dd5af2848f23234e7bd7cb7987b0b199c6832a4f5fde5dbe59a3e21ee379484e"
+    )
+    spec = validate_adapter_spec(r0_adapter_spec())
+    assert spec["subfolder"] == R0_ADAPTER_SUBFOLDER
+    req = build_modal_request(
+        "full", CAND, "private-official.json", _parent("a100_micro_probe"),
+        generator_mode="reuse", adapter_spec=r0_adapter_spec(),
+    )
+    assert req["adapter_spec"]["revision"] == R0_ADAPTER_REVISION
+    validate_modal_request(req)
+
+
 def test_full_requires_explicit_generator_mode():
     with pytest.raises(ValueError, match="generator_mode"):
         build_modal_request("full", CAND, "private-official.json", _parent("a100_micro_probe"))
@@ -405,7 +432,7 @@ def test_reuse_runner_skips_trainer_only_after_validation(tmp_path):
     assert calls == []  # trainer never runs on verified reuse
     assert res["training_performed"] is False
     assert res["optimizer_steps"] == 0  # this run trained nothing
-    assert res["source_adapter"]["optimizer_steps"] == 1188  # source figures stay namespaced
+    assert res["source_adapter"]["optimizer_steps"] == 936  # source figures stay namespaced
     assert res["source_adapter"]["revision"] == "b" * 40
 
     # Missing staged adapter: reuse fails, trainer still not called.
