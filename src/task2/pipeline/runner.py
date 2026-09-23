@@ -37,6 +37,46 @@ PROMOTION_GATED_PROFILES = ("final_train_and_submit", "reuse_final_checkpoints_a
 STRICT_CONTRACT_PROFILES = PROMOTION_GATED_PROFILES + ("modal_a100",)
 
 
+def _pinned_base_revision(resolved_config: Optional[ResolvedTask2Config]) -> Optional[str]:
+    """Return the candidate-pinned Qwen base revision, or None when unpinned.
+
+    Only immutable 40-hex commits are returned; anything floating means the
+    loader falls back to its default (and the request/record layer must say
+    so instead of claiming a pin).
+    """
+    try:
+        revision = (resolved_config.algorithm.models.generator.revision if resolved_config else "") or ""
+    except Exception:
+        return None
+    normalized = str(revision).strip().lower()
+    if len(normalized) == 40 and all(ch in "0123456789abcdef" for ch in normalized):
+        return normalized
+    return None
+
+
+def dense_load_kwargs(expected_dense: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build strict consumer kwargs for both runner dense loads (single source).
+
+    ``None`` keeps the legacy diagnostic load; a non-dict raises; a dict
+    missing the identity core (revision/weights/preprocessing) raises
+    instead of silently loading an unverified index.
+    """
+    if expected_dense is None:
+        return {}
+    if not isinstance(expected_dense, dict):
+        raise ValueError("expected_dense must be a dict with model_id/revision/encoder_weights_sha256/preprocessing")
+    for field in ("revision", "encoder_weights_sha256", "preprocessing"):
+        if not expected_dense.get(field):
+            raise ValueError(f"expected_dense missing identity field: {field} (refusing unverified consumer load)")
+    return {
+        "strict_identity": True,
+        "expected_revision": expected_dense.get("revision"),
+        "expected_encoder_weights_sha256": expected_dense.get("encoder_weights_sha256"),
+        "expected_preprocessing": expected_dense.get("preprocessing"),
+        "verify_embeddings_hash": True,
+    }
+
+
 def resolve_generator_training(
     *,
     qlora_out: str,
@@ -123,6 +163,7 @@ def run_pipeline(
     allow_single_gpu: bool = False,
     generator_mode: Optional[str] = None,
     expected_adapter: Optional[Dict[str, Any]] = None,
+    expected_dense: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Execute all stages for the specified profile."""
     import time as _time
@@ -186,6 +227,12 @@ def run_pipeline(
         if resolved_config is not None
         else "runs/20260920-215402/encoder_ft_v2"
     )
+    # Strict consumer binding: when the wrapper supplies the expected index
+    # identity (model bytes + revision + preprocessing), both loads below
+    # enforce it and fail closed; without it the legacy diagnostic applies.
+    dense_strict: Dict[str, Any] = dense_load_kwargs(expected_dense)
+    if expected_dense is not None and expected_dense.get("model_id"):
+        dense_expected = str(expected_dense["model_id"])
     probe_dense = DenseRetriever.load_index(
         dek21_dir,
         corpus_path=chunks_path,
@@ -194,6 +241,7 @@ def run_pipeline(
         expected_dtype="float16",
         final_mode=True,
         verify_self_consistency=True,
+        **dense_strict,
     )
     consistency = getattr(probe_dense, "self_consistency_report", {})
     print(f"Dense probe successful: {probe_dense.corpus_embeddings.shape} on {retrieval_device}")
@@ -337,6 +385,7 @@ def run_pipeline(
                     "device": gen_device,
                     "fail_on_error": True,
                     "seed": seed,
+                    "base_revision": _pinned_base_revision(resolved_config),
                 },
                 train_fn=train_generator_qlora,
             )
@@ -357,6 +406,7 @@ def run_pipeline(
                 device=gen_device,
                 fail_on_error=True,
                 seed=seed,
+                base_revision=_pinned_base_revision(resolved_config),
             )
         adapter_path = qlora_out
         results["stages"]["generator"] = res_qlora
@@ -585,6 +635,7 @@ def run_pipeline(
             expected_dtype="float16",
             final_mode=True,
             verify_self_consistency=True,
+            **dense_strict,
         )
         reranker = BGEReranker(model_name=reranker_checkpoint, device=retrieval_device)
         packer = EvidencePacker(bm25.corpus)
@@ -610,6 +661,7 @@ def run_pipeline(
                 require_adapter=production_cfg.use_qlora,
                 load_mode=inference_cfg.generator_load_mode if inference_cfg else "nf4",
                 merge_adapter=inference_cfg.merge_adapter if inference_cfg else False,
+                base_revision=_pinned_base_revision(resolved_config),
             )
 
         selector = CandidateSelector(

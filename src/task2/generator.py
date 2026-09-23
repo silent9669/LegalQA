@@ -77,6 +77,18 @@ def is_peft_model(model: Any) -> bool:
     return False
 
 
+def _validate_base_revision(value: Optional[str]) -> Optional[str]:
+    """Normalize a pinned base-model revision or fail closed on floating refs."""
+    if value is None or str(value).strip() == "":
+        return None
+    normalized = str(value).strip().lower()
+    import re as _re
+
+    if not _re.match(r"^[0-9a-f]{40}$", normalized):
+        raise ValueError(f"refusing Qwen load: base_revision must be an immutable 40-hex commit, got {value!r}")
+    return normalized
+
+
 class QwenGenerator:
     """Qwen2.5 (3B / 1.5B) Generator for evidence-conditioned statutory legal answer generation."""
 
@@ -90,6 +102,7 @@ class QwenGenerator:
         require_adapter: bool = False,
         load_mode: str = "nf4",
         merge_adapter: bool = False,
+        base_revision: Optional[str] = None,
     ):
         self.model_path = model_path
         self.adapter_path = adapter_path
@@ -99,6 +112,7 @@ class QwenGenerator:
         self.require_adapter = require_adapter
         self.load_mode = load_mode
         self.merge_adapter = merge_adapter
+        self.base_revision = base_revision
         self.model = None
         self.tokenizer = None
 
@@ -114,10 +128,19 @@ class QwenGenerator:
         require_adapter: bool = False,
         load_mode: str = "nf4",
         merge_adapter: bool = False,
+        base_revision: Optional[str] = None,
     ) -> QwenGenerator:
-        """Load generator model, enforcing explicit device mapping and loud failure in competition mode."""
+        """Load generator model, enforcing explicit device mapping and loud failure in competition mode.
+
+        ``base_revision`` pins the base-model commit for Hub loads (passed
+        as ``revision=`` to both tokenizer and model ``from_pretrained``).
+        Local directory paths ignore it (bytes on disk are the source of
+        truth there). Floating revisions raise before any download.
+        """
         if load_mode not in ("nf4", "bfloat16"):
             raise ValueError(f"unknown generator load mode: {load_mode!r}")
+        pinned_base = _validate_base_revision(base_revision)
+        is_local_weights = os.path.isdir(str(model_path))
 
         gen = cls(
             model_path=model_path,
@@ -128,6 +151,7 @@ class QwenGenerator:
             require_adapter=require_adapter,
             load_mode=load_mode,
             merge_adapter=merge_adapter,
+            base_revision=pinned_base,
         )
 
         # P0-9: Strict adapter requirements validation before loading
@@ -163,7 +187,10 @@ class QwenGenerator:
                     compute_dtype = torch.float32
 
                 print(f"Loading Qwen Generator ({model_path}) on {dev} with dtype={compute_dtype}...")
-                gen.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token, trust_remote_code=True)
+                _tok_kwargs: Dict[str, Any] = {"token": token, "trust_remote_code": True}
+                if pinned_base and not is_local_weights:
+                    _tok_kwargs["revision"] = pinned_base
+                gen.tokenizer = AutoTokenizer.from_pretrained(model_path, **_tok_kwargs)
                 if gen.tokenizer.pad_token is None:
                     gen.tokenizer.pad_token = gen.tokenizer.eos_token
                 gen.tokenizer.padding_side = "left"
@@ -179,6 +206,8 @@ class QwenGenerator:
                     "low_cpu_mem_usage": True,
                     "trust_remote_code": True,
                 }
+                if pinned_base and not is_local_weights:
+                    load_kwargs["revision"] = pinned_base
                 if dev.startswith("cuda"):
                     load_kwargs["device_map"] = {"": dev}
                     load_kwargs["dtype"] = compute_dtype

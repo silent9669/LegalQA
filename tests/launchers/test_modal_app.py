@@ -592,3 +592,133 @@ def test_source_identity_keeps_candidate_and_executed_separate():
         {"candidate_id": "c" * 16, "git_commit_sha": "a" * 40}, "a" * 40, False, None,
     )
     assert same["git_match"] is True
+
+
+# ----------------------------------------------------------------------
+# Review blockers: encoder cache SHA, baked image identity, preload
+# ----------------------------------------------------------------------
+
+def _write_encoder_fixture(path, weights=b"encoder-bytes-v1"):
+    from pathlib import Path as _P
+
+    target = _P(path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "model.safetensors").write_bytes(weights)
+    (target / "config.json").write_text('{"model_type": "roberta"}', encoding="utf-8")
+    import hashlib as _h
+
+    return _h.sha256(weights).hexdigest()
+
+
+def test_verify_encoder_weights_against_independent_sha(tmp_path):
+    from scripts.modal_app import R0_ENCODER_WEIGHTS_SHA256, verify_encoder_weights
+
+    assert len(R0_ENCODER_WEIGHTS_SHA256) == 64  # pinned release value, not cache-derived
+    good = tmp_path / "enc_good"
+    observed = _write_encoder_fixture(good)
+    report = verify_encoder_weights(good, observed)
+    assert report == {"verified": True, "weights_sha256": observed}
+
+    # Present-but-wrong cache (stale same-family weights) is refused, and
+    # the cache's own digest never becomes the expectation.
+    bad = tmp_path / "enc_bad"
+    _write_encoder_fixture(bad, weights=b"stale-encoder-bytes")
+    with pytest.raises(ValueError, match="weights SHA .* != expected"):
+        verify_encoder_weights(bad, observed)
+
+    with pytest.raises(FileNotFoundError, match="weights bytes missing"):
+        verify_encoder_weights(tmp_path / "absent", observed)
+    with pytest.raises(ValueError, match="64-hex"):
+        verify_encoder_weights(good, "main")
+
+
+def test_fetch_pinned_encoder_pins_revision_and_verifies(tmp_path):
+    from scripts.modal_app import fetch_pinned_encoder
+
+    snapshot = tmp_path / "snapshot"
+    _write_encoder_fixture(snapshot / "runs/20260920-215402/encoder_ft_v2")
+    calls = []
+
+    def fake_download(repo_id=None, revision=None, allow_patterns=None):
+        calls.append({"repo_id": repo_id, "revision": revision, "allow_patterns": allow_patterns})
+        return str(snapshot)
+
+    import hashlib as _h
+
+    expected = _h.sha256(b"encoder-bytes-v1").hexdigest()
+    report = fetch_pinned_encoder(
+        fake_download, repo="org/enc", revision="d" * 40,
+        subfolder="runs/20260920-215402/encoder_ft_v2",
+        target_dir=tmp_path / "staged", expected_sha256=expected,
+    )
+    assert calls[0]["revision"] == "d" * 40  # revision pin reaches the downloader
+    assert report["verified"] is True and report["revision"] == "d" * 40
+    assert (tmp_path / "staged" / "model.safetensors").is_file()
+
+    # Floating revision never reaches the network.
+    with pytest.raises(ValueError, match="floating"):
+        fetch_pinned_encoder(
+            fake_download, repo="org/enc", revision="main",
+            subfolder="runs/20260920-215402/encoder_ft_v2",
+            target_dir=tmp_path / "staged2", expected_sha256=expected,
+        )
+
+    # Mismatched bytes inside a pinned snapshot still fail.
+    (snapshot / "runs/20260920-215402/encoder_ft_v2" / "model.safetensors").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="weights SHA"):
+        fetch_pinned_encoder(
+            fake_download, repo="org/enc", revision="d" * 40,
+            subfolder="runs/20260920-215402/encoder_ft_v2",
+            target_dir=tmp_path / "staged3", expected_sha256=expected,
+        )
+
+
+def test_client_source_identity_shape():
+    from scripts.modal_app import _CLIENT_SOURCE_IDENTITY, client_source_identity
+
+    assert _CLIENT_SOURCE_IDENTITY.count(" ") == 1
+    live = client_source_identity()
+    sha, state = live.split(" ")
+    assert (len(sha) == 40 or sha == "unknown") and state in ("clean", "dirty", "unknown")
+
+
+def test_executed_identity_prefers_baked_file_without_git(tmp_path):
+    from src.task2.provenance.reuse_contract import build_source_identity, get_executed_git_identity
+
+    baked = tmp_path / ".image_source_sha"
+    baked.write_text("f" * 40 + " clean", encoding="utf-8")
+    ident = get_executed_git_identity(repo_root="/nonexistent-root-xyz", image_source_file=baked)
+    assert ident == {"executed_git_sha": "f" * 40, "dirty": False, "source": "image_baked"}
+
+    missing = get_executed_git_identity(
+        repo_root="/nonexistent-root-xyz", image_source_file=tmp_path / "absent",
+    )
+    assert missing["executed_git_sha"] == "unknown" and missing["source"] == "unknown"
+    # Unknown is never backfilled with the candidate SHA.
+    rec = build_source_identity({"candidate_id": "c" * 16, "git_commit_sha": "a" * 40}, "unknown", "unknown", None)
+    assert rec["executed_git_sha"] == "unknown" and rec["git_match"] is False
+
+
+def test_find_verified_preload_source_rejects_arbitrary_adapters(tmp_path):
+    from src.task2.provenance.reuse_contract import find_verified_preload_source, r0_adapter_spec
+
+    good = tmp_path / "run_good" / "hf_adapter"
+    spec = _write_adapter_fixture(good)
+    wrong = tmp_path / "run_d261" / "hf_adapter"  # stale prior run, digest mismatch
+    _write_adapter_fixture(wrong, base_model="Qwen/Qwen2.5-3B-Instruct")
+    (wrong / "adapter_model.safetensors").write_bytes(b"other-adapter-bytes")
+    tampered = tmp_path / "run_tampered" / "hf_adapter"
+    _write_adapter_fixture(tampered)
+    (tampered / "adapter_model.safetensors").write_bytes(b"tampered")
+
+    picked = find_verified_preload_source(
+        [str(wrong), str(tampered), str(good)], spec, "Qwen/Qwen2.5-3B-Instruct",
+    )
+    assert picked["source_dir"] == str(good)  # skips unverified, takes verified
+    assert picked["report"]["verified"] is True
+
+    none = find_verified_preload_source([str(wrong), str(tampered)], spec, "Qwen/Qwen2.5-3B-Instruct")
+    assert none["source_dir"] is None and len(none["rejections"]) == 2
+
+    # The measured R0 reference spec itself validates (pins + digests).
+    assert r0_adapter_spec()["subfolder"].endswith("final_adapter")

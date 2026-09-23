@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -68,7 +69,39 @@ R0_ADAPTER_REVISION = "b6e86e35e20c403bb82b40b25f85690c987e1d02"
 R0_ADAPTER_SUBFOLDER = "runs/run_5433e8b4787137c9_20260920_193355/final_adapter"
 R0_GENERATOR_BASE_REVISION = "aa8e72537993ba99e69dfaafa59ed015b17504d1"
 
+#: Expected encoder weights SHA-256, independent of any volume cache.
+#: Source: runs/20260920-215402/checksums.sha256 at the pinned HF commit
+#: (corroborated in docs/next-run-060/08). A present-but-wrong cache must
+#: fail against THIS value; never adopt the cache's own measured digest
+#: as the expectation.
+R0_ENCODER_WEIGHTS_SHA256 = "15a895b69a3f974d230771b021ca53ece647551a4c29f03bf8229468eebb1a46"
+R0_ENCODER_SUBFOLDER = "runs/20260920-215402/encoder_ft_v2"
+
 GENERATOR_MODES = ("reuse", "fresh")
+
+#: Baked image source identity: "<git-sha> <clean|dirty|unknown>".
+#: Computed on the DISPATCH client (which has .git) at import time and
+#: written into the image by run_commands, because the image excludes
+#: .git* so `git rev-parse` inside the container cannot attest the code.
+#: The remote never substitutes the candidate SHA for this value.
+IMAGE_SOURCE_FILE = "/root/LegalQA/.image_source_sha"
+
+
+def client_source_identity(repo_root: Optional[Path] = None) -> str:
+    """Measure the dispatch client's code revision ("sha state" or "unknown unknown")."""
+    root = str(repo_root or REPO_ROOT)
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=root).strip().lower()
+        porcelain = subprocess.check_output(["git", "status", "--porcelain"], text=True, cwd=root)
+        state = "dirty" if porcelain.strip() else "clean"
+        if len(sha) != 40:
+            return "unknown unknown"
+        return f"{sha} {state}"
+    except Exception:
+        return "unknown unknown"
+
+
+_CLIENT_SOURCE_IDENTITY = client_source_identity()
 
 
 def read_pin_file(name: str) -> List[str]:
@@ -255,6 +288,67 @@ def resolve_test_file(data_dir: Path, requested: str, allow_fallback: bool = Tru
     raise FileNotFoundError(f"test file not found: {candidate}")
 
 
+def verify_encoder_weights(encoder_dir: str | Path, expected_sha256: str) -> Dict[str, Any]:
+    """Verify staged encoder bytes against an INDEPENDENT expected SHA.
+
+    The expectation comes from the candidate/release spec (pinned commit
+    metadata), never from hashing the cache itself: a present-but-wrong
+    cache (stale same-family weights) raises instead of being adopted.
+    Returns ``{verified, weights_sha256}``.
+    """
+    from src.common.dense import hash_encoder_weights_dir
+
+    expected = str(expected_sha256 or "").strip().lower()
+    if len(expected) != 64:
+        raise ValueError(f"refusing encoder verify: expected SHA must be 64-hex, got {expected_sha256!r}")
+    try:
+        observed = hash_encoder_weights_dir(str(encoder_dir)).lower()
+    except (NotADirectoryError, FileNotFoundError) as exc:
+        raise FileNotFoundError(f"encoder weights bytes missing at {encoder_dir}: {exc}") from exc
+    if observed != expected:
+        raise ValueError(
+            f"refusing cached encoder at {encoder_dir}: weights SHA {observed} != expected {expected} "
+            "(stale cache is never adopted; remove it or rebuild side-by-side)"
+        )
+    return {"verified": True, "weights_sha256": observed}
+
+
+def fetch_pinned_encoder(
+    download_fn: Any,
+    *,
+    repo: str,
+    revision: str,
+    subfolder: str,
+    target_dir: str | Path,
+    expected_sha256: str,
+) -> Dict[str, Any]:
+    """Download an encoder at a pinned revision, stage it, then verify bytes.
+
+    ``download_fn`` mirrors ``huggingface_hub.snapshot_download`` and is
+    injectable so tests prove the revision pin and the post-download hash
+    without network. Any mismatch raises before the bytes are used.
+    """
+    from scripts.rebuild_dense_index import require_pinned_revision
+
+    revision = require_pinned_revision(revision)
+    snapshot = Path(str(download_fn(repo_id=repo, revision=revision, allow_patterns=f"{subfolder}/*")))
+    src = snapshot / subfolder
+    if not src.is_dir():
+        raise FileNotFoundError(f"pinned encoder snapshot missing subfolder: {src}")
+    dst = Path(str(target_dir))
+    if dst.is_dir():
+        import shutil as _shutil
+
+        _shutil.rmtree(str(dst))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    import shutil as _shutil
+
+    _shutil.copytree(str(src), str(dst))
+    report = verify_encoder_weights(dst, expected_sha256)
+    report["revision"] = revision
+    return report
+
+
 def resolve_adapter_plan(generator_mode: str) -> Dict[str, Any]:
     """Decide which adapter sources a full run may touch (pure, testable).
 
@@ -425,6 +519,13 @@ if modal is not None:
         .pip_install("kaggle", "kagglehub")
         .run_commands(
             "python -c \"import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')\""
+        )
+        # Bake the dispatch client's code revision into the image: .git*
+        # is excluded from add_local_dir below, so the container cannot
+        # attest its own source via git. The remote reads this file as the
+        # executed revision and never substitutes the candidate SHA.
+        .run_commands(
+            f"mkdir -p /root/LegalQA && printf '%s' '{_CLIENT_SOURCE_IDENTITY}' > {IMAGE_SOURCE_FILE}"
         )
         .add_local_dir(
             str(REPO_ROOT),
@@ -729,20 +830,26 @@ if modal is not None:
 
             if "encoder_ft" in str(dense_model_id) or "20260920-215402" in str(dense_model_id):
                 dense_local = data_dir / "models" / "encoder_ft_v2"
-                if not (dense_local / "model.safetensors").is_file():
+                if (dense_local / "model.safetensors").is_file():
+                    # Present cache proves nothing: verify bytes against the
+                    # independent release SHA before trusting them.
+                    cache_report = verify_encoder_weights(dense_local, R0_ENCODER_WEIGHTS_SHA256)
+                    print(f"[+] Encoder cache verified: weights {cache_report['weights_sha256'][:16]}...")
+                    data_volume.commit()
+                else:
                     print(f"[+] Fetching encoder_ft_v2 from HF repo {HF_REPO} at pinned revision {dense_revision}...")
                     from huggingface_hub import snapshot_download
-                    dl_p = snapshot_download(
-                        repo_id=HF_REPO,
+                    fetch_report = fetch_pinned_encoder(
+                        snapshot_download,
+                        repo=HF_REPO,
                         revision=dense_revision,
-                        allow_patterns="runs/20260920-215402/encoder_ft_v2/*",
+                        subfolder=R0_ENCODER_SUBFOLDER,
+                        target_dir=dense_local,
+                        expected_sha256=R0_ENCODER_WEIGHTS_SHA256,
                     )
-                    src_ft = Path(dl_p) / "runs/20260920-215402/encoder_ft_v2"
-                    dense_local.parent.mkdir(parents=True, exist_ok=True)
-                    import shutil
-                    shutil.copytree(str(src_ft), str(dense_local), dirs_exist_ok=True)
                     data_volume.commit()
-                    print(f"[+] encoder_ft_v2 cached to data volume: {dense_local}")
+                    print(f"[+] encoder_ft_v2 cached to data volume: {dense_local} "
+                          f"(weights {fetch_report['weights_sha256'][:16]}...)")
                 dense_model_id = str(dense_local)
 
             # Exact dense/index binding: hash the pinned encoder bytes, then
@@ -751,13 +858,11 @@ if modal is not None:
             # digest. Same family/dim/rows or self-consistency alone is not
             # identity; legacy indexes fail closed to a side-by-side rebuild.
             from scripts.rebuild_dense_index import select_verified_dense_index
-            from src.common.dense import preprocessing_fingerprint
-            from src.task2.provenance.checksums import compute_file_sha256 as _sha256
+            from src.common.dense import hash_encoder_weights_dir, preprocessing_fingerprint
 
-            _enc_weights = Path(str(dense_model_id)) / "model.safetensors"
-            encoder_weights_sha = _sha256(_enc_weights) if _enc_weights.is_file() else ""
-            if not encoder_weights_sha:
-                raise ValueError(f"refusing dense reuse: encoder weights bytes missing at {_enc_weights}")
+            # Encoder bytes were verified above against the independent
+            # release SHA (cache or fresh pinned download alike).
+            encoder_weights_sha = hash_encoder_weights_dir(str(dense_model_id))
             _expected_preprocessing = preprocessing_fingerprint(
                 max_seq_length=256, vietnamese_tokenized=True,
                 pooling="mean", normalized=True, dtype="float16",
@@ -882,6 +987,7 @@ if modal is not None:
                 allow_single_gpu=True,
                 generator_mode=generator_mode,
                 expected_adapter=adapter_spec if generator_mode == "reuse" else None,
+                expected_dense=_dense_expected,
             )
             # Execution record: candidate SHA vs ACTUAL running SHA stay separate.
             from src.task2.provenance.reuse_contract import (
@@ -897,6 +1003,7 @@ if modal is not None:
                 _exec_git["executed_git_sha"],
                 _exec_git["dirty"],
                 {
+                    "executed_source": _exec_git.get("source", "unknown"),
                     "generator_mode": generator_mode,
                     "training_performed": bool(_gen_stage.get("training_performed", generator_mode == "fresh")),
                     "adapter_spec": adapter_spec if generator_mode == "reuse" else None,

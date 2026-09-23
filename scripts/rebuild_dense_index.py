@@ -74,7 +74,14 @@ def build_verified_index(
     """Encode the corpus in order, write the order-hash manifest, gate reload."""
     import pandas as pd
 
-    from src.common.dense import DenseRetriever
+    from src.common.dense import (
+        DenseRetriever,
+        build_embedding_row_keys_for_texts,
+        compute_embedding_order_hash,
+        hash_encoder_weights_dir,
+        preprocessing_fingerprint,
+        resolve_encode_texts,
+    )
 
     revision = require_pinned_revision(revision)
     t0 = time.time()
@@ -87,11 +94,39 @@ def build_verified_index(
     retriever = DenseRetriever(model_name=model_id, revision=revision, device=device, dtype=dtype)
     retriever.fit(corpus, batch_size=batch_size, show_progress=True)
 
+    # Bind the manifest to the ACTUAL encode inputs and encoder bytes:
+    # weights hash of the selected model dir (when local), the real
+    # preprocessing (tokenizer flag read from the model config, true max
+    # length/dtype, and the text field fit() encoded), and the order hash
+    # over the encoded texts (text_norm edits included).
+    try:
+        weights_sha = hash_encoder_weights_dir(model_id)
+    except (NotADirectoryError, FileNotFoundError):
+        weights_sha = ""
+        print("[!] Builder: model_id is not a local weights dir; manifest records no encoder weights SHA "
+              "(strict reselect will refuse this index — build from a staged weights dir for reuse).")
+    text_field, encoded_texts = resolve_encode_texts(corpus)
+    doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
+    order_sha = compute_embedding_order_hash(build_embedding_row_keys_for_texts(doc_ids, encoded_texts))
+    preprocessing = preprocessing_fingerprint(
+        max_seq_length=retriever.max_seq_length,
+        vietnamese_tokenized=retriever._needs_vietnamese_tokenization(),
+        pooling="mean",
+        normalized=True,
+        dtype=dtype,
+        text_field=text_field,
+    )
+
     destination = Path(out_dir)
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp_dir = Path(tempfile.mkdtemp(prefix="dense-rebuild-", dir=str(destination.parent)))
     try:
-        retriever.save_index(str(tmp_dir), dtype=dtype)
+        retriever.save_index(
+            str(tmp_dir), dtype=dtype,
+            encoder_weights_sha256=weights_sha,
+            preprocessing=preprocessing,
+            embedding_order_sha256=order_sha,
+        )
         check = DenseRetriever.load_index(
             str(tmp_dir),
             corpus_path=str(corpus_path),
@@ -101,6 +136,13 @@ def build_verified_index(
             final_mode=True,
             expected_model_name=model_id,
             verify_self_consistency=True,
+            verify_embeddings_hash=True,
+            # Gate the builder's own output with the same strict identity
+            # consumers enforce (only when weights bytes were measurable).
+            strict_identity=bool(weights_sha),
+            expected_revision=revision,
+            expected_encoder_weights_sha256=weights_sha,
+            expected_preprocessing=preprocessing,
         )
         report = getattr(check, "self_consistency_report", {})
         print(f"self-consistency gate: {report}")
@@ -114,17 +156,43 @@ def build_verified_index(
             "self_consistency": report,
         }
         (tmp_dir / "rebuild_manifest.json").write_text(json.dumps(build_manifest, indent=2), encoding="utf-8")
+        _promote_index(tmp_dir, destination)
+    except BaseException:
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        raise
+    build_manifest["index_dir"] = str(destination)
+    build_manifest["encoder_weights_sha256"] = weights_sha
+    build_manifest["preprocessing"] = preprocessing
+    return build_manifest
+
+
+def _promote_index(tmp_dir: Path, destination: Path) -> None:
+    """Atomically promote a verified rebuild over the destination.
+
+    The previous index is kept aside until the rename succeeds; on any
+    promotion failure the old index is restored and the temp dir is
+    removed, so a failed promotion never loses the last good index.
+    """
+    backup: Path | None = None
+    try:
         if destination.exists():
-            shutil.rmtree(destination)
+            backup = destination.parent / (destination.name + ".backup")
+            if backup.exists():
+                shutil.rmtree(backup)
+            destination.rename(backup)
         try:
             tmp_dir.rename(destination)
         except OSError:
             shutil.move(str(tmp_dir), str(destination))
     except BaseException:
-        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        if backup is not None and backup.exists() and not destination.exists():
+            try:
+                backup.rename(destination)
+            except OSError:
+                shutil.move(str(backup), str(destination))
         raise
-    build_manifest["index_dir"] = str(destination)
-    return build_manifest
+    if backup is not None and backup.exists():
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def select_verified_dense_index(
@@ -148,10 +216,11 @@ def select_verified_dense_index(
     import pandas as pd
 
     from src.common.dense import (
-        build_embedding_row_keys,
+        build_embedding_row_keys_for_texts,
         compute_embedding_order_hash,
         duplicate_text_pairs,
         embedding_self_consistency,
+        resolve_encode_texts,
         verify_dense_manifest_identity,
     )
 
@@ -167,6 +236,10 @@ def select_verified_dense_index(
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             verify_dense_manifest_identity(manifest, expected)
+            if not manifest.get("embeddings_sha256"):
+                raise ValueError("missing identity: manifest lacks embeddings_sha256; rebuild side-by-side")
+            if not manifest.get("embedding_order_sha256"):
+                raise ValueError("missing identity: manifest lacks embedding_order_sha256; rebuild side-by-side")
             emb_path = index_dir / "embeddings.npy"
             if not emb_path.is_file():
                 raise ValueError("embeddings.npy absent")
@@ -176,16 +249,19 @@ def select_verified_dense_index(
                 current_emb_sha = _hashlib.sha256(f.read()).hexdigest()
             if manifest.get("embeddings_sha256") and current_emb_sha != manifest["embeddings_sha256"]:
                 raise ValueError("embeddings bytes differ from manifest digest")
-            df = pd.read_parquet(str(corpus_path), columns=["chunk_id", "text_raw"])
+            df = pd.read_parquet(str(corpus_path))
             embeddings = np.load(str(emb_path), mmap_mode="r")
             if embeddings.shape[0] != len(df):
                 raise ValueError(f"rows {embeddings.shape} vs corpus {len(df)}")
-            corpus = [{"chunk_id": c, "text_raw": t} for c, t in
-                      zip(df["chunk_id"].astype(str), df["text_raw"].astype(str))]
-            if manifest.get("embedding_order_sha256"):
-                current_order = compute_embedding_order_hash(build_embedding_row_keys(corpus))
-                if current_order != manifest["embedding_order_sha256"]:
-                    raise ValueError("corpus order/content differs from the indexed map")
+            corpus = df.to_dict("records")
+            # Recompute the order hash over the ACTUAL encode inputs
+            # (text_norm when the corpus carries it), mirroring fit().
+            _, encoded_texts = resolve_encode_texts(corpus)
+            doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
+            current_order = compute_embedding_order_hash(
+                build_embedding_row_keys_for_texts(doc_ids, encoded_texts))
+            if current_order != manifest["embedding_order_sha256"]:
+                raise ValueError("corpus order/content differs from the indexed map")
             pairs = duplicate_text_pairs(corpus, max_pairs=max_pairs)
             consistency = embedding_self_consistency(embeddings, pairs)
             if not consistency.get("aligned"):

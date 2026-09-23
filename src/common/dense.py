@@ -59,6 +59,63 @@ def build_embedding_row_keys(corpus: List[Dict[str, Any]]) -> List[str]:
     return keys
 
 
+def build_embedding_row_keys_for_texts(doc_ids: List[str], texts: List[str]) -> List[str]:
+    """Build ordered row keys over explicitly given encoded texts.
+
+    Same leaf format as ``build_embedding_row_keys``; lets builders bind
+    the exact strings that were encoded (e.g. ``text_norm``) instead of
+    always ``text_raw``.
+    """
+    keys = []
+    for index, (cid, text) in enumerate(zip(doc_ids, texts)):
+        keys.append(f"{index}:{cid}:{compute_text_hash(str(text))}")
+    return keys
+
+
+def resolve_encode_texts(corpus: List[Dict[str, Any]]) -> tuple:
+    """Return ``(text_field, texts)`` exactly as ``DenseRetriever.fit`` encodes them.
+
+    Single source of truth for the encode-input contract: ``text_norm``
+    wins when the first row carries it (per-row fallback to ``text_raw``),
+    otherwise ``text_raw``. Builders must fingerprint the returned texts,
+    or a ``text_norm``-only edit stays invisible to the order hash.
+    """
+    has_norm = bool(corpus and corpus[0].get("text_norm"))
+    if has_norm:
+        return "text_norm", [str(c.get("text_norm") or c.get("text_raw", "")) for c in corpus]
+    return "text_raw", [str(c.get("text_raw", "")) for c in corpus]
+
+
+def hash_encoder_weights_dir(model_dir: str) -> str:
+    """SHA-256 over an encoder directory's weight bytes (sorted, streamed).
+
+    Covers ``model.safetensors``, ``pytorch_model.bin`` and sharded
+    ``model-*.safetensors``. Raises FileNotFoundError when no weight bytes
+    exist, NotADirectoryError for non-directories. Used to bind a staged
+    index to the exact encoder bytes that produced it.
+    """
+    import pathlib
+
+    target = pathlib.Path(model_dir)
+    if not target.is_dir():
+        raise NotADirectoryError(f"encoder weights dir missing: {model_dir}")
+    weight_files = sorted(
+        p for p in target.iterdir()
+        if p.is_file() and (
+            p.name in ("model.safetensors", "pytorch_model.bin")
+            or (p.name.startswith("model-") and p.name.endswith(".safetensors"))
+        )
+    )
+    if not weight_files:
+        raise FileNotFoundError(f"no encoder weight bytes in {model_dir}")
+    h = hashlib.sha256()
+    for weight in weight_files:
+        with open(weight, "rb") as f:
+            while chunk := f.read(8 * 1024 * 1024):
+                h.update(chunk)
+    return h.hexdigest()
+
+
 def duplicate_text_pairs(
     corpus: List[Dict[str, Any]],
     max_pairs: int = 400,
@@ -124,11 +181,13 @@ def preprocessing_fingerprint(
     pooling: str = "mean",
     normalized: bool = True,
     dtype: str = "float16",
+    text_field: str = "text_raw",
 ) -> Dict[str, Any]:
     """Fingerprint the exact encode-time preprocessing bound into the index.
 
     Same family + dim + row count is NOT identity: tokenizer/segmentation,
-    max length, pooling and normalization change every vector. The index
+    max length, pooling, normalization AND the encoded text field
+    (``text_raw`` vs ``text_norm``) change every vector. The index
     manifest stores this dict; strict reuse rejects any drift.
     """
     return {
@@ -137,6 +196,7 @@ def preprocessing_fingerprint(
         "pooling": str(pooling),
         "normalized": bool(normalized),
         "dtype": str(dtype),
+        "text_field": str(text_field),
     }
 
 
@@ -337,11 +397,8 @@ class DenseRetriever:
         """Encode entire corpus and store L2-normalized embeddings."""
         self.corpus = corpus
         self.doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(corpus)]
+        _, texts = resolve_encode_texts(corpus)
         has_norm = bool(corpus and corpus[0].get("text_norm"))
-        if has_norm:
-            texts = [c.get("text_norm") or c.get("text_raw", "") for c in corpus]
-        else:
-            texts = [c.get("text_raw", "") for c in corpus]
         self.corpus_embeddings = self.encode_texts(
             texts,
             batch_size=batch_size,
@@ -477,6 +534,7 @@ class DenseRetriever:
         dtype: str = "float16",
         encoder_weights_sha256: str = "",
         preprocessing: Optional[Dict[str, Any]] = None,
+        embedding_order_sha256: str = "",
     ) -> None:
         """Save precomputed corpus embeddings in FP16/FP32 with complete hash and provenance manifest."""
         os.makedirs(index_dir, exist_ok=True)
@@ -491,7 +549,7 @@ class DenseRetriever:
 
         doc_ids_sha = compute_chunk_ids_hash(self.doc_ids)
         row_keys = build_embedding_row_keys(self.corpus)
-        order_hash = compute_embedding_order_hash(row_keys)
+        order_hash = str(embedding_order_sha256 or "") or compute_embedding_order_hash(row_keys)
         if preprocessing is None:
             preprocessing = preprocessing_fingerprint(
                 max_seq_length=self.max_seq_length,
@@ -608,6 +666,13 @@ class DenseRetriever:
                             raise ValueError("dense index missing identity: no encoder_weights_sha256 in manifest; rebuild side-by-side")
                         if not isinstance(meta.get("preprocessing"), dict):
                             raise ValueError("dense index missing identity: no preprocessing fingerprint in manifest; rebuild side-by-side")
+                        if not str(meta.get("embeddings_sha256") or "").strip():
+                            raise ValueError("dense index missing identity: no embeddings_sha256 in manifest; rebuild side-by-side")
+                        if not str(meta.get("embedding_order_sha256") or "").strip():
+                            raise ValueError("dense index missing identity: no embedding_order_sha256 in manifest; rebuild side-by-side")
+                        # Strict reuse always re-hashes the bytes: a manifest
+                        # claim alone never proves the npy file on disk.
+                        verify_embeddings_hash = True
                     verify_dense_manifest_identity(
                         meta,
                         {
@@ -666,7 +731,13 @@ class DenseRetriever:
                         print("Warning: chunk_id alignment differs from manifest. Verify corpus integrity.", file=sys.stderr)
                 saved_order_sha = meta.get("embedding_order_sha256", "") if os.path.exists(meta_path) else ""
                 if saved_order_sha:
-                    curr_order = compute_embedding_order_hash(build_embedding_row_keys(retriever.corpus))
+                    # Compare against the ACTUAL encode inputs (text_norm
+                    # when present), mirroring fit(): a text_norm-only edit
+                    # must invalidate the binding.
+                    _, _encoded = resolve_encode_texts(retriever.corpus)
+                    _doc_ids = [str(c.get("chunk_id", i)) for i, c in enumerate(retriever.corpus)]
+                    curr_order = compute_embedding_order_hash(
+                        build_embedding_row_keys_for_texts(_doc_ids, _encoded))
                     if curr_order != saved_order_sha:
                         if final_mode:
                             raise ValueError(

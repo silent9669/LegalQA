@@ -212,25 +212,38 @@ def verify_adapter_dir(
     return {"verified": True, "digests": observed, "source_metadata": source_metadata}
 
 
-def get_executed_git_identity(repo_root: str | Path | None = None) -> Dict[str, Any]:
+def get_executed_git_identity(
+    repo_root: str | Path | None = None,
+    image_source_file: str | Path = "/root/LegalQA/.image_source_sha",
+) -> Dict[str, Any]:
     """Record the ACTUAL running code revision (never the candidate SHA).
 
-    Returns ``{executed_git_sha, dirty}``; ``unknown`` when git is
-    unavailable (honest, not a substitute for the candidate pin).
+    Order: live ``git`` (local runs) → baked image identity file (Modal
+    containers exclude .git, so the dispatch client bakes its revision
+    into the image at build time) → ``unknown``. An ``unknown`` result
+    stays honest in the record; callers must NOT substitute the candidate
+    pin. Returns ``{executed_git_sha, dirty, source}``.
     """
     cwd = str(repo_root) if repo_root else None
     try:
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=cwd).strip().lower()
-        if not _COMMIT_RE.match(sha):
-            sha = "unknown"
+        if _COMMIT_RE.match(sha):
+            try:
+                porcelain = subprocess.check_output(["git", "status", "--porcelain"], text=True, cwd=cwd)
+                dirty: Any = bool(porcelain.strip())
+            except Exception:
+                dirty = "unknown"
+            return {"executed_git_sha": sha, "dirty": dirty, "source": "git"}
     except Exception:
-        return {"executed_git_sha": "unknown", "dirty": "unknown"}
+        pass
     try:
-        porcelain = subprocess.check_output(["git", "status", "--porcelain"], text=True, cwd=cwd)
-        dirty = bool(porcelain.strip())
+        baked = Path(image_source_file).read_text(encoding="utf-8").strip().split()
+        if len(baked) == 2 and _COMMIT_RE.match(baked[0]):
+            state = baked[1] if baked[1] in ("clean", "dirty") else "unknown"
+            return {"executed_git_sha": baked[0], "dirty": (state == "dirty" if state != "unknown" else "unknown"), "source": "image_baked"}
     except Exception:
-        dirty = "unknown"
-    return {"executed_git_sha": sha, "dirty": dirty}
+        pass
+    return {"executed_git_sha": "unknown", "dirty": "unknown", "source": "unknown"}
 
 
 def build_source_identity(
@@ -289,6 +302,29 @@ def decide_launch_selection(
         "parent_path": str(parent_arg) if parent_arg else None,
         "parent_policy": "bypass_explicit" if skip_parent_check else "verify_parent_report",
     }
+
+
+def find_verified_preload_source(
+    candidate_dirs: List[str | Path],
+    spec: Dict[str, Any],
+    expected_base_model: str,
+) -> Dict[str, Any]:
+    """Pick the first pre-existing adapter a volume preload may copy.
+
+    Every candidate is verified against the pinned spec (digests) and the
+    checkpoint contract (final/base/scope/fold) via ``verify_adapter_dir``.
+    Unverified candidates (wrong adapter, tampered bytes, smoke/wrong scope)
+    are reported as rejections and never selected: the caller must fall
+    back to a pinned fresh download, not to the newest arbitrary run.
+    """
+    rejections: List[str] = []
+    for candidate in candidate_dirs:
+        try:
+            report = verify_adapter_dir(candidate, spec, expected_base_model)
+            return {"source_dir": str(candidate), "report": report}
+        except Exception as exc:
+            rejections.append(f"{candidate}: {exc}")
+    return {"source_dir": None, "rejections": rejections}
 
 
 def explicit_bypass_parent_report(candidate_manifest: Dict[str, Any], stage: str) -> Dict[str, Any]:

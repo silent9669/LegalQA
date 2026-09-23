@@ -167,6 +167,7 @@ def train_generator_qlora(
     resume_from_checkpoint: Optional[str] = None,
     execution_profile: Optional[str] = None,
     require_evidence: Optional[bool] = None,
+    base_revision: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Train Qwen2.5-3B-Instruct with 4-bit NF4 QLoRA, selective Liger fused-linear CE, and strict validation (V16)."""
     assert_no_secrets_in_workspace(Path.cwd())
@@ -237,6 +238,14 @@ def train_generator_qlora(
     tok_kwargs: Dict[str, Any] = {"trust_remote_code": True}
     if hf_token:
         tok_kwargs["token"] = hf_token
+    _pinned_base: Optional[str] = None
+    if base_revision:
+        from src.task2.generator import _validate_base_revision
+
+        _pinned_base = _validate_base_revision(base_revision)
+    _is_local_base = os.path.isdir(str(model_name_or_path))
+    if _pinned_base and not _is_local_base:
+        tok_kwargs["revision"] = _pinned_base
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name_or_path,
@@ -318,6 +327,8 @@ def train_generator_qlora(
 
     if hf_token:
         model_kwargs["token"] = hf_token
+    if _pinned_base and not _is_local_base:
+        model_kwargs["revision"] = _pinned_base
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
